@@ -9,10 +9,10 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - name: Setup .NET 10
-        uses: actions/setup-dotnet@v4
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
         with:
           dotnet-version: '10.0.x'
 
@@ -23,11 +23,12 @@ jobs:
         run: dotnet build --no-restore --configuration Release
 
       - name: Publish
-        run: dotnet publish src/Nexus.API --configuration Release --output ./publish
+        run: dotnet publish src/Harmony.API --configuration Release --output ./publish
 
       - name: Deploy to Railway
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_SERVICE_ID: ${{ secrets.RAILWAY_SERVICE_ID }}
         run: |
           npm install -g @railway/cli
-          railway up --service harmony-api
+          railway up --service $RAILWAY_SERVICE_ID
