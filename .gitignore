@@ -427,3 +427,14 @@ FodyWeavers.xsd
 *.msix
 *.msm
 *.msp
+
+
+# Local secrets
+src/harmony.API/appsettings.Development.json
+
+# Docker local overrides and secrets
+docker/docker-compose.override.yml
+docker/.env
+
+# Published output
+publish/
