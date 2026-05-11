@@ -438,3 +438,13 @@ docker/.env
 
 # Published output
 publish/
+
+# Local secrets
+src/Harmony.API/appsettings.Development.json
+
+# Docker secrets
+docker/.env
+docker/docker-compose.override.yml
+
+# Published output
+publish/
