@@ -1,4 +1,6 @@
 using Harmony.Core.Services;
+using Harmony.Infrastructure.Postgres;
+using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -8,6 +10,9 @@ var datacenterId = builder.Configuration.GetValue<long>("Snowflake:DatacenterId"
 
 builder.Services.AddSingleton<ISnowflakeIdGenerator>(
     _ => new SnowflakeIdGenerator(workerId, datacenterId));
+
+builder.Services.AddDbContext<HarmonyDbContext>(options =>
+    options.UseNpgsql(builder.Configuration.GetConnectionString("Postgres")));
 
 builder.Services.AddOpenApi();
 
