@@ -8,12 +8,14 @@ using Harmony.Infrastructure.Postgres;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 
 namespace Harmony.API.Controllers;
 
 [ApiController]
 [Route("api/auth")]
+[EnableRateLimiting("api")] // general limiter on all auth endpoints
 public class AuthController : ControllerBase
 {
     private readonly UserManager<User> _userManager;
@@ -27,7 +29,8 @@ public class AuthController : ControllerBase
         HarmonyDbContext db,
         IJwtService jwtService,
         ISnowflakeIdGenerator snowflake,
-        IConfiguration config)
+        IConfiguration config
+    )
     {
         _userManager = userManager;
         _db = db;
@@ -39,6 +42,7 @@ public class AuthController : ControllerBase
     // POST /api/auth/register
     [HttpPost("register")]
     [AllowAnonymous]
+    [EnableRateLimiting("login")] // stricter limiter overrides "api" for this endpoint
     public async Task<IActionResult> Register([FromBody] RegisterRequest request)
     {
         if (await _userManager.FindByEmailAsync(request.Email) is not null)
@@ -54,7 +58,7 @@ public class AuthController : ControllerBase
             Email = request.Email,
             Discriminator = GenerateDiscriminator(),
             AccountStatus = "active",
-            CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+            CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
         };
 
         var result = await _userManager.CreateAsync(user, request.Password);
@@ -70,6 +74,7 @@ public class AuthController : ControllerBase
     // POST /api/auth/login
     [HttpPost("login")]
     [AllowAnonymous]
+    [EnableRateLimiting("login")] // stricter limiter — 10 attempts/min by IP
     public async Task<IActionResult> Login([FromBody] LoginRequest request)
     {
         var user = await _userManager.FindByEmailAsync(request.Email);
@@ -88,6 +93,7 @@ public class AuthController : ControllerBase
     // POST /api/auth/refresh
     [HttpPost("refresh")]
     [AllowAnonymous]
+    [EnableRateLimiting("login")] // treat refresh like login — abuse vector
     public async Task<IActionResult> Refresh()
     {
         var rawToken = Request.Cookies["refresh_token"];
@@ -96,8 +102,8 @@ public class AuthController : ControllerBase
 
         var tokenHash = _jwtService.HashRefreshToken(rawToken);
 
-        var stored = await _db.RefreshTokens
-            .Include(r => r.User)
+        var stored = await _db
+            .RefreshTokens.Include(r => r.User)
             .FirstOrDefaultAsync(r => r.TokenHash == tokenHash);
 
         if (stored is null)
@@ -108,7 +114,9 @@ public class AuthController : ControllerBase
         {
             await RevokeFamily(stored.FamilyId);
             DeleteRefreshCookie();
-            return Unauthorized(new { error = "Refresh token reuse detected. Please log in again." });
+            return Unauthorized(
+                new { error = "Refresh token reuse detected. Please log in again." }
+            );
         }
 
         if (stored.ExpiresAt < DateTimeOffset.UtcNow)
@@ -119,7 +127,7 @@ public class AuthController : ControllerBase
             return Unauthorized(new { error = "Refresh token expired." });
         }
 
-        // Rotate: revoke old token, issue new one in same family
+        // Rotate: revoke old, issue new in same family
         stored.RevokedAt = DateTimeOffset.UtcNow;
         await _db.SaveChangesAsync();
 
@@ -155,7 +163,9 @@ public class AuthController : ControllerBase
     // -------------------------------------------------------------------------
 
     private async Task<(string accessToken, string rawRefreshToken)> IssueTokens(
-        User user, Guid? familyId = null)
+        User user,
+        Guid? familyId = null
+    )
     {
         var accessToken = _jwtService.GenerateAccessToken(user);
         var rawRefresh = _jwtService.GenerateRefreshToken();
@@ -168,7 +178,7 @@ public class AuthController : ControllerBase
             TokenHash = _jwtService.HashRefreshToken(rawRefresh),
             FamilyId = familyId ?? Guid.NewGuid(),
             ExpiresAt = DateTimeOffset.UtcNow.AddDays(refreshExpiry),
-            CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+            CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
         };
 
         _db.RefreshTokens.Add(refreshToken);
@@ -179,8 +189,8 @@ public class AuthController : ControllerBase
 
     private async Task RevokeFamily(Guid familyId)
     {
-        var tokens = await _db.RefreshTokens
-            .Where(r => r.FamilyId == familyId && r.RevokedAt == null)
+        var tokens = await _db
+            .RefreshTokens.Where(r => r.FamilyId == familyId && r.RevokedAt == null)
             .ToListAsync();
 
         foreach (var t in tokens)
@@ -191,29 +201,41 @@ public class AuthController : ControllerBase
 
     private void SetRefreshCookie(string rawToken)
     {
-        Response.Cookies.Append("refresh_token", rawToken, new CookieOptions
-        {
-            HttpOnly = true,
-            Secure = true,
-            SameSite = SameSiteMode.Strict,
-            Expires = DateTimeOffset.UtcNow.AddDays(7)
-        });
+        Response.Cookies.Append(
+            "refresh_token",
+            rawToken,
+            new CookieOptions
+            {
+                HttpOnly = true,
+                Secure = true,
+                SameSite = SameSiteMode.Strict,
+                Expires = DateTimeOffset.UtcNow.AddDays(7),
+            }
+        );
     }
 
     private void DeleteRefreshCookie()
     {
-        Response.Cookies.Delete("refresh_token", new CookieOptions
-        {
-            HttpOnly = true,
-            Secure = true,
-            SameSite = SameSiteMode.Strict
-        });
+        Response.Cookies.Delete(
+            "refresh_token",
+            new CookieOptions
+            {
+                HttpOnly = true,
+                Secure = true,
+                SameSite = SameSiteMode.Strict,
+            }
+        );
     }
 
-    // 4-digit discriminator e.g. "4269"
-    private static string GenerateDiscriminator() =>
-        Random.Shared.Next(0, 10000).ToString("D4");
+    private static string GenerateDiscriminator() => Random.Shared.Next(0, 10000).ToString("D4");
 
     private static UserResponse ToUserResponse(User user) =>
-        new(user.Id, user.UserName!, user.Discriminator, user.Email!, user.AvatarKey, user.AccountStatus);
+        new(
+            user.Id,
+            user.UserName!,
+            user.Discriminator,
+            user.Email!,
+            user.AvatarKey,
+            user.AccountStatus
+        );
 }
