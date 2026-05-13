@@ -1,8 +1,10 @@
 using System.Text;
 using Harmony.API.Extensions;
 using Harmony.Core.Domain.Entities;
+using Harmony.Core.Interfaces.Repositories;
 using Harmony.Core.Services;
 using Harmony.Infrastructure.Postgres;
+using Harmony.Infrastructure.Postgres.Repositories;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
@@ -78,6 +80,9 @@ builder.Services.AddHarmonyRateLimiting();
 
 // Harmony services
 builder.Services.AddScoped<IJwtService, JwtService>();
+builder.Services.AddScoped<IGuildRepository, GuildRepository>();
+builder.Services.AddScoped<IChannelRepository, ChannelRepository>();
+builder.Services.AddScoped<IUserRepository, UserRepository>();
 
 // Controllers + OpenAPI
 builder.Services.AddControllers();
