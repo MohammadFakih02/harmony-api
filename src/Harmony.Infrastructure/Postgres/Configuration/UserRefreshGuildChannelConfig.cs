@@ -25,17 +25,11 @@ public class UserConfiguration : IEntityTypeConfiguration<User>
         builder.Property(u => u.PasswordHash).HasColumnName("password_hash");
 
         // Suppress unused Identity columns so they don't pollute the migration
-        builder.Ignore(u => u.NormalizedUserName);
-        builder.Ignore(u => u.NormalizedEmail);
-        builder.Ignore(u => u.EmailConfirmed);
         builder.Ignore(u => u.PhoneNumber);
         builder.Ignore(u => u.PhoneNumberConfirmed);
-        builder.Ignore(u => u.TwoFactorEnabled);
         builder.Ignore(u => u.LockoutEnd);
         builder.Ignore(u => u.LockoutEnabled);
         builder.Ignore(u => u.AccessFailedCount);
-        builder.Ignore(u => u.ConcurrencyStamp);
-        builder.Ignore(u => u.SecurityStamp);
     }
 }
 
@@ -53,7 +47,8 @@ public class RefreshTokenConfiguration : IEntityTypeConfiguration<RefreshToken>
         builder.Property(r => r.RevokedAt).HasColumnName("revoked_at");
         builder.Property(r => r.CreatedAt).HasColumnName("created_at");
 
-        builder.HasOne(r => r.User)
+        builder
+            .HasOne(r => r.User)
             .WithMany(u => u.RefreshTokens)
             .HasForeignKey(r => r.UserId)
             .OnDelete(DeleteBehavior.Cascade);
@@ -81,7 +76,8 @@ public class GuildConfiguration : IEntityTypeConfiguration<Guild>
         builder.Property(g => g.MemberCount).HasColumnName("member_count");
         builder.Property(g => g.CreatedAt).HasColumnName("created_at");
 
-        builder.HasOne(g => g.Owner)
+        builder
+            .HasOne(g => g.Owner)
             .WithMany()
             .HasForeignKey(g => g.OwnerId)
             .OnDelete(DeleteBehavior.Restrict);
@@ -110,13 +106,15 @@ public class ChannelConfiguration : IEntityTypeConfiguration<Channel>
         builder.Property(c => c.UserLimit).HasColumnName("user_limit");
         builder.Property(c => c.CreatedAt).HasColumnName("created_at");
 
-        builder.HasOne(c => c.Guild)
+        builder
+            .HasOne(c => c.Guild)
             .WithMany(g => g.Channels)
             .HasForeignKey(c => c.GuildId)
             .OnDelete(DeleteBehavior.Cascade);
 
         // Self-referencing for categories
-        builder.HasOne(c => c.Category)
+        builder
+            .HasOne(c => c.Category)
             .WithMany(c => c.Children)
             .HasForeignKey(c => c.CategoryId)
             .OnDelete(DeleteBehavior.SetNull);
