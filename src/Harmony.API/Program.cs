@@ -81,6 +81,7 @@ builder.Services.AddHarmonyRateLimiting();
 // Harmony services
 builder.Services.AddScoped<IJwtService, JwtService>();
 builder.Services.AddScoped<IGuildRepository, GuildRepository>();
+builder.Services.AddScoped<IChannelRepository, ChannelRepository>();
 
 // Controllers + OpenAPI
 builder.Services.AddControllers();
