@@ -1,4 +1,5 @@
 using System.Text;
+using Harmony.API.Extensions;
 using Harmony.Core.Domain.Entities;
 using Harmony.Core.Services;
 using Harmony.Infrastructure.Postgres;
@@ -54,11 +55,9 @@ builder
             IssuerSigningKey = new SymmetricSecurityKey(
                 Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Key"]!)
             ),
-            ClockSkew = TimeSpan.Zero, // no grace period — 15 min means 15 min
+            ClockSkew = TimeSpan.Zero,
         };
 
-        // Let SignalR hubs pick up the JWT from the query string
-        // (browsers can't set Authorization headers on WebSocket connections)
         options.Events = new JwtBearerEvents
         {
             OnMessageReceived = context =>
@@ -73,6 +72,9 @@ builder
     });
 
 builder.Services.AddAuthorization();
+
+// Rate limiting
+builder.Services.AddHarmonyRateLimiting();
 
 // Harmony services
 builder.Services.AddScoped<IJwtService, JwtService>();
@@ -90,7 +92,9 @@ if (app.Environment.IsDevelopment())
 
 app.UseHttpsRedirection();
 
-app.UseAuthentication(); // must be before UseAuthorization
+app.UseRateLimiter(); // before auth so login rate limit hits before Identity runs
+
+app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapControllers();
