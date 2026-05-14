@@ -20,6 +20,22 @@ builder.Services.AddSingleton<ISnowflakeIdGenerator>(_ => new SnowflakeIdGenerat
     datacenterId
 ));
 
+//CORS
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy(
+        "HarmonyClient",
+        policy =>
+        {
+            policy
+                .WithOrigins("http://localhost:4200")
+                .AllowAnyHeader()
+                .AllowAnyMethod()
+                .AllowCredentials(); // required for httpOnly cookies
+        }
+    );
+});
+
 // Database
 builder.Services.AddDbContext<HarmonyDbContext>(options =>
     options.UseNpgsql(builder.Configuration.GetConnectionString("Postgres"))
@@ -96,6 +112,7 @@ if (app.Environment.IsDevelopment())
     app.MapOpenApi();
 
 app.UseHttpsRedirection();
+app.UseCors("HarmonyClient");
 
 app.UseRateLimiter(); // before auth so login rate limit hits before Identity runs
 
