@@ -15,7 +15,7 @@ public class KeyspaceInitializer : IHostedService
         _session = factory.Session;
         _keyspace = factory.Keyspace;
         _logger = logger;
-    }   
+    }
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
@@ -35,26 +35,25 @@ public class KeyspaceInitializer : IHostedService
     {
         await _session.ExecuteAsync(
             new SimpleStatement(
-                @"
-            CREATE TABLE IF NOT EXISTS {_keyspace}.messages_by_channel (
-                channel_id bigint,
-                message_id bigint,
-                user_id bigint,
-                content text,
-                attachment_ids list<bigint>,
-                mention_ids list<bigint>,
-                reply_to_id bigint,
-                is_deleted boolean,
-                is_edited boolean,
-                edited_at timestamp,
-                message_type varchar,
-                PRIMARY KEY (channel_id, message_id)
-            ) WITH CLUSTERING ORDER BY (message_id DESC)
-              AND compaction = {
-                'class': 'TimeWindowCompactionStrategy',
-                'compaction_window_unit': 'DAYS',
-                'compaction_window_size': 1
-              }"
+                $@"CREATE TABLE IF NOT EXISTS {_keyspace}.messages_by_channel (
+                    channel_id bigint,
+                    message_id bigint,
+                    user_id bigint,
+                    content text,
+                    attachment_ids list<bigint>,
+                    mention_ids list<bigint>,
+                    reply_to_id bigint,
+                    is_deleted boolean,
+                    is_edited boolean,
+                    edited_at timestamp,
+                    message_type varchar,
+                    PRIMARY KEY (channel_id, message_id)
+                ) WITH CLUSTERING ORDER BY (message_id DESC)
+                  AND compaction = {{
+                    'class': 'TimeWindowCompactionStrategy',
+                    'compaction_window_unit': 'DAYS',
+                    'compaction_window_size': 1
+                  }}"
             )
         );
 
@@ -65,13 +64,12 @@ public class KeyspaceInitializer : IHostedService
     {
         await _session.ExecuteAsync(
             new SimpleStatement(
-                @"
-            CREATE TABLE IF NOT EXISTS {_keyspace}read_states (
-                user_id bigint,
-                channel_id bigint,
-                last_read_message_id bigint,
-                PRIMARY KEY (user_id, channel_id)
-            )"
+                $@"CREATE TABLE IF NOT EXISTS {_keyspace}.read_states (
+                    user_id bigint,
+                    channel_id bigint,
+                    last_read_message_id bigint,
+                    PRIMARY KEY (user_id, channel_id)
+                )"
             )
         );
 
@@ -82,18 +80,17 @@ public class KeyspaceInitializer : IHostedService
     {
         await _session.ExecuteAsync(
             new SimpleStatement(
-                @"
-            CREATE TABLE IF NOT EXISTS {_keyspace}.messages_by_id (
-                message_id bigint PRIMARY KEY,
-                channel_id bigint,
-                user_id bigint,
-                content text,
-                attachment_ids list<bigint>,
-                reply_to_id bigint,
-                is_deleted boolean,
-                is_edited boolean,
-                edited_at timestamp
-            )"
+                $@"CREATE TABLE IF NOT EXISTS {_keyspace}.messages_by_id (
+                    message_id bigint PRIMARY KEY,
+                    channel_id bigint,
+                    user_id bigint,
+                    content text,
+                    attachment_ids list<bigint>,
+                    reply_to_id bigint,
+                    is_deleted boolean,
+                    is_edited boolean,
+                    edited_at timestamp
+                )"
             )
         );
 
@@ -104,14 +101,13 @@ public class KeyspaceInitializer : IHostedService
     {
         await _session.ExecuteAsync(
             new SimpleStatement(
-                @"
-            CREATE TABLE IF NOT EXISTS {_keyspace}.pinned_messages (
-                channel_id bigint,
-                pinned_at bigint,
-                message_id bigint,
-                pinned_by bigint,
-                PRIMARY KEY (channel_id, pinned_at)
-            ) WITH CLUSTERING ORDER BY (pinned_at DESC)"
+                $@"CREATE TABLE IF NOT EXISTS {_keyspace}.pinned_messages (
+                    channel_id bigint,
+                    pinned_at bigint,
+                    message_id bigint,
+                    pinned_by bigint,
+                    PRIMARY KEY (channel_id, pinned_at)
+                ) WITH CLUSTERING ORDER BY (pinned_at DESC)"
             )
         );
 
