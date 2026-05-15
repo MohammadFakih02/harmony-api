@@ -23,13 +23,15 @@ public class AuthController : ControllerBase
     private readonly IJwtService _jwtService;
     private readonly ISnowflakeIdGenerator _snowflake;
     private readonly IConfiguration _config;
+    private readonly IWebHostEnvironment _environment;
 
     public AuthController(
         UserManager<User> userManager,
         HarmonyDbContext db,
         IJwtService jwtService,
         ISnowflakeIdGenerator snowflake,
-        IConfiguration config
+        IConfiguration config,
+        IWebHostEnvironment environment
     )
     {
         _userManager = userManager;
@@ -37,6 +39,7 @@ public class AuthController : ControllerBase
         _jwtService = jwtService;
         _snowflake = snowflake;
         _config = config;
+        _environment = environment;
     }
 
     // POST /api/auth/register
@@ -207,7 +210,7 @@ public class AuthController : ControllerBase
             new CookieOptions
             {
                 HttpOnly = true,
-                Secure = true,
+                Secure = _environment.IsProduction(),
                 SameSite = SameSiteMode.Strict,
                 Expires = DateTimeOffset.UtcNow.AddDays(7),
             }
@@ -221,7 +224,7 @@ public class AuthController : ControllerBase
             new CookieOptions
             {
                 HttpOnly = true,
-                Secure = true,
+                Secure = _environment.IsProduction(),
                 SameSite = SameSiteMode.Strict,
             }
         );

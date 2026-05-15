@@ -10,6 +10,9 @@ public class RefreshToken
     public DateTimeOffset? RevokedAt { get; set; }
     public long CreatedAt { get; set; }
 
+    public bool IsExpired => DateTimeOffset.UtcNow >= ExpiresAt;
+    public bool IsActive => RevokedAt is null && !IsExpired;
+
     // Navigation
     public User User { get; set; } = null!;
 }
