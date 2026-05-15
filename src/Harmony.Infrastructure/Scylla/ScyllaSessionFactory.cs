@@ -40,7 +40,12 @@ public class ScyllaSessionFactory : IDisposable
             )
             .Build();
 
-        _session = cluster.Connect(keyspace);
+        var session = cluster.Connect();
+        session.Execute(
+            $"CREATE KEYSPACE IF NOT EXISTS {keyspace} WITH replication = {{'class': 'SimpleStrategy', 'replication_factor': 1}}"
+        );
+        session.ChangeKeyspace(keyspace);
+        _session = session;
 
         _logger.LogInformation("ScyllaDB session established");
     }
