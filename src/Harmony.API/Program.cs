@@ -5,6 +5,8 @@ using Harmony.Core.Interfaces.Repositories;
 using Harmony.Core.Services;
 using Harmony.Infrastructure.Postgres;
 using Harmony.Infrastructure.Postgres.Repositories;
+using Harmony.Infrastructure.Scylla;
+using Harmony.Infrastructure.Scylla.Repositories;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
@@ -99,6 +101,12 @@ builder.Services.AddScoped<IJwtService, JwtService>();
 builder.Services.AddScoped<IGuildRepository, GuildRepository>();
 builder.Services.AddScoped<IChannelRepository, ChannelRepository>();
 builder.Services.AddScoped<IUserRepository, UserRepository>();
+
+// Scylla
+builder.Services.AddSingleton<ScyllaSessionFactory>();
+builder.Services.AddHostedService<KeyspaceInitializer>();
+builder.Services.AddScoped<IMessageRepository, MessageRepository>();
+builder.Services.AddScoped<IReadStateRepository, ReadStateRepository>();
 
 // Controllers + OpenAPI
 builder.Services.AddControllers();

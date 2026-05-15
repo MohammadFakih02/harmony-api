@@ -448,3 +448,5 @@ docker/docker-compose.override.yml
 
 # Published output
 publish/
+
+*.lscache
