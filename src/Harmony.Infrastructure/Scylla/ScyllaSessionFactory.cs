@@ -4,15 +4,20 @@ using Microsoft.Extensions.Logging;
 
 namespace Harmony.Infrastructure.Scylla;
 
-public class ScyllaSessionFactory : IDisposable
+public class ScyllaSessionFactory : IScyllaSessionFactory, IDisposable
 {
     private readonly ISession _session;
     private readonly ILogger<ScyllaSessionFactory> _logger;
     private bool _disposed;
 
+    private readonly string _keyspace;
+
     public ScyllaSessionFactory(IConfiguration configuration, ILogger<ScyllaSessionFactory> logger)
     {
         _logger = logger;
+
+        _keyspace = configuration.GetValue<string>("ScyllaDB:Keyspace", "harmony")!;
+        
 
         var contactPoints =
             configuration.GetSection("ScyllaDB:ContactPoints").Get<string[]>() ?? ["127.0.0.1"];
@@ -51,6 +56,7 @@ public class ScyllaSessionFactory : IDisposable
     }
 
     public ISession Session => _session;
+    public string Keyspace => _keyspace;
 
     public void Dispose()
     {

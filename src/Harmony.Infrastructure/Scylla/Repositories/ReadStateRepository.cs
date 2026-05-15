@@ -13,34 +13,37 @@ public class ReadStateRepository : IReadStateRepository
     private readonly Lazy<PreparedStatement> _selectOne;
     private readonly Lazy<PreparedStatement> _selectForChannel;
 
-    public ReadStateRepository(ScyllaSessionFactory factory, ILogger<ReadStateRepository> logger)
+    private readonly string _ks;
+
+    public ReadStateRepository(IScyllaSessionFactory factory, ILogger<ReadStateRepository> logger)
     {
         _session = factory.Session;
+        _ks = factory.Keyspace;
         _logger = logger;
 
         _upsert = new Lazy<PreparedStatement>(() =>
             _session.Prepare(
-                @"
-            INSERT INTO read_states (user_id, channel_id, last_read_message_id)
-            VALUES (?, ?, ?)"
+                $@"
+        INSERT INTO {_ks}.read_states (user_id, channel_id, last_read_message_id)
+        VALUES (?, ?, ?)"
             )
         );
 
         _selectOne = new Lazy<PreparedStatement>(() =>
             _session.Prepare(
-                @"
-            SELECT last_read_message_id
-            FROM read_states
-            WHERE user_id = ? AND channel_id = ?"
+                $@"
+        SELECT last_read_message_id
+        FROM {_ks}.read_states
+        WHERE user_id = ? AND channel_id = ?"
             )
         );
 
         _selectForChannel = new Lazy<PreparedStatement>(() =>
             _session.Prepare(
-                @"
-            SELECT last_read_message_id
-            FROM read_states
-            WHERE user_id = ? AND channel_id = ?"
+                $@"
+        SELECT last_read_message_id
+        FROM {_ks}.read_states
+        WHERE user_id = ? AND channel_id = ?"
             )
         );
     }

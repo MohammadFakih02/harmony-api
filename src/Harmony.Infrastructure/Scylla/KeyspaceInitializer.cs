@@ -7,13 +7,15 @@ namespace Harmony.Infrastructure.Scylla;
 public class KeyspaceInitializer : IHostedService
 {
     private readonly ISession _session;
+    private readonly string _keyspace;
     private readonly ILogger<KeyspaceInitializer> _logger;
 
-    public KeyspaceInitializer(ScyllaSessionFactory factory, ILogger<KeyspaceInitializer> logger)
+    public KeyspaceInitializer(IScyllaSessionFactory factory, ILogger<KeyspaceInitializer> logger)
     {
         _session = factory.Session;
+        _keyspace = factory.Keyspace;
         _logger = logger;
-    }
+    }   
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
@@ -34,7 +36,7 @@ public class KeyspaceInitializer : IHostedService
         await _session.ExecuteAsync(
             new SimpleStatement(
                 @"
-            CREATE TABLE IF NOT EXISTS messages_by_channel (
+            CREATE TABLE IF NOT EXISTS {_keyspace}.messages_by_channel (
                 channel_id bigint,
                 message_id bigint,
                 user_id bigint,
@@ -64,7 +66,7 @@ public class KeyspaceInitializer : IHostedService
         await _session.ExecuteAsync(
             new SimpleStatement(
                 @"
-            CREATE TABLE IF NOT EXISTS read_states (
+            CREATE TABLE IF NOT EXISTS {_keyspace}read_states (
                 user_id bigint,
                 channel_id bigint,
                 last_read_message_id bigint,
@@ -81,7 +83,7 @@ public class KeyspaceInitializer : IHostedService
         await _session.ExecuteAsync(
             new SimpleStatement(
                 @"
-            CREATE TABLE IF NOT EXISTS messages_by_id (
+            CREATE TABLE IF NOT EXISTS {_keyspace}.messages_by_id (
                 message_id bigint PRIMARY KEY,
                 channel_id bigint,
                 user_id bigint,
@@ -103,7 +105,7 @@ public class KeyspaceInitializer : IHostedService
         await _session.ExecuteAsync(
             new SimpleStatement(
                 @"
-            CREATE TABLE IF NOT EXISTS pinned_messages (
+            CREATE TABLE IF NOT EXISTS {_keyspace}.pinned_messages (
                 channel_id bigint,
                 pinned_at bigint,
                 message_id bigint,

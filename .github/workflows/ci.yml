@@ -8,11 +8,36 @@ jobs:
   build-and-test:
     runs-on: ubuntu-latest
 
+    services:
+      scylladb:
+        image: scylladb/scylla:5.4
+        ports:
+          - 9042:9042
+        options: >-
+          --health-cmd "cqlsh -e 'describe cluster'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 15
+
+      postgres:
+        image: postgres:16
+        ports:
+          - 5432:5432
+        env:
+          POSTGRES_DB: harmony_test
+          POSTGRES_USER: harmony
+          POSTGRES_PASSWORD: harmony
+        options: >-
+          --health-cmd "pg_isready -U harmony"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v4
 
       - name: Setup .NET 10
-        uses: actions/setup-dotnet@v5
+        uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
 
