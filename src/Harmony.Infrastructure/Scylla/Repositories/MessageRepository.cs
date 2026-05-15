@@ -25,121 +25,124 @@ public class MessageRepository : IMessageRepository
     private readonly Lazy<PreparedStatement> _deletePinned;
     private readonly Lazy<PreparedStatement> _selectPinned;
 
-    public MessageRepository(ScyllaSessionFactory factory, ILogger<MessageRepository> logger)
+    private readonly string _ks;
+
+    public MessageRepository(IScyllaSessionFactory factory, ILogger<MessageRepository> logger)
     {
         _session = factory.Session;
+        _ks = factory.Keyspace;
         _logger = logger;
 
         _insertByChannel = new Lazy<PreparedStatement>(() =>
             _session.Prepare(
-                @"
-            INSERT INTO messages_by_channel
-                (channel_id, message_id, user_id, content, attachment_ids,
-                 mention_ids, reply_to_id, is_deleted, is_edited, edited_at, message_type)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                $@"
+        INSERT INTO {_ks}.messages_by_channel
+            (channel_id, message_id, user_id, content, attachment_ids,
+             mention_ids, reply_to_id, is_deleted, is_edited, edited_at, message_type)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
             )
         );
 
         _insertById = new Lazy<PreparedStatement>(() =>
             _session.Prepare(
-                @"
-            INSERT INTO messages_by_id
-                (message_id, channel_id, user_id, content,
-                 attachment_ids, reply_to_id, is_deleted, is_edited, edited_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                $@"
+        INSERT INTO {_ks}.messages_by_id
+            (message_id, channel_id, user_id, content,
+             attachment_ids, reply_to_id, is_deleted, is_edited, edited_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
             )
         );
 
         _selectByChannel = new Lazy<PreparedStatement>(() =>
             _session.Prepare(
-                @"
-            SELECT channel_id, message_id, user_id, content, attachment_ids,
-                   mention_ids, reply_to_id, is_deleted, is_edited, edited_at, message_type
-            FROM messages_by_channel
-            WHERE channel_id = ?
-            LIMIT ?"
+                $@"
+        SELECT channel_id, message_id, user_id, content, attachment_ids,
+               mention_ids, reply_to_id, is_deleted, is_edited, edited_at, message_type
+        FROM {_ks}.messages_by_channel
+        WHERE channel_id = ?
+        LIMIT ?"
             )
         );
 
         _selectByChannelBefore = new Lazy<PreparedStatement>(() =>
             _session.Prepare(
-                @"
-            SELECT channel_id, message_id, user_id, content, attachment_ids,
-                   mention_ids, reply_to_id, is_deleted, is_edited, edited_at, message_type
-            FROM messages_by_channel
-            WHERE channel_id = ? AND message_id < ?
-            LIMIT ?"
+                $@"
+        SELECT channel_id, message_id, user_id, content, attachment_ids,
+               mention_ids, reply_to_id, is_deleted, is_edited, edited_at, message_type
+        FROM {_ks}.messages_by_channel
+        WHERE channel_id = ? AND message_id < ?
+        LIMIT ?"
             )
         );
 
         _selectById = new Lazy<PreparedStatement>(() =>
             _session.Prepare(
-                @"
-            SELECT message_id, channel_id, user_id, content, attachment_ids,
-                   reply_to_id, is_deleted, is_edited, edited_at
-            FROM messages_by_id
-            WHERE message_id = ?"
+                $@"
+        SELECT message_id, channel_id, user_id, content, attachment_ids,
+               reply_to_id, is_deleted, is_edited, edited_at
+        FROM {_ks}.messages_by_id
+        WHERE message_id = ?"
             )
         );
 
         _softDeleteByChannel = new Lazy<PreparedStatement>(() =>
             _session.Prepare(
-                @"
-            UPDATE messages_by_channel
-            SET is_deleted = true
-            WHERE channel_id = ? AND message_id = ?"
+                $@"
+        UPDATE {_ks}.messages_by_channel
+        SET is_deleted = true
+        WHERE channel_id = ? AND message_id = ?"
             )
         );
 
         _softDeleteById = new Lazy<PreparedStatement>(() =>
             _session.Prepare(
-                @"
-            UPDATE messages_by_id
-            SET is_deleted = true
-            WHERE message_id = ?"
+                $@"
+        UPDATE {_ks}.messages_by_id
+        SET is_deleted = true
+        WHERE message_id = ?"
             )
         );
 
         _editByChannel = new Lazy<PreparedStatement>(() =>
             _session.Prepare(
-                @"
-            UPDATE messages_by_channel
-            SET content = ?, is_edited = true, edited_at = ?
-            WHERE channel_id = ? AND message_id = ?"
+                $@"
+        UPDATE {_ks}.messages_by_channel
+        SET content = ?, is_edited = true, edited_at = ?
+        WHERE channel_id = ? AND message_id = ?"
             )
         );
 
         _editById = new Lazy<PreparedStatement>(() =>
             _session.Prepare(
-                @"
-            UPDATE messages_by_id
-            SET content = ?, is_edited = true, edited_at = ?
-            WHERE message_id = ?"
+                $@"
+        UPDATE {_ks}.messages_by_id
+        SET content = ?, is_edited = true, edited_at = ?
+        WHERE message_id = ?"
             )
         );
 
         _insertPinned = new Lazy<PreparedStatement>(() =>
             _session.Prepare(
-                @"
-            INSERT INTO pinned_messages (channel_id, pinned_at, message_id, pinned_by)
-            VALUES (?, ?, ?, ?)"
+                $@"
+        INSERT INTO {_ks}.pinned_messages (channel_id, pinned_at, message_id, pinned_by)
+        VALUES (?, ?, ?, ?)"
             )
         );
 
         _deletePinned = new Lazy<PreparedStatement>(() =>
             _session.Prepare(
-                @"
-            DELETE FROM pinned_messages
-            WHERE channel_id = ? AND pinned_at = ?"
+                $@"
+        DELETE FROM {_ks}.pinned_messages
+        WHERE channel_id = ? AND pinned_at = ?"
             )
         );
 
         _selectPinned = new Lazy<PreparedStatement>(() =>
             _session.Prepare(
-                @"
-            SELECT channel_id, pinned_at, message_id, pinned_by
-            FROM pinned_messages
-            WHERE channel_id = ?"
+                $@"
+        SELECT channel_id, pinned_at, message_id, pinned_by
+        FROM {_ks}.pinned_messages
+        WHERE channel_id = ?"
             )
         );
     }

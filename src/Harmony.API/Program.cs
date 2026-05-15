@@ -103,7 +103,7 @@ builder.Services.AddScoped<IChannelRepository, ChannelRepository>();
 builder.Services.AddScoped<IUserRepository, UserRepository>();
 
 // Scylla
-builder.Services.AddSingleton<ScyllaSessionFactory>();
+builder.Services.AddSingleton<IScyllaSessionFactory, ScyllaSessionFactory>();
 builder.Services.AddHostedService<KeyspaceInitializer>();
 builder.Services.AddScoped<IMessageRepository, MessageRepository>();
 builder.Services.AddScoped<IReadStateRepository, ReadStateRepository>();
