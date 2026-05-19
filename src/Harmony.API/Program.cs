@@ -7,6 +7,7 @@ using Harmony.Core.Services;
 using Harmony.Infrastructure.Postgres;
 using Harmony.Infrastructure.Postgres.Repositories;
 using Harmony.Infrastructure.RabbitMQ;
+using Harmony.Infrastructure.RabbitMQ.Consumers;
 using Harmony.Infrastructure.RabbitMQ.Producers;
 using Harmony.Infrastructure.Scylla;
 using Harmony.Infrastructure.Scylla.Repositories;
@@ -114,6 +115,10 @@ builder.Services.AddScoped<IReadStateRepository, ReadStateRepository>();
 // RabbitMQ
 builder.Services.AddSingleton<RabbitMQConnection>();
 builder.Services.AddScoped<IMessagePublisher, RabbitMQPublisher>();
+
+// RabbitMQ Consumer
+builder.Services.AddScoped<IMessageConsumerHandler, MessageConsumerHandler>();
+builder.Services.AddHostedService<MessageConsumer>();
 
 // Controllers + OpenAPI
 builder.Services.AddControllers();
