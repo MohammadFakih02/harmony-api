@@ -18,6 +18,7 @@ public class HarmonyWebApplicationFactory : WebApplicationFactory<Program>
                     {
                         ["ConnectionStrings:Postgres"] =
                             "Host=localhost;Port=5432;Database=harmony_test;Username=admin;Password=secret",
+                        ["ConnectionStrings:RabbitMQ"] = "amqp://admin:secret@localhost:5672",
                         ["Jwt:Key"] = "test-super-secret-key-minimum-32-characters-long",
                         ["Jwt:Issuer"] = "harmony-api",
                         ["Jwt:Audience"] = "harmony-client",
