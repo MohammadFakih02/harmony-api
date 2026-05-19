@@ -25,10 +25,10 @@ jobs:
       - name: Publish
         run: dotnet publish src/Harmony.API --configuration Release --output ./publish
 
-      - name: Deploy to Railway
-        env:
-          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
-          RAILWAY_SERVICE_ID: ${{ secrets.RAILWAY_SERVICE_ID }}
-        run: |
-          npm install -g @railway/cli
-          railway up --service $RAILWAY_SERVICE_ID
+      # - name: Deploy to Railway
+      #   env:
+      #     RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+      #     RAILWAY_SERVICE_ID: ${{ secrets.RAILWAY_SERVICE_ID }}
+      #   run: |
+      #     npm install -g @railway/cli
+      #     railway up --service $RAILWAY_SERVICE_ID
