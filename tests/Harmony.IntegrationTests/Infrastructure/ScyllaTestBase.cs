@@ -8,7 +8,7 @@ public abstract class ScyllaTestBase : IAsyncLifetime
 
     protected abstract IEnumerable<string> TablesToTruncate { get; }
 
-    public async Task InitializeAsync()
+    public virtual async Task InitializeAsync()
     {
         var cluster = Cluster.Builder().AddContactPoint("127.0.0.1").WithPort(9042).Build();
 
@@ -26,7 +26,7 @@ public abstract class ScyllaTestBase : IAsyncLifetime
         await TruncateTablesAsync();
     }
 
-    public async Task DisposeAsync()
+    public virtual async Task DisposeAsync()
     {
         await TruncateTablesAsync();
         Session.Dispose();
