@@ -2,21 +2,22 @@ using FluentAssertions;
 using Harmony.Core.Domain.Entities;
 using Harmony.Core.Interfaces;
 using Harmony.Core.Interfaces.Repositories;
-using Harmony.Infrastructure.Postgres;
 using Harmony.Infrastructure.RabbitMQ;
 using Harmony.Infrastructure.Scylla.Repositories;
 using Harmony.IntegrationTests.Infrastructure;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
+using Respawn.Graph;
 
 namespace Harmony.IntegrationTests.RabbitMQ;
 
-public class MessageConsumerHandlerTests : ScyllaTestBase
+public class MessageConsumerHandlerTests : ScyllaAndPostgresTestBase
 {
     protected override IEnumerable<string> TablesToTruncate =>
         ["messages_by_channel", "messages_by_id"];
 
-    private HarmonyDbContext _db = null!;
+    protected override IEnumerable<string> PostgresTablesToIgnore => ["__EFMigrationsHistory"];
+
     private IMessageRepository _messageRepository = null!;
     private MessageConsumerHandler _handler = null!;
 
@@ -24,69 +25,29 @@ public class MessageConsumerHandlerTests : ScyllaTestBase
     {
         await base.InitializeAsync();
 
-        var options = new DbContextOptionsBuilder<HarmonyDbContext>()
-            .UseNpgsql(
-                "Host=localhost;Port=5432;Database=harmony_test;Username=admin;Password=secret"
-            )
-            .Options;
-
-        _db = new HarmonyDbContext(options);
-        await _db.Database.EnsureCreatedAsync();
-
-        // Clean in correct dependency order — children before parents
-        _db.Notifications.RemoveRange(_db.Notifications);
-        _db.MessagesSearch.RemoveRange(_db.MessagesSearch);
-        _db.NotificationPreferences.RemoveRange(_db.NotificationPreferences);
-        _db.GuildMembers.RemoveRange(_db.GuildMembers);
-        _db.Channels.RemoveRange(_db.Channels);
-        _db.Guilds.RemoveRange(_db.Guilds);
-        _db.Users.RemoveRange(_db.Users);
-        await _db.SaveChangesAsync();
-
         var stub = new ScyllaSessionFactoryStub(Session);
-        stub.Keyspace.Should().Be("harmony_test");
-        stub.Session.Keyspace.Should().Be("harmony_test");
         _messageRepository = new MessageRepository(stub, NullLogger<MessageRepository>.Instance);
 
         _handler = new MessageConsumerHandler(
             _messageRepository,
-            _db,
+            Db,
             NullLogger<MessageConsumerHandler>.Instance
         );
 
-        // Seed a default guild and channel that all tests reference
         await SeedDefaultGuildAndChannelAsync();
     }
 
-    public override async Task DisposeAsync()
-    {
-        // Clean in correct dependency order
-        _db.Notifications.RemoveRange(_db.Notifications);
-        _db.MessagesSearch.RemoveRange(_db.MessagesSearch);
-        _db.NotificationPreferences.RemoveRange(_db.NotificationPreferences);
-        _db.GuildMembers.RemoveRange(_db.GuildMembers);
-        _db.Channels.RemoveRange(_db.Channels);
-        _db.Guilds.RemoveRange(_db.Guilds);
-        _db.Users.RemoveRange(_db.Users);
-        await _db.SaveChangesAsync();
-        await _db.DisposeAsync();
-        await base.DisposeAsync();
-    }
+    // --- HandleMessageSentAsync ---
 
     [Fact]
     public async Task HandleMessageSentAsync_ShouldPersistToScylla()
     {
-        // Confirm keyspaces
         Session.Keyspace.Should().Be("harmony_test");
 
         var stub = new ScyllaSessionFactoryStub(Session);
-        stub.Keyspace.Should().Be("harmony_test");
-        stub.Session.Keyspace.Should().Be("harmony_test");
-
-        // Write directly via repository bypassing handler
         var directRepo = new MessageRepository(stub, NullLogger<MessageRepository>.Instance);
         await directRepo.SaveAsync(
-            new Harmony.Core.Domain.Entities.Message
+            new Message
             {
                 MessageId = 9999,
                 ChannelId = 1,
@@ -117,7 +78,7 @@ public class MessageConsumerHandlerTests : ScyllaTestBase
 
         await _handler.HandleMessageSentAsync(evt);
 
-        var entry = await _db.MessagesSearch.FirstOrDefaultAsync(m => m.MessageId == 1002);
+        var entry = await Db.MessagesSearch.FirstOrDefaultAsync(m => m.MessageId == 1002);
         entry.Should().NotBeNull();
         entry!.Content.Should().Be("hello world");
         entry.ChannelId.Should().Be(1);
@@ -131,7 +92,7 @@ public class MessageConsumerHandlerTests : ScyllaTestBase
         await _handler.HandleMessageSentAsync(evt);
         await _handler.HandleMessageSentAsync(evt);
 
-        var count = await _db.MessagesSearch.CountAsync(m => m.MessageId == 1003);
+        var count = await Db.MessagesSearch.CountAsync(m => m.MessageId == 1003);
         count.Should().Be(1);
     }
 
@@ -145,7 +106,7 @@ public class MessageConsumerHandlerTests : ScyllaTestBase
 
         await _handler.HandleMessageSentAsync(evt);
 
-        var notification = await _db.Notifications.FirstOrDefaultAsync(n =>
+        var notification = await Db.Notifications.FirstOrDefaultAsync(n =>
             n.UserId == 500 && n.Type == "mention"
         );
         notification.Should().NotBeNull();
@@ -163,7 +124,7 @@ public class MessageConsumerHandlerTests : ScyllaTestBase
 
         await _handler.HandleMessageSentAsync(evt);
 
-        var count = await _db.Notifications.CountAsync(n => n.UserId == 501);
+        var count = await Db.Notifications.CountAsync(n => n.UserId == 501);
         count.Should().Be(0);
     }
 
@@ -174,7 +135,7 @@ public class MessageConsumerHandlerTests : ScyllaTestBase
 
         await _handler.HandleMessageSentAsync(evt);
 
-        var count = await _db.Notifications.CountAsync(n => n.UserId == 99);
+        var count = await Db.Notifications.CountAsync(n => n.UserId == 99);
         count.Should().Be(0);
     }
 
@@ -186,7 +147,6 @@ public class MessageConsumerHandlerTests : ScyllaTestBase
         var sentEvt = BuildMessageSentEvent(messageId: 2001);
         await _handler.HandleMessageSentAsync(sentEvt);
 
-        // Poll until write lands
         List<Message> messages = [];
         for (int i = 0; i < 20; i++)
         {
@@ -234,7 +194,7 @@ public class MessageConsumerHandlerTests : ScyllaTestBase
 
         await _handler.HandleMessageDeletedAsync(deletedEvt);
 
-        var entry = await _db.MessagesSearch.FirstOrDefaultAsync(m => m.MessageId == 2002);
+        var entry = await Db.MessagesSearch.FirstOrDefaultAsync(m => m.MessageId == 2002);
         entry.Should().BeNull();
     }
 
@@ -246,7 +206,6 @@ public class MessageConsumerHandlerTests : ScyllaTestBase
         var sentEvt = BuildMessageSentEvent(messageId: 3001);
         await _handler.HandleMessageSentAsync(sentEvt);
 
-        // Poll until initial write lands
         List<Message> messages = [];
         for (int i = 0; i < 20; i++)
         {
@@ -271,7 +230,6 @@ public class MessageConsumerHandlerTests : ScyllaTestBase
 
         await _handler.HandleMessageEditedAsync(editedEvt);
 
-        // Poll until edit lands
         for (int i = 0; i < 20; i++)
         {
             await Task.Delay(200);
@@ -304,7 +262,7 @@ public class MessageConsumerHandlerTests : ScyllaTestBase
 
         await _handler.HandleMessageEditedAsync(editedEvt);
 
-        var entry = await _db.MessagesSearch.FirstOrDefaultAsync(m => m.MessageId == 3002);
+        var entry = await Db.MessagesSearch.FirstOrDefaultAsync(m => m.MessageId == 3002);
         entry!.Content.Should().Be("updated content");
     }
 
@@ -329,7 +287,6 @@ public class MessageConsumerHandlerTests : ScyllaTestBase
 
     private async Task SeedDefaultGuildAndChannelAsync()
     {
-        // Owner user must exist before guild due to FK_Guilds_Users_owner_id
         var owner = new User
         {
             Id = 99,
@@ -344,32 +301,32 @@ public class MessageConsumerHandlerTests : ScyllaTestBase
             CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
         };
 
-        _db.Users.Add(owner);
-        await _db.SaveChangesAsync();
+        Db.Users.Add(owner);
+        await Db.SaveChangesAsync();
 
-        var guild = new Guild
-        {
-            Id = 1,
-            Name = "Test Guild",
-            OwnerId = 99,
-            CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-        };
+        Db.Guilds.Add(
+            new Guild
+            {
+                Id = 1,
+                Name = "Test Guild",
+                OwnerId = 99,
+                CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            }
+        );
+        await Db.SaveChangesAsync();
 
-        _db.Guilds.Add(guild);
-        await _db.SaveChangesAsync();
-
-        var channel = new Channel
-        {
-            Id = 1,
-            GuildId = 1,
-            Name = "general",
-            Type = "text",
-            Position = 0,
-            CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-        };
-
-        _db.Channels.Add(channel);
-        await _db.SaveChangesAsync();
+        Db.Channels.Add(
+            new Channel
+            {
+                Id = 1,
+                GuildId = 1,
+                Name = "general",
+                Type = "text",
+                Position = 0,
+                CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            }
+        );
+        await Db.SaveChangesAsync();
     }
 
     private async Task<User> CreateUserAsync(long id, string username)
@@ -388,14 +345,14 @@ public class MessageConsumerHandlerTests : ScyllaTestBase
             CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
         };
 
-        _db.Users.Add(user);
-        await _db.SaveChangesAsync();
+        Db.Users.Add(user);
+        await Db.SaveChangesAsync();
         return user;
     }
 
     private async Task CreateNotificationPreferenceAsync(long userId, bool mentionsEnabled)
     {
-        _db.NotificationPreferences.Add(
+        Db.NotificationPreferences.Add(
             new NotificationPreference
             {
                 UserId = userId,
@@ -406,6 +363,6 @@ public class MessageConsumerHandlerTests : ScyllaTestBase
                 PushEnabled = true,
             }
         );
-        await _db.SaveChangesAsync();
+        await Db.SaveChangesAsync();
     }
 }
