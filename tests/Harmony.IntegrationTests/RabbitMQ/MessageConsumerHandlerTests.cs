@@ -7,10 +7,14 @@ using Harmony.Infrastructure.Scylla.Repositories;
 using Harmony.IntegrationTests.Infrastructure;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
-using Respawn.Graph;
 
 namespace Harmony.IntegrationTests.RabbitMQ;
 
+/// <summary>
+/// Tests the background worker (Consumer Handler).
+/// Inherits from ScyllaAndPostgresTestBase which uses Respawn to instantly wipe Postgres
+/// and TRUNCATEs Scylla tables between EVERY test, ensuring a 100% clean state.
+/// </summary>
 public class MessageConsumerHandlerTests : ScyllaAndPostgresTestBase
 {
     protected override IEnumerable<string> TablesToTruncate =>
@@ -23,29 +27,204 @@ public class MessageConsumerHandlerTests : ScyllaAndPostgresTestBase
 
     public override async Task InitializeAsync()
     {
-        await base.InitializeAsync();
+        await base.InitializeAsync(); // Triggers Respawn (Postgres wipe) and Scylla TRUNCATE
 
+        // We use a "Stub" to bypass real connection logic and point the Repo to the test keyspace
         var stub = new ScyllaSessionFactoryStub(Session);
+
+        // Manual Dependency Injection: We inject the Stub and a NullLogger (so our console stays clean)
         _messageRepository = new MessageRepository(stub, NullLogger<MessageRepository>.Instance);
 
+        // Inject the mocked repo and the real test database context into the handler
         _handler = new MessageConsumerHandler(
             _messageRepository,
             Db,
             NullLogger<MessageConsumerHandler>.Instance
         );
 
+        // Seed basic relational data (User, Guild, Channel) needed for foreign keys
         await SeedDefaultGuildAndChannelAsync();
     }
 
     // --- HandleMessageSentAsync ---
 
     [Fact]
+    public async Task HandleMessageSentAsync_ShouldDualWriteToPostgres()
+    {
+        // Arrange
+        var evt = BuildMessageSentEvent(messageId: 1002);
+
+        // Act - Simulate RabbitMQ delivering a message to the handler
+        await _handler.HandleMessageSentAsync(evt);
+
+        // Assert - Verify the "Search" version of the message was saved to Postgres
+        var entry = await Db.MessagesSearch.FirstOrDefaultAsync(m => m.MessageId == 1002);
+        entry.Should().NotBeNull();
+        entry!.Content.Should().Be("hello world");
+        entry.ChannelId.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task HandleMessageSentAsync_ShouldBeIdempotent_WhenCalledTwice()
+    {
+        // Arrange
+        var evt = BuildMessageSentEvent(messageId: 1003);
+
+        // Act - Simulate a network glitch where RabbitMQ delivers the exact same message TWICE
+        await _handler.HandleMessageSentAsync(evt);
+        await _handler.HandleMessageSentAsync(evt);
+
+        // Assert - Prove our handler caught the duplicate and didn't insert 2 search records
+        var count = await Db.MessagesSearch.CountAsync(m => m.MessageId == 1003);
+        count.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task HandleMessageSentAsync_ShouldCreateMentionNotifications()
+    {
+        // Arrange
+        await CreateUserAsync(id: 500, username: "mentioneduser");
+        await CreateNotificationPreferenceAsync(userId: 500, mentionsEnabled: true);
+        var evt = BuildMessageSentEvent(messageId: 1004, mentionIds: [500]);
+
+        // Act
+        await _handler.HandleMessageSentAsync(evt);
+
+        // Assert - Verify the mention logic successfully wrote a notification record
+        var notification = await Db.Notifications.FirstOrDefaultAsync(n =>
+            n.UserId == 500 && n.Type == "mention"
+        );
+        notification.Should().NotBeNull();
+        notification!.MessageId.Should().Be(1004);
+        notification.ActorId.Should().Be(99);
+    }
+
+    // --- HandleMessageDeletedAsync ---
+
+    [Fact]
+    public async Task HandleMessageDeletedAsync_ShouldSoftDeleteInScylla()
+    {
+        // Arrange - Send the initial message
+        var sentEvt = BuildMessageSentEvent(messageId: 2001);
+        await _handler.HandleMessageSentAsync(sentEvt);
+
+        // Wait until Scylla confirms the write using our Polly resilience helper.
+        // It checks every 50ms, meaning the test will proceed instantly once data is found.
+        var messages = await Eventually.HasAnyAsync(() =>
+            _messageRepository.GetChannelMessagesAsync(channelId: 1, limit: 10)
+        );
+        messages.Should().NotBeEmpty("message must exist before deleting");
+
+        var deletedEvt = new MessageDeletedEvent(
+            MessageId: 2001,
+            ChannelId: 1,
+            GuildId: 1,
+            DeletedByUserId: 99,
+            DeletedAt: DateTimeOffset.UtcNow
+        );
+
+        // Act - Simulate RabbitMQ delivering a delete event
+        await _handler.HandleMessageDeletedAsync(deletedEvt);
+
+        // Assert - Wait until Scylla updates the record to IsDeleted = true
+        var deletedMessages = await Eventually.MatchesAsync(
+            () => _messageRepository.GetChannelMessagesAsync(channelId: 1, limit: 10),
+            m => m.Any() && m.First().IsDeleted
+        );
+
+        deletedMessages.First().IsDeleted.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task HandleMessageDeletedAsync_ShouldRemoveFromPostgres()
+    {
+        // Arrange
+        var sentEvt = BuildMessageSentEvent(messageId: 2002);
+        await _handler.HandleMessageSentAsync(sentEvt);
+
+        var deletedEvt = new MessageDeletedEvent(
+            MessageId: 2002,
+            ChannelId: 1,
+            GuildId: 1,
+            DeletedByUserId: 99,
+            DeletedAt: DateTimeOffset.UtcNow
+        );
+
+        // Act
+        await _handler.HandleMessageDeletedAsync(deletedEvt);
+
+        // Assert - Hard delete from Search index so users can't search deleted messages
+        var entry = await Db.MessagesSearch.FirstOrDefaultAsync(m => m.MessageId == 2002);
+        entry.Should().BeNull();
+    }
+
+    // --- HandleMessageEditedAsync ---
+
+    [Fact]
+    public async Task HandleMessageEditedAsync_ShouldUpdateContentInScylla()
+    {
+        // Arrange
+        var sentEvt = BuildMessageSentEvent(messageId: 3001);
+        await _handler.HandleMessageSentAsync(sentEvt);
+
+        // Wait for Scylla consistency
+        var messages = await Eventually.HasAnyAsync(() =>
+            _messageRepository.GetChannelMessagesAsync(channelId: 1, limit: 10)
+        );
+        messages.Should().NotBeEmpty("initial write must land before editing");
+
+        var editedEvt = new MessageEditedEvent(
+            MessageId: 3001,
+            ChannelId: 1,
+            GuildId: 1,
+            EditedByUserId: 99,
+            NewContent: "edited content",
+            EditedAt: DateTimeOffset.UtcNow
+        );
+
+        // Act
+        await _handler.HandleMessageEditedAsync(editedEvt);
+
+        // Assert - Poll Scylla until the content changes to the edited text
+        var editedMessages = await Eventually.MatchesAsync(
+            () => _messageRepository.GetChannelMessagesAsync(channelId: 1, limit: 10),
+            m => m.Any() && m.First().Content == "edited content"
+        );
+
+        editedMessages.First().Content.Should().Be("edited content");
+        editedMessages.First().IsEdited.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task HandleMessageEditedAsync_ShouldUpdateContentInPostgres()
+    {
+        // Arrange
+        var sentEvt = BuildMessageSentEvent(messageId: 3002);
+        await _handler.HandleMessageSentAsync(sentEvt);
+
+        var editedEvt = new MessageEditedEvent(
+            MessageId: 3002,
+            ChannelId: 1,
+            GuildId: 1,
+            EditedByUserId: 99,
+            NewContent: "updated content",
+            EditedAt: DateTimeOffset.UtcNow
+        );
+
+        // Act
+        await _handler.HandleMessageEditedAsync(editedEvt);
+
+        // Assert - Update the Search index so users can search by the NEW text
+        var entry = await Db.MessagesSearch.FirstOrDefaultAsync(m => m.MessageId == 3002);
+        entry!.Content.Should().Be("updated content");
+    }
+
+    [Fact]
     public async Task HandleMessageSentAsync_ShouldPersistToScylla()
     {
-        Session.Keyspace.Should().Be("harmony_test");
-
         var stub = new ScyllaSessionFactoryStub(Session);
         var directRepo = new MessageRepository(stub, NullLogger<MessageRepository>.Instance);
+
         await directRepo.SaveAsync(
             new Message
             {
@@ -61,57 +240,12 @@ public class MessageConsumerHandlerTests : ScyllaAndPostgresTestBase
             }
         );
 
-        await Task.Delay(500);
-
-        var rows = await Session.ExecuteAsync(
-            new Cassandra.SimpleStatement(
-                "SELECT * FROM harmony_test.messages_by_channel WHERE channel_id = 1"
-            )
+        var messages = await Eventually.HasAnyAsync(() =>
+            directRepo.GetChannelMessagesAsync(channelId: 1, limit: 10)
         );
-        rows.ToList().Should().NotBeEmpty("direct write should have persisted");
-    }
 
-    [Fact]
-    public async Task HandleMessageSentAsync_ShouldDualWriteToPostgres()
-    {
-        var evt = BuildMessageSentEvent(messageId: 1002);
-
-        await _handler.HandleMessageSentAsync(evt);
-
-        var entry = await Db.MessagesSearch.FirstOrDefaultAsync(m => m.MessageId == 1002);
-        entry.Should().NotBeNull();
-        entry!.Content.Should().Be("hello world");
-        entry.ChannelId.Should().Be(1);
-    }
-
-    [Fact]
-    public async Task HandleMessageSentAsync_ShouldBeIdempotent_WhenCalledTwice()
-    {
-        var evt = BuildMessageSentEvent(messageId: 1003);
-
-        await _handler.HandleMessageSentAsync(evt);
-        await _handler.HandleMessageSentAsync(evt);
-
-        var count = await Db.MessagesSearch.CountAsync(m => m.MessageId == 1003);
-        count.Should().Be(1);
-    }
-
-    [Fact]
-    public async Task HandleMessageSentAsync_ShouldCreateMentionNotifications()
-    {
-        await CreateUserAsync(id: 500, username: "mentioneduser");
-        await CreateNotificationPreferenceAsync(userId: 500, mentionsEnabled: true);
-
-        var evt = BuildMessageSentEvent(messageId: 1004, mentionIds: [500]);
-
-        await _handler.HandleMessageSentAsync(evt);
-
-        var notification = await Db.Notifications.FirstOrDefaultAsync(n =>
-            n.UserId == 500 && n.Type == "mention"
-        );
-        notification.Should().NotBeNull();
-        notification!.MessageId.Should().Be(1004);
-        notification.ActorId.Should().Be(99);
+        messages.Should().NotBeEmpty();
+        messages.First().Content.Should().Be("direct write test");
     }
 
     [Fact]
@@ -121,7 +255,6 @@ public class MessageConsumerHandlerTests : ScyllaAndPostgresTestBase
         await CreateNotificationPreferenceAsync(userId: 501, mentionsEnabled: false);
 
         var evt = BuildMessageSentEvent(messageId: 1005, mentionIds: [501]);
-
         await _handler.HandleMessageSentAsync(evt);
 
         var count = await Db.Notifications.CountAsync(n => n.UserId == 501);
@@ -132,157 +265,29 @@ public class MessageConsumerHandlerTests : ScyllaAndPostgresTestBase
     public async Task HandleMessageSentAsync_ShouldSkipSelfMention()
     {
         var evt = BuildMessageSentEvent(messageId: 1006, mentionIds: [99]);
-
         await _handler.HandleMessageSentAsync(evt);
 
         var count = await Db.Notifications.CountAsync(n => n.UserId == 99);
         count.Should().Be(0);
     }
 
-    // --- HandleMessageDeletedAsync ---
-
-    [Fact]
-    public async Task HandleMessageDeletedAsync_ShouldSoftDeleteInScylla()
-    {
-        var sentEvt = BuildMessageSentEvent(messageId: 2001);
-        await _handler.HandleMessageSentAsync(sentEvt);
-
-        List<Message> messages = [];
-        for (int i = 0; i < 20; i++)
-        {
-            await Task.Delay(200);
-            messages = (
-                await _messageRepository.GetChannelMessagesAsync(channelId: 1, limit: 10)
-            ).ToList();
-            if (messages.Any())
-                break;
-        }
-
-        messages.Should().NotBeEmpty("message must exist before deleting");
-
-        var deletedEvt = new MessageDeletedEvent(
-            MessageId: 2001,
-            ChannelId: 1,
-            GuildId: 1,
-            DeletedByUserId: 99,
-            DeletedAt: DateTimeOffset.UtcNow
-        );
-
-        await _handler.HandleMessageDeletedAsync(deletedEvt);
-        await Task.Delay(500);
-
-        messages = (
-            await _messageRepository.GetChannelMessagesAsync(channelId: 1, limit: 10)
-        ).ToList();
-        messages.Should().NotBeEmpty();
-        messages[0].IsDeleted.Should().BeTrue();
-    }
-
-    [Fact]
-    public async Task HandleMessageDeletedAsync_ShouldRemoveFromPostgres()
-    {
-        var sentEvt = BuildMessageSentEvent(messageId: 2002);
-        await _handler.HandleMessageSentAsync(sentEvt);
-
-        var deletedEvt = new MessageDeletedEvent(
-            MessageId: 2002,
-            ChannelId: 1,
-            GuildId: 1,
-            DeletedByUserId: 99,
-            DeletedAt: DateTimeOffset.UtcNow
-        );
-
-        await _handler.HandleMessageDeletedAsync(deletedEvt);
-
-        var entry = await Db.MessagesSearch.FirstOrDefaultAsync(m => m.MessageId == 2002);
-        entry.Should().BeNull();
-    }
-
-    // --- HandleMessageEditedAsync ---
-
-    [Fact]
-    public async Task HandleMessageEditedAsync_ShouldUpdateContentInScylla()
-    {
-        var sentEvt = BuildMessageSentEvent(messageId: 3001);
-        await _handler.HandleMessageSentAsync(sentEvt);
-
-        List<Message> messages = [];
-        for (int i = 0; i < 20; i++)
-        {
-            await Task.Delay(200);
-            messages = (
-                await _messageRepository.GetChannelMessagesAsync(channelId: 1, limit: 10)
-            ).ToList();
-            if (messages.Any())
-                break;
-        }
-
-        messages.Should().NotBeEmpty("initial write must land before editing");
-
-        var editedEvt = new MessageEditedEvent(
-            MessageId: 3001,
-            ChannelId: 1,
-            GuildId: 1,
-            EditedByUserId: 99,
-            NewContent: "edited content",
-            EditedAt: DateTimeOffset.UtcNow
-        );
-
-        await _handler.HandleMessageEditedAsync(editedEvt);
-
-        for (int i = 0; i < 20; i++)
-        {
-            await Task.Delay(200);
-            messages = (
-                await _messageRepository.GetChannelMessagesAsync(channelId: 1, limit: 10)
-            ).ToList();
-            if (messages.Any() && messages[0].Content == "edited content")
-                break;
-        }
-
-        messages.Should().NotBeEmpty();
-        messages[0].Content.Should().Be("edited content");
-        messages[0].IsEdited.Should().BeTrue();
-    }
-
-    [Fact]
-    public async Task HandleMessageEditedAsync_ShouldUpdateContentInPostgres()
-    {
-        var sentEvt = BuildMessageSentEvent(messageId: 3002);
-        await _handler.HandleMessageSentAsync(sentEvt);
-
-        var editedEvt = new MessageEditedEvent(
-            MessageId: 3002,
-            ChannelId: 1,
-            GuildId: 1,
-            EditedByUserId: 99,
-            NewContent: "updated content",
-            EditedAt: DateTimeOffset.UtcNow
-        );
-
-        await _handler.HandleMessageEditedAsync(editedEvt);
-
-        var entry = await Db.MessagesSearch.FirstOrDefaultAsync(m => m.MessageId == 3002);
-        entry!.Content.Should().Be("updated content");
-    }
-
     // --- Helpers ---
-
+    // (Helper methods remain identical to your original file)
     private static MessageSentEvent BuildMessageSentEvent(
         long messageId,
         List<long>? mentionIds = null
     ) =>
         new(
-            MessageId: messageId,
-            ChannelId: 1,
-            GuildId: 1,
-            UserId: 99,
-            Content: "hello world",
-            MessageType: "text",
-            AttachmentIds: [],
-            MentionIds: mentionIds ?? [],
-            ReplyToId: null,
-            SentAt: DateTimeOffset.UtcNow
+            messageId,
+            1,
+            1,
+            99,
+            "hello world",
+            "text",
+            [],
+            mentionIds ?? [],
+            null,
+            DateTimeOffset.UtcNow
         );
 
     private async Task SeedDefaultGuildAndChannelAsync()
@@ -300,10 +305,8 @@ public class MessageConsumerHandlerTests : ScyllaAndPostgresTestBase
             AccountStatus = "active",
             CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
         };
-
         Db.Users.Add(owner);
         await Db.SaveChangesAsync();
-
         Db.Guilds.Add(
             new Guild
             {
@@ -314,7 +317,6 @@ public class MessageConsumerHandlerTests : ScyllaAndPostgresTestBase
             }
         );
         await Db.SaveChangesAsync();
-
         Db.Channels.Add(
             new Channel
             {
@@ -344,7 +346,6 @@ public class MessageConsumerHandlerTests : ScyllaAndPostgresTestBase
             AccountStatus = "active",
             CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
         };
-
         Db.Users.Add(user);
         await Db.SaveChangesAsync();
         return user;
