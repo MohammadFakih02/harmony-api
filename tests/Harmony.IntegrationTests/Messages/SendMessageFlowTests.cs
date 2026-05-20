@@ -139,6 +139,8 @@ public class SendMessageFlowTests : ApiTestBase
 
         var message = await sendResponse.Content.ReadFromJsonAsync<SendMessageResponse>();
 
+        await WaitForMessageInScyllaAsync(message!.MessageId);
+
         var response = await Client.DeleteAsync(
             $"/api/guilds/{_guildId}/channels/{_channelId}/messages/{message!.MessageId}"
         );
@@ -167,6 +169,8 @@ public class SendMessageFlowTests : ApiTestBase
         );
 
         var message = await sendResponse.Content.ReadFromJsonAsync<SendMessageResponse>();
+
+        await WaitForMessageInScyllaAsync(message!.MessageId);
 
         var response = await Client.PatchAsJsonAsync(
             $"/api/guilds/{_guildId}/channels/{_channelId}/messages/{message!.MessageId}",
@@ -246,6 +250,24 @@ public class SendMessageFlowTests : ApiTestBase
         channelResponse.EnsureSuccessStatusCode();
         var channel = await channelResponse.Content.ReadFromJsonAsync<ChannelIdResponse>();
         _channelId = channel!.Id;
+    }
+
+    private async Task WaitForMessageInScyllaAsync(long messageId)
+    {
+        await Eventually.GetAsync(
+            action: async () =>
+            {
+                var response = await Client.GetAsync(
+                    $"/api/guilds/{_guildId}/channels/{_channelId}/messages"
+                );
+                if (!response.IsSuccessStatusCode)
+                    return [];
+                return await response.Content.ReadFromJsonAsync<List<MessageResponse>>() ?? [];
+            },
+            predicate: messages => messages.Any(m => m.MessageId == messageId),
+            retries: 100,
+            intervalMs: 100
+        );
     }
 
     private record AuthResponse(string AccessToken);
