@@ -1,7 +1,10 @@
+using System.Data.Common;
 using Harmony.Infrastructure.Postgres;
 using Microsoft.AspNetCore.Mvc.Testing;
-using Microsoft.EntityFrameworkCore; // Added for Database.EnsureCreated
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Respawn;
+using Respawn.Graph;
 
 namespace Harmony.IntegrationTests.Infrastructure;
 
@@ -9,6 +12,7 @@ public abstract class ApiTestBase : IAsyncLifetime
 {
     protected readonly HarmonyWebApplicationFactory Factory;
     protected readonly HttpClient Client;
+    private static Respawner? _respawner;
 
     protected ApiTestBase()
     {
@@ -18,38 +22,44 @@ public abstract class ApiTestBase : IAsyncLifetime
         );
     }
 
-    public async Task InitializeAsync()
+    public virtual async Task InitializeAsync()
     {
-        await CleanDatabaseAsync();
+        await ResetDatabaseAsync();
     }
 
-    public async Task DisposeAsync()
+    public virtual async Task DisposeAsync()
     {
-        // Note: CleanDatabaseAsync is called at the start of tests.
-        // You usually don't need to clean it again at disposal
-        // unless you want to save space.
-        await CleanDatabaseAsync();
         Client.Dispose();
         await Factory.DisposeAsync();
     }
 
-    private async Task CleanDatabaseAsync()
+    private async Task ResetDatabaseAsync()
     {
         using var scope = Factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<HarmonyDbContext>();
 
-        // 1. Ensure the database schema exists
-        // This will create the tables if they don't exist yet.
+        // 1. Ensure schema exists
         await db.Database.EnsureCreatedAsync();
 
-        // 2. Clear data
-        // We use a try-catch or check for existing tables because
-        // even after EnsureCreated, if there's no data, it's fine.
-        // However, standard RemoveRange on a freshly created DB is now safe.
+        var connection = db.Database.GetDbConnection();
+        if (connection.State != System.Data.ConnectionState.Open)
+        {
+            await connection.OpenAsync();
+        }
 
-        db.RefreshTokens.RemoveRange(db.RefreshTokens);
-        db.Users.RemoveRange(db.Users);
+        // 2. Initialize Respawner if not already done
+        if (_respawner == null)
+        {
+            var options = new RespawnerOptions
+            {
+                DbAdapter = DbAdapter.Postgres,
+                TablesToIgnore = new[] { new Table("__EFMigrationsHistory") },
+            };
 
-        await db.SaveChangesAsync();
+            _respawner = await Respawner.CreateAsync(connection, options);
+        }
+
+        // 3. Reset the database to a clean state
+        await _respawner.ResetAsync(connection);
     }
 }
