@@ -118,7 +118,9 @@ builder.Services.AddScoped<IMessagePublisher, RabbitMQPublisher>();
 
 // RabbitMQ Consumer
 builder.Services.AddScoped<IMessageConsumerHandler, MessageConsumerHandler>();
-builder.Services.AddHostedService<MessageConsumer>();
+builder.Services.AddScoped<SearchIndexConsumerHandler>();
+builder.Services.AddHostedService<ScyllaMessageConsumer>();
+builder.Services.AddHostedService<SearchIndexConsumer>();
 
 // Controllers + OpenAPI
 builder.Services.AddControllers();

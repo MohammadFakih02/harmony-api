@@ -38,7 +38,7 @@ public class RabbitMQConnection : IAsyncDisposable
     {
         using var channel = await _connection.CreateChannelAsync();
 
-        // Dead letter exchange
+        // Dead letter exchange — declared first
         await channel.ExchangeDeclareAsync(
             exchange: Topology.DeadLetterExchange,
             type: ExchangeType.Direct,
@@ -67,8 +67,9 @@ public class RabbitMQConnection : IAsyncDisposable
             autoDelete: false
         );
 
+        // ScyllaDB queue — fast path
         await channel.QueueDeclareAsync(
-            queue: Topology.MessagePersistQueue,
+            queue: Topology.ScyllaMessageQueue,
             durable: true,
             exclusive: false,
             autoDelete: false,
@@ -80,19 +81,50 @@ public class RabbitMQConnection : IAsyncDisposable
         );
 
         await channel.QueueBindAsync(
-            queue: Topology.MessagePersistQueue,
+            queue: Topology.ScyllaMessageQueue,
             exchange: Topology.MessageExchange,
             routingKey: Topology.MessageSentKey
         );
 
         await channel.QueueBindAsync(
-            queue: Topology.MessagePersistQueue,
+            queue: Topology.ScyllaMessageQueue,
             exchange: Topology.MessageExchange,
             routingKey: Topology.MessageDeletedKey
         );
 
         await channel.QueueBindAsync(
-            queue: Topology.MessagePersistQueue,
+            queue: Topology.ScyllaMessageQueue,
+            exchange: Topology.MessageExchange,
+            routingKey: Topology.MessageEditedKey
+        );
+
+        // Search index queue — slow path
+        await channel.QueueDeclareAsync(
+            queue: Topology.SearchIndexQueue,
+            durable: true,
+            exclusive: false,
+            autoDelete: false,
+            arguments: new Dictionary<string, object?>
+            {
+                ["x-dead-letter-exchange"] = Topology.DeadLetterExchange,
+                ["x-message-ttl"] = 86_400_000,
+            }
+        );
+
+        await channel.QueueBindAsync(
+            queue: Topology.SearchIndexQueue,
+            exchange: Topology.MessageExchange,
+            routingKey: Topology.MessageSentKey
+        );
+
+        await channel.QueueBindAsync(
+            queue: Topology.SearchIndexQueue,
+            exchange: Topology.MessageExchange,
+            routingKey: Topology.MessageDeletedKey
+        );
+
+        await channel.QueueBindAsync(
+            queue: Topology.SearchIndexQueue,
             exchange: Topology.MessageExchange,
             routingKey: Topology.MessageEditedKey
         );

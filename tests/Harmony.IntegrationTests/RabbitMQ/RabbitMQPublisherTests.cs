@@ -39,7 +39,8 @@ public class RabbitMQPublisherTests : IAsyncLifetime
     public async Task DisposeAsync()
     {
         // Purge test queues so other tests running next start with an empty queue
-        await _verifyChannel.QueuePurgeAsync(Topology.MessagePersistQueue);
+        await _verifyChannel.QueuePurgeAsync(Topology.ScyllaMessageQueue);
+        await _verifyChannel.QueuePurgeAsync(Topology.SearchIndexQueue);
         await _verifyChannel.QueuePurgeAsync(Topology.NotificationQueue);
         await _verifyChannel.DisposeAsync();
         await _connection.DisposeAsync();
@@ -57,7 +58,7 @@ public class RabbitMQPublisherTests : IAsyncLifetime
         // Assert - Use Polly to instantly grab the message once RabbitMQ routes it
         // autoAck: true means we delete it from the queue after checking it
         var result = await Eventually.GetAsync(
-            action: () => _verifyChannel.BasicGetAsync(Topology.MessagePersistQueue, autoAck: true),
+            action: () => _verifyChannel.BasicGetAsync(Topology.ScyllaMessageQueue, autoAck: true),
             predicate: res => res is not null
         );
 
@@ -72,7 +73,7 @@ public class RabbitMQPublisherTests : IAsyncLifetime
         await _publisher.PublishMessageDeletedAsync(evt);
 
         var result = await Eventually.GetAsync(
-            () => _verifyChannel.BasicGetAsync(Topology.MessagePersistQueue, autoAck: true),
+            () => _verifyChannel.BasicGetAsync(Topology.ScyllaMessageQueue, autoAck: true),
             res => res is not null
         );
 
@@ -87,7 +88,7 @@ public class RabbitMQPublisherTests : IAsyncLifetime
         await _publisher.PublishMessageEditedAsync(evt);
 
         var result = await Eventually.GetAsync(
-            () => _verifyChannel.BasicGetAsync(Topology.MessagePersistQueue, autoAck: true),
+            () => _verifyChannel.BasicGetAsync(Topology.ScyllaMessageQueue, autoAck: true),
             res => res is not null
         );
 
@@ -102,7 +103,7 @@ public class RabbitMQPublisherTests : IAsyncLifetime
         await _publisher.PublishMessageSentAsync(evt);
 
         var result = await Eventually.GetAsync(
-            () => _verifyChannel.BasicGetAsync(Topology.MessagePersistQueue, autoAck: true),
+            () => _verifyChannel.BasicGetAsync(Topology.ScyllaMessageQueue, autoAck: true),
             res => res is not null
         );
 
@@ -118,7 +119,7 @@ public class RabbitMQPublisherTests : IAsyncLifetime
         await _publisher.PublishMessageSentAsync(evt);
 
         var result = await Eventually.GetAsync(
-            () => _verifyChannel.BasicGetAsync(Topology.MessagePersistQueue, autoAck: true),
+            () => _verifyChannel.BasicGetAsync(Topology.ScyllaMessageQueue, autoAck: true),
             res => res is not null
         );
 
@@ -142,7 +143,7 @@ public class RabbitMQPublisherTests : IAsyncLifetime
         // Assert - QueueDeclarePassive returns queue statistics without altering the queue!
         // We use Polly to keep asking RabbitMQ for stats until the MessageCount reaches 5.
         var queueInfo = await Eventually.GetAsync(
-            action: () => _verifyChannel.QueueDeclarePassiveAsync(Topology.MessagePersistQueue),
+            action: () => _verifyChannel.QueueDeclarePassiveAsync(Topology.ScyllaMessageQueue),
             predicate: info => info.MessageCount == 5
         );
 
@@ -157,7 +158,7 @@ public class RabbitMQPublisherTests : IAsyncLifetime
         await _publisher.PublishMessageSentAsync(evt);
 
         var result = await Eventually.GetAsync(
-            () => _verifyChannel.BasicGetAsync(Topology.MessagePersistQueue, autoAck: true),
+            () => _verifyChannel.BasicGetAsync(Topology.ScyllaMessageQueue, autoAck: true),
             res => res is not null
         );
 

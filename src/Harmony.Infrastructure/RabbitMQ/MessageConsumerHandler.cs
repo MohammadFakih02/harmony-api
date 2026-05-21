@@ -32,7 +32,7 @@ public class MessageConsumerHandler : IMessageConsumerHandler
             evt.ChannelId
         );
 
-        // 1 — Persist to ScyllaDB
+        // Persist to ScyllaDB only — Postgres search index is handled by SearchIndexConsumerHandler
         var message = new Message
         {
             MessageId = evt.MessageId,
@@ -49,34 +49,14 @@ public class MessageConsumerHandler : IMessageConsumerHandler
 
         await _messageRepository.SaveAsync(message, ct);
 
-        // 2 — Dual-write to PostgreSQL MessagesSearch
-        var alreadyExists = await _db.MessagesSearch.AnyAsync(
-            m => m.MessageId == evt.MessageId,
-            ct
-        );
-
-        if (!alreadyExists)
-        {
-            _db.MessagesSearch.Add(
-                new MessageSearch
-                {
-                    MessageId = evt.MessageId,
-                    ChannelId = evt.ChannelId,
-                    GuildId = evt.GuildId,
-                    UserId = evt.UserId,
-                    Content = evt.Content,
-                    CreatedAt = evt.SentAt.ToUnixTimeMilliseconds(),
-                }
-            );
-
-            await _db.SaveChangesAsync(ct);
-        }
-
-        // 3 — Parse mentions and create notifications
+        // Parse mentions and create notifications
         if (evt.MentionIds.Count > 0)
             await CreateMentionNotificationsAsync(evt, ct);
 
-        _logger.LogInformation("MessageSent handled — MessageId: {MessageId}", evt.MessageId);
+        _logger.LogInformation(
+            "MessageSent handled (Scylla) — MessageId: {MessageId}",
+            evt.MessageId
+        );
     }
 
     public async Task HandleMessageDeletedAsync(
@@ -86,22 +66,23 @@ public class MessageConsumerHandler : IMessageConsumerHandler
     {
         _logger.LogDebug("Handling MessageDeleted — MessageId: {MessageId}", evt.MessageId);
 
-        // Soft delete in ScyllaDB
-        await _messageRepository.DeleteAsync(evt.MessageId, evt.ChannelId, ct);
-
-        // Remove from search index
-        var searchEntry = await _db.MessagesSearch.FirstOrDefaultAsync(
-            m => m.MessageId == evt.MessageId,
-            ct
-        );
-
-        if (searchEntry is not null)
+        // Idempotency check — skip if already deleted
+        var existing = await _messageRepository.GetByIdAsync(evt.MessageId, ct);
+        if (existing is null || existing.IsDeleted)
         {
-            _db.MessagesSearch.Remove(searchEntry);
-            await _db.SaveChangesAsync(ct);
+            _logger.LogDebug(
+                "MessageDeleted skipped — already deleted or not found: {MessageId}",
+                evt.MessageId
+            );
+            return;
         }
 
-        _logger.LogInformation("MessageDeleted handled — MessageId: {MessageId}", evt.MessageId);
+        await _messageRepository.DeleteAsync(evt.MessageId, evt.ChannelId, ct);
+
+        _logger.LogInformation(
+            "MessageDeleted handled (Scylla) — MessageId: {MessageId}",
+            evt.MessageId
+        );
     }
 
     public async Task HandleMessageEditedAsync(
@@ -111,51 +92,46 @@ public class MessageConsumerHandler : IMessageConsumerHandler
     {
         _logger.LogDebug("Handling MessageEdited — MessageId: {MessageId}", evt.MessageId);
 
-        // Update content in ScyllaDB
-        await _messageRepository.EditAsync(evt.MessageId, evt.ChannelId, evt.NewContent, ct);
-
-        // Update search index
-        var searchEntry = await _db.MessagesSearch.FirstOrDefaultAsync(
-            m => m.MessageId == evt.MessageId,
-            ct
-        );
-
-        if (searchEntry is not null)
+        // Idempotency check — skip if deleted
+        var existing = await _messageRepository.GetByIdAsync(evt.MessageId, ct);
+        if (existing is null || existing.IsDeleted)
         {
-            searchEntry.Content = evt.NewContent;
-            await _db.SaveChangesAsync(ct);
+            _logger.LogDebug(
+                "MessageEdited skipped — deleted or not found: {MessageId}",
+                evt.MessageId
+            );
+            return;
         }
 
-        _logger.LogInformation("MessageEdited handled — MessageId: {MessageId}", evt.MessageId);
-    }
+        await _messageRepository.EditAsync(evt.MessageId, evt.ChannelId, evt.NewContent, ct);
 
-    // --- Private helpers ---
+        _logger.LogInformation(
+            "MessageEdited handled (Scylla) — MessageId: {MessageId}",
+            evt.MessageId
+        );
+    }
 
     private async Task CreateMentionNotificationsAsync(MessageSentEvent evt, CancellationToken ct)
     {
-        // Load notification preferences for all mentioned users in one query
         var preferences = await _db
             .NotificationPreferences.Where(p => evt.MentionIds.Contains(p.UserId))
             .ToListAsync(ct);
 
         var preferenceMap = preferences.ToDictionary(p => p.UserId);
-
         var notifications = new List<Notification>();
 
         foreach (var mentionedUserId in evt.MentionIds)
         {
-            // Skip if user has mentions disabled
             if (preferenceMap.TryGetValue(mentionedUserId, out var pref) && !pref.MentionsEnabled)
                 continue;
 
-            // Skip self-mentions
             if (mentionedUserId == evt.UserId)
                 continue;
 
             notifications.Add(
                 new Notification
                 {
-                    Id = evt.MessageId + mentionedUserId, // deterministic — dedup safe
+                    Id = evt.MessageId + mentionedUserId,
                     UserId = mentionedUserId,
                     Type = "mention",
                     ActorId = evt.UserId,
@@ -171,7 +147,6 @@ public class MessageConsumerHandler : IMessageConsumerHandler
         if (notifications.Count == 0)
             return;
 
-        // Skip any that already exist — idempotent
         var existingIds = await _db
             .Notifications.Where(n => notifications.Select(x => x.Id).Contains(n.Id))
             .Select(n => n.Id)
