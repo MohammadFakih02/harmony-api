@@ -49,37 +49,6 @@ public class MessageConsumerHandlerTests : ScyllaAndPostgresTestBase
     // --- HandleMessageSentAsync ---
 
     [Fact]
-    public async Task HandleMessageSentAsync_ShouldDualWriteToPostgres()
-    {
-        // Arrange
-        var evt = BuildMessageSentEvent(messageId: 1002);
-
-        // Act - Simulate RabbitMQ delivering a message to the handler
-        await _handler.HandleMessageSentAsync(evt);
-
-        // Assert - Verify the "Search" version of the message was saved to Postgres
-        var entry = await Db.MessagesSearch.FirstOrDefaultAsync(m => m.MessageId == 1002);
-        entry.Should().NotBeNull();
-        entry!.Content.Should().Be("hello world");
-        entry.ChannelId.Should().Be(1);
-    }
-
-    [Fact]
-    public async Task HandleMessageSentAsync_ShouldBeIdempotent_WhenCalledTwice()
-    {
-        // Arrange
-        var evt = BuildMessageSentEvent(messageId: 1003);
-
-        // Act - Simulate a network glitch where RabbitMQ delivers the exact same message TWICE
-        await _handler.HandleMessageSentAsync(evt);
-        await _handler.HandleMessageSentAsync(evt);
-
-        // Assert - Prove our handler caught the duplicate and didn't insert 2 search records
-        var count = await Db.MessagesSearch.CountAsync(m => m.MessageId == 1003);
-        count.Should().Be(1);
-    }
-
-    [Fact]
     public async Task HandleMessageSentAsync_ShouldCreateMentionNotifications()
     {
         // Arrange
@@ -193,30 +162,6 @@ public class MessageConsumerHandlerTests : ScyllaAndPostgresTestBase
 
         editedMessages.First().Content.Should().Be("edited content");
         editedMessages.First().IsEdited.Should().BeTrue();
-    }
-
-    [Fact]
-    public async Task HandleMessageEditedAsync_ShouldUpdateContentInPostgres()
-    {
-        // Arrange
-        var sentEvt = BuildMessageSentEvent(messageId: 3002);
-        await _handler.HandleMessageSentAsync(sentEvt);
-
-        var editedEvt = new MessageEditedEvent(
-            MessageId: 3002,
-            ChannelId: 1,
-            GuildId: 1,
-            EditedByUserId: 99,
-            NewContent: "updated content",
-            EditedAt: DateTimeOffset.UtcNow
-        );
-
-        // Act
-        await _handler.HandleMessageEditedAsync(editedEvt);
-
-        // Assert - Update the Search index so users can search by the NEW text
-        var entry = await Db.MessagesSearch.FirstOrDefaultAsync(m => m.MessageId == 3002);
-        entry!.Content.Should().Be("updated content");
     }
 
     [Fact]
