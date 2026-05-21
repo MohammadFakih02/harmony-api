@@ -9,11 +9,11 @@ using RabbitMQ.Client.Events;
 
 namespace Harmony.Infrastructure.RabbitMQ.Consumers;
 
-public class MessageConsumer : BackgroundService
+public class ScyllaMessageConsumer : BackgroundService
 {
     private readonly RabbitMQConnection _connection;
     private readonly IServiceScopeFactory _scopeFactory;
-    private readonly ILogger<MessageConsumer> _logger;
+    private readonly ILogger<ScyllaMessageConsumer> _logger;
     private IChannel? _channel;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -21,10 +21,10 @@ public class MessageConsumer : BackgroundService
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
     };
 
-    public MessageConsumer(
+    public ScyllaMessageConsumer(
         RabbitMQConnection connection,
         IServiceScopeFactory scopeFactory,
-        ILogger<MessageConsumer> logger
+        ILogger<ScyllaMessageConsumer> logger
     )
     {
         _connection = connection;
@@ -36,24 +36,22 @@ public class MessageConsumer : BackgroundService
     {
         _channel = await _connection.CreateChannelAsync();
 
-        // One message at a time — don't fetch next until current is acked
         await _channel.BasicQosAsync(prefetchSize: 0, prefetchCount: 1, global: false);
 
         var consumer = new AsyncEventingBasicConsumer(_channel);
         consumer.ReceivedAsync += OnMessageReceivedAsync;
 
         await _channel.BasicConsumeAsync(
-            queue: Topology.MessagePersistQueue,
+            queue: Topology.ScyllaMessageQueue,
             autoAck: false,
             consumer: consumer
         );
 
         _logger.LogInformation(
-            "MessageConsumer started — listening on {Queue}",
-            Topology.MessagePersistQueue
+            "ScyllaMessageConsumer started — listening on {Queue}",
+            Topology.ScyllaMessageQueue
         );
 
-        // Keep alive until cancellation
         await Task.Delay(Timeout.Infinite, stoppingToken);
     }
 
@@ -62,7 +60,10 @@ public class MessageConsumer : BackgroundService
         var routingKey = ea.RoutingKey;
         var body = Encoding.UTF8.GetString(ea.Body.Span);
 
-        _logger.LogDebug("Received message with routing key: {RoutingKey}", routingKey);
+        _logger.LogDebug(
+            "ScyllaConsumer received message with routing key: {RoutingKey}",
+            routingKey
+        );
 
         try
         {
@@ -97,45 +98,42 @@ public class MessageConsumer : BackgroundService
 
                 default:
                     _logger.LogWarning(
-                        "Unknown routing key: {RoutingKey} — nacking without requeue",
+                        "ScyllaConsumer — unknown routing key: {RoutingKey}",
                         routingKey
                     );
                     await _channel!.BasicNackAsync(ea.DeliveryTag, false, false);
                     return;
             }
 
-            // Ack only after successful processing
             await _channel!.BasicAckAsync(ea.DeliveryTag, multiple: false);
         }
         catch (Exception ex)
         {
             _logger.LogError(
                 ex,
-                "Failed to process message with routing key: {RoutingKey} — nacking with requeue",
+                "ScyllaConsumer failed to process message with routing key: {RoutingKey}",
                 routingKey
             );
 
-            // Requeue on failure — RabbitMQ will redeliver
-            // After x-message-ttl the message goes to dead letter exchange
             await _channel!.BasicNackAsync(ea.DeliveryTag, multiple: false, requeue: true);
         }
     }
 
-public override async Task StopAsync(CancellationToken cancellationToken)
-{
-    if (_channel is not null)
+    public override async Task StopAsync(CancellationToken cancellationToken)
     {
-        try
+        if (_channel is not null)
         {
-            await _channel.CloseAsync();
+            try
+            {
+                await _channel.CloseAsync();
+            }
+            catch (ObjectDisposedException) { }
+            finally
+            {
+                await _channel.DisposeAsync();
+            }
         }
-        catch (ObjectDisposedException) { /* already disposed, ignore */ }
-        finally
-        {
-            await _channel.DisposeAsync();
-        }
-    }
 
-    await base.StopAsync(cancellationToken);
-}
+        await base.StopAsync(cancellationToken);
+    }
 }
