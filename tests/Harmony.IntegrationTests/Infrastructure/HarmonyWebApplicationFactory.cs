@@ -29,7 +29,6 @@ public class HarmonyWebApplicationFactory : WebApplicationFactory<Program>
                         ["ScyllaDB:ContactPoints:0"] = "127.0.0.1",
                         ["ScyllaDB:Port"] = "9042",
                         ["ScyllaDB:Keyspace"] = "harmony_test",
-                        ["ConnectionStrings:Redis"] = "localhost:6379,abortConnect=false",
                     }
                 );
             }
