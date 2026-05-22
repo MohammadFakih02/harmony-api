@@ -95,23 +95,6 @@ builder
                 return Task.CompletedTask;
             },
         };
-        options.Events = new JwtBearerEvents
-        {
-            OnMessageReceived = context =>
-            {
-                // SignalR sends JWT via query string because WebSocket
-                // cannot attach Authorization headers
-                var accessToken = context.Request.Query["access_token"];
-                var path = context.HttpContext.Request.Path;
-
-                if (!string.IsNullOrEmpty(accessToken) && path.StartsWithSegments("/hubs"))
-                {
-                    context.Token = accessToken;
-                }
-
-                return Task.CompletedTask;
-            },
-        };
     });
 
 builder.Services.AddAuthorization();
@@ -119,18 +102,24 @@ builder.Services.AddAuthorization();
 // Rate limiting
 builder.Services.AddHarmonyRateLimiting();
 
-// Redis — singleton multiplexer (one per process, expensive to create)
-builder.Services.AddSingleton<IConnectionMultiplexer>(_ =>
-    ConnectionMultiplexer.Connect(builder.Configuration.GetConnectionString("Redis")!)
-);
+//redis
+var redisConnStr = builder.Configuration.GetConnectionString("Redis");
+if (!string.IsNullOrEmpty(redisConnStr))
+{
+    builder.Services.AddSingleton<IConnectionMultiplexer>(_ =>
+        ConnectionMultiplexer.Connect(redisConnStr)
+    );
+}
 
 // SignalR + Redis backplane
-builder
-    .Services.AddSignalR()
-    .AddStackExchangeRedis(
-        builder.Configuration.GetConnectionString("Redis")!,
+var signalR = builder.Services.AddSignalR();
+if (!string.IsNullOrEmpty(redisConnStr))
+{
+    signalR.AddStackExchangeRedis(
+        redisConnStr,
         options => options.Configuration.ChannelPrefix = RedisChannel.Literal("harmony")
     );
+}
 
 // Harmony services
 builder.Services.AddScoped<IJwtService, JwtService>();
