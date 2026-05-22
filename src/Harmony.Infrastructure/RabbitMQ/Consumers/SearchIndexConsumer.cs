@@ -6,6 +6,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
+using StackExchange.Redis;
 
 namespace Harmony.Infrastructure.RabbitMQ.Consumers;
 
@@ -14,6 +15,7 @@ public class SearchIndexConsumer : BackgroundService
     private readonly RabbitMQConnection _connection;
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<SearchIndexConsumer> _logger;
+    private readonly IConnectionMultiplexer? _redis;
     private IChannel? _channel;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -24,12 +26,14 @@ public class SearchIndexConsumer : BackgroundService
     public SearchIndexConsumer(
         RabbitMQConnection connection,
         IServiceScopeFactory scopeFactory,
-        ILogger<SearchIndexConsumer> logger
+        ILogger<SearchIndexConsumer> logger,
+        IConnectionMultiplexer? redis
     )
     {
         _connection = connection;
         _scopeFactory = scopeFactory;
         _logger = logger;
+        _redis = redis;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -75,7 +79,30 @@ public class SearchIndexConsumer : BackgroundService
                 case Topology.MessageSentKey:
                     var sentEvt = JsonSerializer.Deserialize<MessageSentEvent>(body, JsonOptions);
                     if (sentEvt is not null)
+                    {
+                        var db = _redis?.GetDatabase();
+                        if (db is not null)
+                        {
+                            var isNew = await db.StringSetAsync(
+                                $"dedup:msg:{sentEvt.MessageId}",
+                                "1",
+                                TimeSpan.FromSeconds(60),
+                                When.NotExists
+                            );
+
+                            if (!isNew)
+                            {
+                                _logger.LogWarning(
+                                    "SearchIndexConsumer — duplicate MessageId {MessageId} skipped",
+                                    sentEvt.MessageId
+                                );
+                                await _channel!.BasicAckAsync(ea.DeliveryTag, multiple: false);
+                                return;
+                            }
+                        }
+
                         await handler.HandleMessageSentAsync(sentEvt);
+                    }
                     break;
 
                 case Topology.MessageDeletedKey:
