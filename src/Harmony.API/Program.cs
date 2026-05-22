@@ -1,5 +1,6 @@
 using System.Text;
 using Harmony.API.Extensions;
+using Harmony.API.Hubs;
 using Harmony.Core.Domain.Entities;
 using Harmony.Core.Interfaces;
 using Harmony.Core.Interfaces.Repositories;
@@ -15,6 +16,7 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
+using StackExchange.Redis;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -100,6 +102,19 @@ builder.Services.AddAuthorization();
 // Rate limiting
 builder.Services.AddHarmonyRateLimiting();
 
+// Redis — singleton multiplexer (one per process, expensive to create)
+builder.Services.AddSingleton<IConnectionMultiplexer>(_ =>
+    ConnectionMultiplexer.Connect(builder.Configuration.GetConnectionString("Redis")!)
+);
+
+// SignalR + Redis backplane
+builder
+    .Services.AddSignalR()
+    .AddStackExchangeRedis(
+        builder.Configuration.GetConnectionString("Redis")!,
+        options => options.Configuration.ChannelPrefix = RedisChannel.Literal("harmony")
+    );
+
 // Harmony services
 builder.Services.AddScoped<IJwtService, JwtService>();
 builder.Services.AddScoped<IGuildRepository, GuildRepository>();
@@ -145,5 +160,7 @@ app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapControllers();
+
+app.MapHub<ChatHub>("/hubs/chat");
 
 app.Run();
