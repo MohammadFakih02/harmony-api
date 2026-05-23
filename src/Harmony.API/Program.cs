@@ -1,21 +1,12 @@
 using System.Text;
 using Harmony.API.Extensions;
+using Harmony.API.Handlers;
 using Harmony.Core.Domain.Entities;
-using Harmony.Core.Interfaces;
-using Harmony.Core.Interfaces.Repositories;
-using Harmony.Core.Interfaces.Services;
 using Harmony.Core.Services;
-using Harmony.Infrastructure.Postgres;
-using Harmony.Infrastructure.Postgres.Repositories;
+using Harmony.Infrastructure.Extensions;
 using Harmony.Infrastructure.RabbitMQ;
-using Harmony.Infrastructure.RabbitMQ.Consumers;
-using Harmony.Infrastructure.RabbitMQ.Producers;
-using Harmony.Infrastructure.Scylla;
-using Harmony.Infrastructure.Scylla.Repositories;
-using Harmony.Infrastructure.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Identity;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -28,7 +19,7 @@ builder.Services.AddSingleton<ISnowflakeIdGenerator>(_ => new SnowflakeIdGenerat
     datacenterId
 ));
 
-//CORS
+// CORS
 builder.Services.AddCors(options =>
 {
     options.AddPolicy(
@@ -44,11 +35,6 @@ builder.Services.AddCors(options =>
     );
 });
 
-// Database
-builder.Services.AddDbContext<HarmonyDbContext>(options =>
-    options.UseNpgsql(builder.Configuration.GetConnectionString("Postgres"))
-);
-
 // Data protection (required by Identity for token providers)
 builder.Services.AddDataProtection();
 
@@ -62,7 +48,7 @@ builder
         options.Password.RequireUppercase = false;
         options.User.RequireUniqueEmail = true;
     })
-    .AddEntityFrameworkStores<HarmonyDbContext>()
+    .AddEntityFrameworkStores<Harmony.Infrastructure.Postgres.HarmonyDbContext>()
     .AddDefaultTokenProviders();
 
 // JWT authentication
@@ -102,31 +88,12 @@ builder.Services.AddAuthorization();
 // Rate limiting
 builder.Services.AddHarmonyRateLimiting();
 
-//services
-builder.Services.AddScoped<IAuthService, AuthService>();
-builder.Services.AddScoped<IMessageService, MessageService>();
+// Infrastructure, Repositories, Consumers and Core Services registration
+builder.Services.AddInfrastructureServices(builder.Configuration);
 
-// Harmony services
-builder.Services.AddScoped<IJwtService, JwtService>();
-builder.Services.AddScoped<IGuildRepository, GuildRepository>();
-builder.Services.AddScoped<IChannelRepository, ChannelRepository>();
-builder.Services.AddScoped<IUserRepository, UserRepository>();
-
-// Scylla
-builder.Services.AddSingleton<IScyllaSessionFactory, ScyllaSessionFactory>();
-builder.Services.AddHostedService<KeyspaceInitializer>();
-builder.Services.AddScoped<IMessageRepository, MessageRepository>();
-builder.Services.AddScoped<IReadStateRepository, ReadStateRepository>();
-
-// RabbitMQ
-builder.Services.AddSingleton<RabbitMQConnection>();
-builder.Services.AddScoped<IMessagePublisher, RabbitMQPublisher>();
-
-// RabbitMQ Consumer
-builder.Services.AddScoped<IMessageConsumerHandler, MessageConsumerHandler>();
-builder.Services.AddScoped<SearchIndexConsumerHandler>();
-builder.Services.AddHostedService<ScyllaMessageConsumer>();
-builder.Services.AddHostedService<SearchIndexConsumer>();
+// Centralized Global Exception Handling
+builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
+builder.Services.AddProblemDetails();
 
 // Controllers + OpenAPI
 builder.Services.AddControllers();
@@ -146,6 +113,8 @@ app.UseHttpsRedirection();
 app.UseCors("HarmonyClient");
 
 app.UseRateLimiter(); // before auth so login rate limit hits before Identity runs
+
+app.UseExceptionHandler(); // Register Global Exception Handler middleware
 
 app.UseAuthentication();
 app.UseAuthorization();

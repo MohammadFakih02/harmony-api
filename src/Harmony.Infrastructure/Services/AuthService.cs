@@ -1,3 +1,8 @@
+using System;
+using System.Linq;
+using System.Security.Authentication;
+using System.Threading;
+using System.Threading.Tasks;
 using Harmony.Core.Domain.Entities;
 using Harmony.Core.DTOs.Requests;
 using Harmony.Core.DTOs.Responses;
@@ -75,10 +80,10 @@ public class AuthService : IAuthService
     {
         var user = await _userManager.FindByEmailAsync(request.Email);
         if (user is null || !await _userManager.CheckPasswordAsync(user, request.Password))
-            throw new UnauthorizedAccessException("Invalid email or password.");
+            throw new AuthenticationException("Invalid email or password.");
 
         if (user.AccountStatus != "active")
-            throw new UnauthorizedAccessException("Account is not active.");
+            throw new AuthenticationException("Account is not active.");
 
         var (accessToken, rawRefreshToken) = await IssueTokensAsync(user);
         return (new AuthResponse(accessToken, ToUserResponse(user)), rawRefreshToken);
@@ -96,21 +101,19 @@ public class AuthService : IAuthService
             .FirstOrDefaultAsync(r => r.TokenHash == tokenHash, ct);
 
         if (stored is null)
-            throw new UnauthorizedAccessException("Invalid refresh token.");
+            throw new AuthenticationException("Invalid refresh token.");
 
         if (stored.RevokedAt is not null)
         {
             await RevokeFamilyAsync(stored.FamilyId, ct);
-            throw new UnauthorizedAccessException(
-                "Refresh token reuse detected. Please log in again."
-            );
+            throw new AuthenticationException("Refresh token reuse detected. Please log in again.");
         }
 
         if (stored.ExpiresAt < DateTimeOffset.UtcNow)
         {
             stored.RevokedAt = DateTimeOffset.UtcNow;
             await _db.SaveChangesAsync(ct);
-            throw new UnauthorizedAccessException("Refresh token expired.");
+            throw new AuthenticationException("Refresh token expired.");
         }
 
         stored.RevokedAt = DateTimeOffset.UtcNow;
