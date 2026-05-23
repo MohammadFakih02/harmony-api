@@ -20,7 +20,8 @@ public class MessageService : IMessageService
         HarmonyDbContext db,
         IMessagePublisher publisher,
         ISnowflakeIdGenerator snowflake,
-        IMessageRepository messageRepository)
+        IMessageRepository messageRepository
+    )
     {
         _db = db;
         _publisher = publisher;
@@ -33,41 +34,49 @@ public class MessageService : IMessageService
         long guildId,
         long channelId,
         SendMessageRequest request,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         // Verify channel exists and belongs to guild
-        var channel = await _db.Channels
-            .FirstOrDefaultAsync(c => c.Id == channelId && c.GuildId == guildId, ct);
+        var channel = await _db.Channels.FirstOrDefaultAsync(
+            c => c.Id == channelId && c.GuildId == guildId,
+            ct
+        );
 
         if (channel is null)
             throw new KeyNotFoundException("Channel not found.");
 
         // Verify user is a member of the guild
-        var isMember = await _db.GuildMembers
-            .AnyAsync(m => m.GuildId == guildId && m.UserId == userId, ct);
+        var isMember = await _db.GuildMembers.AnyAsync(
+            m => m.GuildId == guildId && m.UserId == userId,
+            ct
+        );
 
         if (!isMember)
             throw new UnauthorizedAccessException("You are not a member of this guild.");
 
         // Validate content
         if (string.IsNullOrWhiteSpace(request.Content) || request.Content.Length > 2000)
-            throw new ArgumentException(
-                "Message content must be between 1 and 2000 characters.");
+            throw new ArgumentException("Message content must be between 1 and 2000 characters.");
 
         var messageId = _snowflake.NextId();
         var sentAt = DateTimeOffset.UtcNow;
 
-        await _publisher.PublishMessageSentAsync(new MessageSentEvent(
-            MessageId: messageId,
-            ChannelId: channelId,
-            GuildId: guildId,
-            UserId: userId,
-            Content: request.Content,
-            MessageType: request.MessageType ?? "text",
-            AttachmentIds: request.AttachmentIds ?? [],
-            MentionIds: request.MentionIds ?? [],
-            ReplyToId: request.ReplyToId,
-            SentAt: sentAt), ct);
+        await _publisher.PublishMessageSentAsync(
+            new MessageSentEvent(
+                MessageId: messageId,
+                ChannelId: channelId,
+                GuildId: guildId,
+                UserId: userId,
+                Content: request.Content,
+                MessageType: request.MessageType ?? "text",
+                AttachmentIds: request.AttachmentIds ?? [],
+                MentionIds: request.MentionIds ?? [],
+                ReplyToId: request.ReplyToId,
+                SentAt: sentAt
+            ),
+            ct
+        );
 
         return new SendMessageResponse(
             MessageId: messageId,
@@ -79,7 +88,8 @@ public class MessageService : IMessageService
             ReplyToId: request.ReplyToId,
             MentionIds: request.MentionIds ?? [],
             AttachmentIds: request.AttachmentIds ?? [],
-            SentAt: sentAt.ToUnixTimeMilliseconds());
+            SentAt: sentAt.ToUnixTimeMilliseconds()
+        );
     }
 
     public async Task DeleteMessageAsync(
@@ -87,10 +97,13 @@ public class MessageService : IMessageService
         long guildId,
         long channelId,
         long messageId,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
-        var channel = await _db.Channels
-            .FirstOrDefaultAsync(c => c.Id == channelId && c.GuildId == guildId, ct);
+        var channel = await _db.Channels.FirstOrDefaultAsync(
+            c => c.Id == channelId && c.GuildId == guildId,
+            ct
+        );
 
         if (channel is null)
             throw new KeyNotFoundException("Channel not found.");
@@ -100,19 +113,26 @@ public class MessageService : IMessageService
         if (message is null)
             throw new KeyNotFoundException("Message not found.");
 
-        var isOwner = await _db.GuildMembers
-            .AnyAsync(m => m.GuildId == guildId && m.UserId == userId && m.IsOwner, ct);
+        var isOwner = await _db.GuildMembers.AnyAsync(
+            m => m.GuildId == guildId && m.UserId == userId && m.IsOwner,
+            ct
+        );
 
         if (message.UserId != userId && !isOwner)
             throw new UnauthorizedAccessException(
-                "You do not have permission to delete this message.");
+                "You do not have permission to delete this message."
+            );
 
-        await _publisher.PublishMessageDeletedAsync(new MessageDeletedEvent(
-            MessageId: messageId,
-            ChannelId: channelId,
-            GuildId: guildId,
-            DeletedByUserId: userId,
-            DeletedAt: DateTimeOffset.UtcNow), ct);
+        await _publisher.PublishMessageDeletedAsync(
+            new MessageDeletedEvent(
+                MessageId: messageId,
+                ChannelId: channelId,
+                GuildId: guildId,
+                DeletedByUserId: userId,
+                DeletedAt: DateTimeOffset.UtcNow
+            ),
+            ct
+        );
     }
 
     public async Task EditMessageAsync(
@@ -121,11 +141,11 @@ public class MessageService : IMessageService
         long channelId,
         long messageId,
         EditMessageRequest request,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         if (string.IsNullOrWhiteSpace(request.Content) || request.Content.Length > 2000)
-            throw new ArgumentException(
-                "Message content must be between 1 and 2000 characters.");
+            throw new ArgumentException("Message content must be between 1 and 2000 characters.");
 
         var message = await _messageRepository.GetByIdAsync(messageId, ct);
 
@@ -133,15 +153,72 @@ public class MessageService : IMessageService
             throw new KeyNotFoundException("Message not found.");
 
         if (message.UserId != userId)
-            throw new UnauthorizedAccessException(
-                "You can only edit your own messages.");
+            throw new UnauthorizedAccessException("You can only edit your own messages.");
 
-        await _publisher.PublishMessageEditedAsync(new MessageEditedEvent(
-            MessageId: messageId,
-            ChannelId: channelId,
+        await _publisher.PublishMessageEditedAsync(
+            new MessageEditedEvent(
+                MessageId: messageId,
+                ChannelId: channelId,
+                GuildId: guildId,
+                EditedByUserId: userId,
+                NewContent: request.Content,
+                EditedAt: DateTimeOffset.UtcNow
+            ),
+            ct
+        );
+    }
+
+    public async Task<IEnumerable<MessageResponse>> GetChannelMessagesAsync(
+        long userId,
+        long guildId,
+        long channelId,
+        int limit = 50,
+        long? beforeMessageId = null,
+        CancellationToken ct = default
+    )
+    {
+        // Verify channel exists and belongs to guild
+        var channel = await _db.Channels.FirstOrDefaultAsync(
+            c => c.Id == channelId && c.GuildId == guildId,
+            ct
+        );
+
+        if (channel is null)
+            throw new KeyNotFoundException("Channel not found.");
+
+        // Verify user is a member of the guild
+        var isMember = await _db.GuildMembers.AnyAsync(
+            m => m.GuildId == guildId && m.UserId == userId,
+            ct
+        );
+
+        if (!isMember)
+            throw new UnauthorizedAccessException("You are not a member of this guild.");
+
+        limit = Math.Clamp(limit, 1, 100);
+        var messages = await _messageRepository.GetChannelMessagesAsync(
+            channelId,
+            limit,
+            beforeMessageId,
+            ct
+        );
+
+        return messages.Select(m => new MessageResponse(
+            MessageId: m.MessageId,
+            ChannelId: m.ChannelId,
             GuildId: guildId,
-            EditedByUserId: userId,
-            NewContent: request.Content,
-            EditedAt: DateTimeOffset.UtcNow), ct);
+            UserId: m.UserId,
+            Content: m.IsDeleted ? string.Empty : m.Content,
+            MessageType: m.MessageType,
+            IsDeleted: m.IsDeleted,
+            IsEdited: m.IsEdited,
+            ReplyToId: m.ReplyToId,
+            MentionIds: m.IsDeleted ? [] : m.MentionIds,
+            AttachmentIds: m.IsDeleted ? [] : m.AttachmentIds,
+            SentAt: ((DateTimeOffset)m.CreatedAt).ToUnixTimeMilliseconds(),
+            EditedAt: m.EditedAt.HasValue
+                ? ((DateTimeOffset)m.EditedAt.Value).ToUnixTimeMilliseconds()
+                : null
+        ));
     }
 }
