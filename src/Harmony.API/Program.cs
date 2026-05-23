@@ -3,6 +3,7 @@ using Harmony.API.Extensions;
 using Harmony.Core.Domain.Entities;
 using Harmony.Core.Interfaces;
 using Harmony.Core.Interfaces.Repositories;
+using Harmony.Core.Interfaces.Services;
 using Harmony.Core.Services;
 using Harmony.Infrastructure.Postgres;
 using Harmony.Infrastructure.Postgres.Repositories;
@@ -11,6 +12,7 @@ using Harmony.Infrastructure.RabbitMQ.Consumers;
 using Harmony.Infrastructure.RabbitMQ.Producers;
 using Harmony.Infrastructure.Scylla;
 using Harmony.Infrastructure.Scylla.Repositories;
+using Harmony.Infrastructure.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
@@ -99,6 +101,10 @@ builder.Services.AddAuthorization();
 
 // Rate limiting
 builder.Services.AddHarmonyRateLimiting();
+
+//services
+builder.Services.AddScoped<IAuthService, AuthService>();
+builder.Services.AddScoped<IMessageService, MessageService>();
 
 // Harmony services
 builder.Services.AddScoped<IJwtService, JwtService>();

@@ -1,4 +1,4 @@
-namespace Harmony.API.DTOs.Responses;
+namespace Harmony.Core.DTOs.Responses;
 
 public record AuthResponse(
     string AccessToken,
