@@ -13,6 +13,15 @@ public interface IMessageService
         CancellationToken ct = default
     );
 
+    Task<IEnumerable<MessageResponse>> GetChannelMessagesAsync(
+        long userId,
+        long guildId,
+        long channelId,
+        int limit = 50,
+        long? beforeMessageId = null,
+        CancellationToken ct = default
+    );
+
     Task DeleteMessageAsync(
         long userId,
         long guildId,

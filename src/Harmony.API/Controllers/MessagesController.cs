@@ -1,13 +1,9 @@
 using System.Security.Claims;
 using Harmony.Core.DTOs.Requests;
-using Harmony.Core.DTOs.Responses;
-using Harmony.Core.Interfaces.Repositories;
 using Harmony.Core.Interfaces.Services;
-using Harmony.Infrastructure.Postgres;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
-using Microsoft.EntityFrameworkCore;
 
 namespace Harmony.API.Controllers;
 
@@ -18,18 +14,10 @@ namespace Harmony.API.Controllers;
 public class MessagesController : ControllerBase
 {
     private readonly IMessageService _messageService;
-    private readonly IMessageRepository _messageRepository;
-    private readonly HarmonyDbContext _db;
 
-    public MessagesController(
-        IMessageService messageService,
-        IMessageRepository messageRepository,
-        HarmonyDbContext db
-    )
+    public MessagesController(IMessageService messageService)
     {
         _messageService = messageService;
-        _messageRepository = messageRepository;
-        _db = db;
     }
 
     [HttpPost]
@@ -43,28 +31,13 @@ public class MessagesController : ControllerBase
         if (userId is null)
             return Unauthorized();
 
-        try
-        {
-            var response = await _messageService.SendMessageAsync(
-                userId.Value,
-                guildId,
-                channelId,
-                request
-            );
-            return Ok(response);
-        }
-        catch (KeyNotFoundException ex)
-        {
-            return NotFound(new { error = ex.Message });
-        }
-        catch (UnauthorizedAccessException)
-        {
-            return Forbid();
-        }
-        catch (ArgumentException ex)
-        {
-            return BadRequest(new { error = ex.Message });
-        }
+        var response = await _messageService.SendMessageAsync(
+            userId.Value,
+            guildId,
+            channelId,
+            request
+        );
+        return Ok(response);
     }
 
     [HttpGet]
@@ -79,39 +52,13 @@ public class MessagesController : ControllerBase
         if (userId is null)
             return Unauthorized();
 
-        var channel = await _db.Channels.FirstOrDefaultAsync(c =>
-            c.Id == channelId && c.GuildId == guildId
+        var response = await _messageService.GetChannelMessagesAsync(
+            userId.Value,
+            guildId,
+            channelId,
+            limit,
+            before
         );
-        if (channel is null)
-            return NotFound(new { error = "Channel not found." });
-
-        var isMember = await _db.GuildMembers.AnyAsync(m =>
-            m.GuildId == guildId && m.UserId == userId.Value
-        );
-        if (!isMember)
-            return Forbid();
-
-        limit = Math.Clamp(limit, 1, 100);
-        var messages = await _messageRepository.GetChannelMessagesAsync(channelId, limit, before);
-
-        var response = messages.Select(m => new MessageResponse(
-            MessageId: m.MessageId,
-            ChannelId: m.ChannelId,
-            GuildId: guildId,
-            UserId: m.UserId,
-            Content: m.IsDeleted ? string.Empty : m.Content,
-            MessageType: m.MessageType,
-            IsDeleted: m.IsDeleted,
-            IsEdited: m.IsEdited,
-            ReplyToId: m.ReplyToId,
-            MentionIds: m.IsDeleted ? [] : m.MentionIds,
-            AttachmentIds: m.IsDeleted ? [] : m.AttachmentIds,
-            SentAt: ((DateTimeOffset)m.CreatedAt).ToUnixTimeMilliseconds(),
-            EditedAt: m.EditedAt.HasValue
-                ? ((DateTimeOffset)m.EditedAt.Value).ToUnixTimeMilliseconds()
-                : null
-        ));
-
         return Ok(response);
     }
 
@@ -122,19 +69,8 @@ public class MessagesController : ControllerBase
         if (userId is null)
             return Unauthorized();
 
-        try
-        {
-            await _messageService.DeleteMessageAsync(userId.Value, guildId, channelId, messageId);
-            return NoContent();
-        }
-        catch (KeyNotFoundException ex)
-        {
-            return NotFound(new { error = ex.Message });
-        }
-        catch (UnauthorizedAccessException)
-        {
-            return Forbid();
-        }
+        await _messageService.DeleteMessageAsync(userId.Value, guildId, channelId, messageId);
+        return NoContent();
     }
 
     [HttpPatch("{messageId}")]
@@ -149,29 +85,14 @@ public class MessagesController : ControllerBase
         if (userId is null)
             return Unauthorized();
 
-        try
-        {
-            await _messageService.EditMessageAsync(
-                userId.Value,
-                guildId,
-                channelId,
-                messageId,
-                request
-            );
-            return NoContent();
-        }
-        catch (KeyNotFoundException ex)
-        {
-            return NotFound(new { error = ex.Message });
-        }
-        catch (UnauthorizedAccessException)
-        {
-            return Forbid();
-        }
-        catch (ArgumentException ex)
-        {
-            return BadRequest(new { error = ex.Message });
-        }
+        await _messageService.EditMessageAsync(
+            userId.Value,
+            guildId,
+            channelId,
+            messageId,
+            request
+        );
+        return NoContent();
     }
 
     private long? GetUserId()

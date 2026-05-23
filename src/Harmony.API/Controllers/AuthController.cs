@@ -25,28 +25,9 @@ public class AuthController : ControllerBase
     [EnableRateLimiting("login")]
     public async Task<IActionResult> Register([FromBody] RegisterRequest request)
     {
-        try
-        {
-            var (response, rawRefreshToken) = await _authService.RegisterAsync(request);
-            SetRefreshCookie(rawRefreshToken);
-            return Ok(response);
-        }
-        catch (InvalidOperationException ex) when (ex.Message.Contains("Email"))
-        {
-            return Conflict(new { error = ex.Message });
-        }
-        catch (InvalidOperationException ex) when (ex.Message.Contains("Username"))
-        {
-            return Conflict(new { error = ex.Message });
-        }
-        catch (InvalidOperationException ex)
-        {
-            return BadRequest(new { error = ex.Message });
-        }
-        catch (ArgumentException ex)
-        {
-            return BadRequest(new { error = ex.Message });
-        }
+        var (response, rawRefreshToken) = await _authService.RegisterAsync(request);
+        SetRefreshCookie(rawRefreshToken);
+        return Ok(response);
     }
 
     [HttpPost("login")]
@@ -54,16 +35,9 @@ public class AuthController : ControllerBase
     [EnableRateLimiting("login")]
     public async Task<IActionResult> Login([FromBody] LoginRequest request)
     {
-        try
-        {
-            var (response, rawRefreshToken) = await _authService.LoginAsync(request);
-            SetRefreshCookie(rawRefreshToken);
-            return Ok(response);
-        }
-        catch (UnauthorizedAccessException ex)
-        {
-            return Unauthorized(new { error = ex.Message });
-        }
+        var (response, rawRefreshToken) = await _authService.LoginAsync(request);
+        SetRefreshCookie(rawRefreshToken);
+        return Ok(response);
     }
 
     [HttpPost("refresh")]
@@ -75,17 +49,9 @@ public class AuthController : ControllerBase
         if (string.IsNullOrEmpty(rawToken))
             return Unauthorized(new { error = "No refresh token." });
 
-        try
-        {
-            var (response, rawRefreshToken) = await _authService.RefreshAsync(rawToken);
-            SetRefreshCookie(rawRefreshToken);
-            return Ok(response);
-        }
-        catch (UnauthorizedAccessException ex)
-        {
-            DeleteRefreshCookie();
-            return Unauthorized(new { error = ex.Message });
-        }
+        var (response, rawRefreshToken) = await _authService.RefreshAsync(rawToken);
+        SetRefreshCookie(rawRefreshToken);
+        return Ok(response);
     }
 
     [HttpPost("logout")]
