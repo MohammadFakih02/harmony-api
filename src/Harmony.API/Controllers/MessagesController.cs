@@ -1,10 +1,8 @@
 using System.Security.Claims;
-using Harmony.API.DTOs.Requests;
-using Harmony.API.DTOs.Responses;
-using Harmony.Core.Domain.Entities;
-using Harmony.Core.Interfaces;
+using Harmony.Core.DTOs.Requests;
+using Harmony.Core.DTOs.Responses;
 using Harmony.Core.Interfaces.Repositories;
-using Harmony.Core.Services;
+using Harmony.Core.Interfaces.Services;
 using Harmony.Infrastructure.Postgres;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -19,25 +17,21 @@ namespace Harmony.API.Controllers;
 [EnableRateLimiting("api")]
 public class MessagesController : ControllerBase
 {
-    private readonly HarmonyDbContext _db;
-    private readonly IMessagePublisher _publisher;
-    private readonly ISnowflakeIdGenerator _snowflake;
+    private readonly IMessageService _messageService;
     private readonly IMessageRepository _messageRepository;
+    private readonly HarmonyDbContext _db;
 
     public MessagesController(
-        HarmonyDbContext db,
-        IMessagePublisher publisher,
-        ISnowflakeIdGenerator snowflake,
-        IMessageRepository messageRepository
+        IMessageService messageService,
+        IMessageRepository messageRepository,
+        HarmonyDbContext db
     )
     {
-        _db = db;
-        _publisher = publisher;
-        _snowflake = snowflake;
+        _messageService = messageService;
         _messageRepository = messageRepository;
+        _db = db;
     }
 
-    // POST /api/guilds/{guildId}/channels/{channelId}/messages
     [HttpPost]
     public async Task<IActionResult> SendMessage(
         long guildId,
@@ -49,65 +43,30 @@ public class MessagesController : ControllerBase
         if (userId is null)
             return Unauthorized();
 
-        // Verify channel exists and belongs to guild
-        var channel = await _db.Channels.FirstOrDefaultAsync(c =>
-            c.Id == channelId && c.GuildId == guildId
-        );
-
-        if (channel is null)
-            return NotFound(new { error = "Channel not found." });
-
-        // Verify user is a member of the guild
-        var isMember = await _db.GuildMembers.AnyAsync(m =>
-            m.GuildId == guildId && m.UserId == userId.Value
-        );
-
-        if (!isMember)
-            return Forbid();
-
-        // Validate content
-        if (string.IsNullOrWhiteSpace(request.Content) || request.Content.Length > 2000)
-            return BadRequest(
-                new { error = "Message content must be between 1 and 2000 characters." }
+        try
+        {
+            var response = await _messageService.SendMessageAsync(
+                userId.Value,
+                guildId,
+                channelId,
+                request
             );
-
-        // Generate Snowflake ID
-        var messageId = _snowflake.NextId();
-        var sentAt = DateTimeOffset.UtcNow;
-
-        // Publish to RabbitMQ — consumer handles persistence asynchronously
-        var evt = new MessageSentEvent(
-            MessageId: messageId,
-            ChannelId: channelId,
-            GuildId: guildId,
-            UserId: userId.Value,
-            Content: request.Content,
-            MessageType: request.MessageType ?? "text",
-            AttachmentIds: request.AttachmentIds ?? [],
-            MentionIds: request.MentionIds ?? [],
-            ReplyToId: request.ReplyToId,
-            SentAt: sentAt
-        );
-
-        await _publisher.PublishMessageSentAsync(evt);
-
-        return Ok(
-            new SendMessageResponse(
-                MessageId: messageId,
-                ChannelId: channelId,
-                GuildId: guildId,
-                UserId: userId.Value,
-                Content: request.Content,
-                MessageType: request.MessageType ?? "text",
-                ReplyToId: request.ReplyToId,
-                MentionIds: request.MentionIds ?? [],
-                AttachmentIds: request.AttachmentIds ?? [],
-                SentAt: sentAt.ToUnixTimeMilliseconds()
-            )
-        );
+            return Ok(response);
+        }
+        catch (KeyNotFoundException ex)
+        {
+            return NotFound(new { error = ex.Message });
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return Forbid();
+        }
+        catch (ArgumentException ex)
+        {
+            return BadRequest(new { error = ex.Message });
+        }
     }
 
-    // GET /api/guilds/{guildId}/channels/{channelId}/messages
     [HttpGet]
     public async Task<IActionResult> GetMessages(
         long guildId,
@@ -120,25 +79,19 @@ public class MessagesController : ControllerBase
         if (userId is null)
             return Unauthorized();
 
-        // Verify channel exists and belongs to guild
         var channel = await _db.Channels.FirstOrDefaultAsync(c =>
             c.Id == channelId && c.GuildId == guildId
         );
-
         if (channel is null)
             return NotFound(new { error = "Channel not found." });
 
-        // Verify user is a member of the guild
         var isMember = await _db.GuildMembers.AnyAsync(m =>
             m.GuildId == guildId && m.UserId == userId.Value
         );
-
         if (!isMember)
             return Forbid();
 
-        // Clamp limit
         limit = Math.Clamp(limit, 1, 100);
-
         var messages = await _messageRepository.GetChannelMessagesAsync(channelId, limit, before);
 
         var response = messages.Select(m => new MessageResponse(
@@ -162,7 +115,6 @@ public class MessagesController : ControllerBase
         return Ok(response);
     }
 
-    // DELETE /api/guilds/{guildId}/channels/{channelId}/messages/{messageId}
     [HttpDelete("{messageId}")]
     public async Task<IActionResult> DeleteMessage(long guildId, long channelId, long messageId)
     {
@@ -170,42 +122,21 @@ public class MessagesController : ControllerBase
         if (userId is null)
             return Unauthorized();
 
-        // Verify channel exists and belongs to guild
-        var channel = await _db.Channels.FirstOrDefaultAsync(c =>
-            c.Id == channelId && c.GuildId == guildId
-        );
-
-        if (channel is null)
-            return NotFound(new { error = "Channel not found." });
-
-        // Get message to verify ownership
-        var message = await _messageRepository.GetByIdAsync(messageId);
-
-        if (message is null)
-            return NotFound(new { error = "Message not found." });
-
-        // Only message author or guild owner can delete
-        var isOwner = await _db.GuildMembers.AnyAsync(m =>
-            m.GuildId == guildId && m.UserId == userId.Value && m.IsOwner
-        );
-
-        if (message.UserId != userId.Value && !isOwner)
+        try
+        {
+            await _messageService.DeleteMessageAsync(userId.Value, guildId, channelId, messageId);
+            return NoContent();
+        }
+        catch (KeyNotFoundException ex)
+        {
+            return NotFound(new { error = ex.Message });
+        }
+        catch (UnauthorizedAccessException)
+        {
             return Forbid();
-
-        await _publisher.PublishMessageDeletedAsync(
-            new MessageDeletedEvent(
-                MessageId: messageId,
-                ChannelId: channelId,
-                GuildId: guildId,
-                DeletedByUserId: userId.Value,
-                DeletedAt: DateTimeOffset.UtcNow
-            )
-        );
-
-        return NoContent();
+        }
     }
 
-    // PATCH /api/guilds/{guildId}/channels/{channelId}/messages/{messageId}
     [HttpPatch("{messageId}")]
     public async Task<IActionResult> EditMessage(
         long guildId,
@@ -218,42 +149,34 @@ public class MessagesController : ControllerBase
         if (userId is null)
             return Unauthorized();
 
-        // Validate content
-        if (string.IsNullOrWhiteSpace(request.Content) || request.Content.Length > 2000)
-            return BadRequest(
-                new { error = "Message content must be between 1 and 2000 characters." }
+        try
+        {
+            await _messageService.EditMessageAsync(
+                userId.Value,
+                guildId,
+                channelId,
+                messageId,
+                request
             );
-
-        // Get message to verify ownership
-        var message = await _messageRepository.GetByIdAsync(messageId);
-
-        if (message is null)
-            return NotFound(new { error = "Message not found." });
-
-        // Only message author can edit
-        if (message.UserId != userId.Value)
+            return NoContent();
+        }
+        catch (KeyNotFoundException ex)
+        {
+            return NotFound(new { error = ex.Message });
+        }
+        catch (UnauthorizedAccessException)
+        {
             return Forbid();
-
-        await _publisher.PublishMessageEditedAsync(
-            new MessageEditedEvent(
-                MessageId: messageId,
-                ChannelId: channelId,
-                GuildId: guildId,
-                EditedByUserId: userId.Value,
-                NewContent: request.Content,
-                EditedAt: DateTimeOffset.UtcNow
-            )
-        );
-
-        return NoContent();
+        }
+        catch (ArgumentException ex)
+        {
+            return BadRequest(new { error = ex.Message });
+        }
     }
-
-    // --- Helpers ---
 
     private long? GetUserId()
     {
         var claim = User.FindFirst(ClaimTypes.NameIdentifier) ?? User.FindFirst("sub");
-
         return claim is not null && long.TryParse(claim.Value, out var id) ? id : null;
     }
 }

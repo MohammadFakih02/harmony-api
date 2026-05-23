@@ -1,4 +1,4 @@
-namespace Harmony.API.DTOs.Responses;
+namespace Harmony.Core.DTOs.Responses;
 
 // Returned for /api/users/me — includes private fields
 public record UserProfileResponse(

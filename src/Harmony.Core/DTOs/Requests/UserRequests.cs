@@ -1,4 +1,4 @@
-namespace Harmony.API.DTOs.Requests;
+namespace Harmony.Core.DTOs.Requests;
 
 public record UpdateUserRequest(
     string? Username,

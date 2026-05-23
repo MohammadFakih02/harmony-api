@@ -1,6 +1,6 @@
 using System.Security.Claims;
-using Harmony.API.DTOs.Requests;
-using Harmony.API.DTOs.Responses;
+using Harmony.Core.DTOs.Requests;
+using Harmony.Core.DTOs.Responses;
 using Harmony.Core.Domain.Entities;
 using Harmony.Core.Interfaces.Repositories;
 using Harmony.Core.Services;
