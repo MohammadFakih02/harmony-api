@@ -1,6 +1,5 @@
 using Cassandra;
 using Harmony.Core.Interfaces.Repositories;
-using Harmony.Infrastructure.Scylla;
 using Microsoft.Extensions.Logging;
 
 namespace Harmony.Infrastructure.Scylla.Repositories;
@@ -9,32 +8,45 @@ public class ReadStateRepository : IReadStateRepository
 {
     private readonly ISession _session;
     private readonly ILogger<ReadStateRepository> _logger;
-    private readonly string _ks;
 
-    private PreparedStatement? _upsert;
-    private PreparedStatement? _selectOne;
+    private readonly Lazy<PreparedStatement> _upsert;
+    private readonly Lazy<PreparedStatement> _selectOne;
+    private readonly Lazy<PreparedStatement> _selectForChannel;
+
+    private readonly string _ks;
 
     public ReadStateRepository(IScyllaSessionFactory factory, ILogger<ReadStateRepository> logger)
     {
         _session = factory.Session;
         _ks = factory.Keyspace;
         _logger = logger;
+
+        _upsert = new Lazy<PreparedStatement>(() =>
+            _session.Prepare(
+                $@"
+        INSERT INTO {_ks}.read_states (user_id, channel_id, last_read_message_id)
+        VALUES (?, ?, ?)"
+            )
+        );
+
+        _selectOne = new Lazy<PreparedStatement>(() =>
+            _session.Prepare(
+                $@"
+        SELECT last_read_message_id
+        FROM {_ks}.read_states
+        WHERE user_id = ? AND channel_id = ?"
+            )
+        );
+
+        _selectForChannel = new Lazy<PreparedStatement>(() =>
+            _session.Prepare(
+                $@"
+        SELECT last_read_message_id
+        FROM {_ks}.read_states
+        WHERE user_id = ? AND channel_id = ?"
+            )
+        );
     }
-
-    private async Task<PreparedStatement> GetUpsertAsync() =>
-        _upsert ??= await _session.PrepareAsync(
-            $@"
-            INSERT INTO {_ks}.read_states (user_id, channel_id, last_read_message_id)
-            VALUES (?, ?, ?)"
-        );
-
-    private async Task<PreparedStatement> GetSelectOneAsync() =>
-        _selectOne ??= await _session.PrepareAsync(
-            $@"
-            SELECT last_read_message_id
-            FROM {_ks}.read_states
-            WHERE user_id = ? AND channel_id = ?"
-        );
 
     public async Task MarkAsReadAsync(
         long userId,
@@ -43,8 +55,8 @@ public class ReadStateRepository : IReadStateRepository
         CancellationToken ct = default
     )
     {
-        var stmt = await GetUpsertAsync();
-        await _session.ExecuteAsync(stmt.Bind(userId, channelId, lastReadMessageId));
+        var bound = _upsert.Value.Bind(userId, channelId, lastReadMessageId);
+        await _session.ExecuteAsync(bound);
 
         _logger.LogDebug(
             "Marked channel {ChannelId} as read for user {UserId} up to message {MessageId}",
@@ -60,8 +72,8 @@ public class ReadStateRepository : IReadStateRepository
         CancellationToken ct = default
     )
     {
-        var stmt = await GetSelectOneAsync();
-        var rows = await _session.ExecuteAsync(stmt.Bind(userId, channelId));
+        var bound = _selectOne.Value.Bind(userId, channelId);
+        var rows = await _session.ExecuteAsync(bound);
         var row = rows.FirstOrDefault();
         return row?.GetValue<long?>("last_read_message_id");
     }
@@ -72,10 +84,13 @@ public class ReadStateRepository : IReadStateRepository
         CancellationToken ct = default
     )
     {
+        // Fire all queries in parallel — one per channel
+        // ScyllaDB's read_states PRIMARY KEY is (user_id, channel_id) so each
+        // query hits exactly one partition — no scatter-gather, no secondary index needed
         var tasks = channelIds.Select(async channelId =>
         {
-            var stmt = await GetSelectOneAsync();
-            var rows = await _session.ExecuteAsync(stmt.Bind(userId, channelId));
+            var bound = _selectForChannel.Value.Bind(userId, channelId);
+            var rows = await _session.ExecuteAsync(bound);
             var row = rows.FirstOrDefault();
             var lastRead = row?.GetValue<long?>("last_read_message_id");
             return (channelId, lastRead);

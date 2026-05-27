@@ -1,6 +1,5 @@
 using System.Text;
 using System.Text.Json;
-using Harmony.Core.Exceptions;
 using Harmony.Core.Interfaces;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -61,7 +60,10 @@ public class SearchIndexConsumer : BackgroundService
         var routingKey = ea.RoutingKey;
         var body = Encoding.UTF8.GetString(ea.Body.Span);
 
-        _logger.LogDebug("SearchIndexConsumer received routing key: {RoutingKey}", routingKey);
+        _logger.LogDebug(
+            "SearchIndexConsumer received message with routing key: {RoutingKey}",
+            routingKey
+        );
 
         try
         {
@@ -96,33 +98,24 @@ public class SearchIndexConsumer : BackgroundService
 
                 default:
                     _logger.LogWarning(
-                        "SearchIndexConsumer — unknown routing key: {RoutingKey} — nacking permanently",
+                        "SearchIndexConsumer — unknown routing key: {RoutingKey}",
                         routingKey
                     );
-                    await _channel!.BasicNackAsync(ea.DeliveryTag, false, requeue: false);
+                    await _channel!.BasicNackAsync(ea.DeliveryTag, false, false);
                     return;
             }
 
             await _channel!.BasicAckAsync(ea.DeliveryTag, multiple: false);
         }
-        catch (ServiceUnavailableException)
-        {
-            _logger.LogWarning(
-                "Postgres unavailable — routing message to retry queue for {Ttl}ms",
-                Topology.RetryTtlMs
-            );
-
-            await _channel!.BasicNackAsync(ea.DeliveryTag, multiple: false, requeue: false);
-        }
         catch (Exception ex)
         {
             _logger.LogError(
                 ex,
-                "SearchIndexConsumer failed routing key: {RoutingKey} — retrying via DLX",
+                "SearchIndexConsumer failed to process message with routing key: {RoutingKey}",
                 routingKey
             );
 
-            await _channel!.BasicNackAsync(ea.DeliveryTag, multiple: false, requeue: false);
+            await _channel!.BasicNackAsync(ea.DeliveryTag, multiple: false, requeue: true);
         }
     }
 

@@ -1,4 +1,3 @@
-using Harmony.Core.Exceptions;
 using Harmony.Core.Interfaces;
 using Microsoft.Extensions.Logging;
 using Polly.CircuitBreaker;
@@ -9,17 +8,16 @@ public class ResilientMessagePublisher : IMessagePublisher
 {
     private readonly IMessagePublisher _inner;
     private readonly ILogger<ResilientMessagePublisher> _logger;
-    private readonly Polly.IAsyncPolicy _policy;
+    private readonly Polly.AsyncPolicy _policy;
 
     public ResilientMessagePublisher(
         IMessagePublisher inner,
-        RabbitMQPolicyProvider policyProvider,
         ILogger<ResilientMessagePublisher> logger
     )
     {
         _inner = inner;
         _logger = logger;
-        _policy = policyProvider.Policy;
+        _policy = ResiliencePolicies.RabbitMQCircuitBreaker(logger);
     }
 
     public async Task PublishMessageSentAsync(MessageSentEvent evt, CancellationToken ct = default)
@@ -34,7 +32,7 @@ public class ResilientMessagePublisher : IMessagePublisher
                 "RabbitMQ circuit is OPEN — MessageSent event dropped for MessageId: {MessageId}",
                 evt.MessageId
             );
-            throw new ServiceUnavailableException(
+            throw new InvalidOperationException(
                 "Messaging service is temporarily unavailable. Please try again shortly."
             );
         }
@@ -55,7 +53,7 @@ public class ResilientMessagePublisher : IMessagePublisher
                 "RabbitMQ circuit is OPEN — MessageDeleted event dropped for MessageId: {MessageId}",
                 evt.MessageId
             );
-            throw new ServiceUnavailableException(
+            throw new InvalidOperationException(
                 "Messaging service is temporarily unavailable. Please try again shortly."
             );
         }
@@ -76,7 +74,7 @@ public class ResilientMessagePublisher : IMessagePublisher
                 "RabbitMQ circuit is OPEN — MessageEdited event dropped for MessageId: {MessageId}",
                 evt.MessageId
             );
-            throw new ServiceUnavailableException(
+            throw new InvalidOperationException(
                 "Messaging service is temporarily unavailable. Please try again shortly."
             );
         }
