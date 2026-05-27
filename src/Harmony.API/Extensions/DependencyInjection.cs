@@ -8,7 +8,6 @@ using Harmony.Infrastructure.Postgres.Repositories;
 using Harmony.Infrastructure.RabbitMQ;
 using Harmony.Infrastructure.RabbitMQ.Consumers;
 using Harmony.Infrastructure.RabbitMQ.Producers;
-using Harmony.Infrastructure.Resilience;
 using Harmony.Infrastructure.Scylla;
 using Harmony.Infrastructure.Scylla.Repositories;
 using Harmony.Infrastructure.Services;
@@ -36,21 +35,13 @@ public static class DependencyInjection
 
         // RabbitMQ setup
         services.AddSingleton<RabbitMQConnection>();
-        services.AddScoped<RabbitMQPublisher>();
-        services.AddScoped<IMessagePublisher>(sp => new ResilientMessagePublisher(
-            sp.GetRequiredService<RabbitMQPublisher>(),
-            sp.GetRequiredService<ILogger<ResilientMessagePublisher>>()
-        ));
+        services.AddScoped<IMessagePublisher, RabbitMQPublisher>();
 
         // Repositories
         services.AddScoped<IGuildRepository, GuildRepository>();
         services.AddScoped<IChannelRepository, ChannelRepository>();
         services.AddScoped<IUserRepository, UserRepository>();
-        services.AddScoped<MessageRepository>();
-        services.AddScoped<IMessageRepository>(sp => new ResilientMessageRepository(
-            sp.GetRequiredService<MessageRepository>(),
-            sp.GetRequiredService<ILogger<ResilientMessageRepository>>()
-        ));
+        services.AddScoped<IMessageRepository, MessageRepository>();
         services.AddScoped<IReadStateRepository, ReadStateRepository>();
 
         // Core / Domain Services
