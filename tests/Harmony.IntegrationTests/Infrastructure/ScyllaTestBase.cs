@@ -4,23 +4,32 @@ namespace Harmony.IntegrationTests.Infrastructure;
 
 public abstract class ScyllaTestBase : IAsyncLifetime
 {
+    private ICluster? _cluster;
     protected ISession Session { get; private set; } = null!;
 
     protected abstract IEnumerable<string> TablesToTruncate { get; }
 
     public virtual async Task InitializeAsync()
     {
-        var cluster = Cluster.Builder().AddContactPoint("127.0.0.1").WithPort(9042).Build();
+        // Tests use simpler cluster config — no speculative execution or DC-aware policy
+        // since we're hitting a single local node
+        _cluster = Cluster
+            .Builder()
+            .AddContactPoint("127.0.0.1")
+            .WithPort(9042)
+            .WithRetryPolicy(new DefaultRetryPolicy())
+            .WithReconnectionPolicy(new ConstantReconnectionPolicy(2000))
+            .Build();
 
-        var bootstrapSession = cluster.Connect();
+        var bootstrapSession = _cluster.Connect();
         bootstrapSession.Execute(
             @"
-        CREATE KEYSPACE IF NOT EXISTS harmony_test
-        WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1}"
+            CREATE KEYSPACE IF NOT EXISTS harmony_test
+            WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1}"
         );
         bootstrapSession.Dispose();
 
-        Session = cluster.Connect("harmony_test");
+        Session = _cluster.Connect("harmony_test");
 
         await CreateTablesAsync();
         await TruncateTablesAsync();
@@ -29,7 +38,9 @@ public abstract class ScyllaTestBase : IAsyncLifetime
     public virtual async Task DisposeAsync()
     {
         await TruncateTablesAsync();
-        Session.Dispose();
+
+        if (_cluster is not null)
+            await _cluster.ShutdownAsync();
     }
 
     private async Task CreateTablesAsync()
@@ -80,8 +91,6 @@ public abstract class ScyllaTestBase : IAsyncLifetime
     protected async Task TruncateTablesAsync()
     {
         foreach (var table in TablesToTruncate)
-        {
             await Session.ExecuteAsync(new SimpleStatement($"TRUNCATE {table}"));
-        }
     }
 }

@@ -1,6 +1,13 @@
-using System.Security.Authentication; // Add this namespace
+using System;
+using System.Collections.Generic;
+using System.Security.Authentication;
+using System.Threading;
+using System.Threading.Tasks;
+using Harmony.Core.Exceptions;
 using Microsoft.AspNetCore.Diagnostics;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Logging;
 
 namespace Harmony.API.Handlers;
 
@@ -32,8 +39,14 @@ public class GlobalExceptionHandler : IExceptionHandler
             // 401 Unauthorized (Authentication failures)
             AuthenticationException => (StatusCodes.Status401Unauthorized, "Unauthorized"),
 
-            // 403 Forbidden (Permission failures)
+            // 403 Forbidden (Permission/Access failures)
             UnauthorizedAccessException => (StatusCodes.Status403Forbidden, "Forbidden Access"),
+
+            // 503 Service Unavailable (Circuit Breaker open / Outages)
+            ServiceUnavailableException => (
+                StatusCodes.Status503ServiceUnavailable,
+                "Service Unavailable"
+            ),
 
             ArgumentException => (StatusCodes.Status400BadRequest, "Bad Request"),
             InvalidOperationException ex when ex.Message.Contains("already") => (
