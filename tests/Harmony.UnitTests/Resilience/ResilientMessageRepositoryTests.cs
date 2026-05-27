@@ -1,6 +1,5 @@
 using FluentAssertions;
 using Harmony.Core.Domain.Entities;
-using Harmony.Core.Exceptions;
 using Harmony.Core.Interfaces.Repositories;
 using Harmony.Infrastructure.Resilience;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -16,12 +15,8 @@ public class ResilientMessageRepositoryTests
     public ResilientMessageRepositoryTests()
     {
         _innerMock = new Mock<IMessageRepository>();
-
-        var policyProvider = new ScyllaPolicyProvider(NullLogger<ScyllaPolicyProvider>.Instance);
-
         _sut = new ResilientMessageRepository(
             _innerMock.Object,
-            policyProvider,
             NullLogger<ResilientMessageRepository>.Instance
         );
     }
@@ -47,7 +42,36 @@ public class ResilientMessageRepositoryTests
     }
 
     [Fact]
-    public async Task GetChannelMessagesAsync_ShouldThrowServiceUnavailable_WhenCircuitOpens()
+    public async Task GetChannelMessagesAsync_ShouldRetry_OnTransientFailure()
+    {
+        var callCount = 0;
+        var messages = new List<Message> { BuildMessage() };
+
+        _innerMock
+            .Setup(r =>
+                r.GetChannelMessagesAsync(
+                    It.IsAny<long>(),
+                    It.IsAny<int>(),
+                    It.IsAny<long?>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns(() =>
+            {
+                callCount++;
+                if (callCount < 3)
+                    throw new Exception("transient scylla error");
+                return Task.FromResult<IEnumerable<Message>>(messages);
+            });
+
+        var result = await _sut.GetChannelMessagesAsync(channelId: 1, limit: 10);
+
+        result.Should().HaveCount(1);
+        callCount.Should().Be(3);
+    }
+
+    [Fact]
+    public async Task GetChannelMessagesAsync_ShouldThrowInvalidOperation_WhenCircuitOpens()
     {
         _innerMock
             .Setup(r =>
@@ -58,10 +82,9 @@ public class ResilientMessageRepositoryTests
                     It.IsAny<CancellationToken>()
                 )
             )
-            .ThrowsAsync(new Cassandra.DriverException("ScyllaDB down"));
+            .ThrowsAsync(new Exception("ScyllaDB down"));
 
-        // Exhaust calls needed to open circuit (5)
-        // With ScyllaRetryPolicy removed from Polly, each call directly increments the breaker
+        // Exhaust retries (3 per call) × calls needed to open circuit (5)
         for (int i = 0; i < 5; i++)
         {
             try
@@ -76,7 +99,7 @@ public class ResilientMessageRepositoryTests
         var act = async () => await _sut.GetChannelMessagesAsync(channelId: 1, limit: 10);
 
         await act.Should()
-            .ThrowAsync<ServiceUnavailableException>()
+            .ThrowAsync<InvalidOperationException>()
             .WithMessage("*temporarily unavailable*");
     }
 
