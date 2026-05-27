@@ -22,7 +22,6 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Harmony.Core\Harmony.Core.csproj" />
-    <ProjectReference Include="..\..\src\Harmony.Infrastructure\Harmony.Infrastructure.csproj" />
   </ItemGroup>
 
 </Project>
