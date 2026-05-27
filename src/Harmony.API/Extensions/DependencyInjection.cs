@@ -43,7 +43,7 @@ public static class DependencyInjection
         // RabbitMQ setup
         services.AddSingleton<RabbitMQConnection>();
         services.AddScoped<RabbitMQPublisher>();
-        services.AddScoped<IMessagePublisher>(sp => new ResilientMessagePublisher(
+services.AddScoped<IMessagePublisher>(sp => new ResilientMessagePublisher(
             sp.GetRequiredService<RabbitMQPublisher>(),
             sp.GetRequiredService<RabbitMQPolicyProvider>(), // Pass the Singleton Provider
             sp.GetRequiredService<ILogger<ResilientMessagePublisher>>()
@@ -54,7 +54,7 @@ public static class DependencyInjection
         services.AddScoped<IChannelRepository, ChannelRepository>();
         services.AddScoped<IUserRepository, UserRepository>();
         services.AddScoped<MessageRepository>();
-        services.AddScoped<IMessageRepository>(sp => new ResilientMessageRepository(
+services.AddScoped<IMessageRepository>(sp => new ResilientMessageRepository(
             sp.GetRequiredService<MessageRepository>(),
             sp.GetRequiredService<ScyllaPolicyProvider>(), // Pass the Singleton Provider
             sp.GetRequiredService<ILogger<ResilientMessageRepository>>()
