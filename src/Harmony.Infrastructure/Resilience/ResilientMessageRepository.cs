@@ -1,4 +1,5 @@
 using Harmony.Core.Domain.Entities;
+using Harmony.Core.Exceptions;
 using Harmony.Core.Interfaces.Repositories;
 using Microsoft.Extensions.Logging;
 using Polly.CircuitBreaker;
@@ -9,16 +10,17 @@ public class ResilientMessageRepository : IMessageRepository
 {
     private readonly IMessageRepository _inner;
     private readonly ILogger<ResilientMessageRepository> _logger;
-    private readonly Polly.AsyncPolicy _policy;
+    private readonly Polly.IAsyncPolicy _policy;
 
     public ResilientMessageRepository(
         IMessageRepository inner,
+        ScyllaPolicyProvider policyProvider,
         ILogger<ResilientMessageRepository> logger
     )
     {
         _inner = inner;
         _logger = logger;
-        _policy = ResiliencePolicies.ScyllaPolicy(logger);
+        _policy = policyProvider.Policy;
     }
 
     public async Task<IEnumerable<Message>> GetChannelMessagesAsync(
@@ -40,7 +42,7 @@ public class ResilientMessageRepository : IMessageRepository
                 "ScyllaDB circuit is OPEN — GetChannelMessages failed for ChannelId: {ChannelId}",
                 channelId
             );
-            throw new InvalidOperationException(
+            throw new ServiceUnavailableException(
                 "Message history is temporarily unavailable. Please try again shortly."
             );
         }
@@ -58,7 +60,7 @@ public class ResilientMessageRepository : IMessageRepository
                 "ScyllaDB circuit is OPEN — GetById failed for MessageId: {MessageId}",
                 messageId
             );
-            throw new InvalidOperationException(
+            throw new ServiceUnavailableException(
                 "Message lookup is temporarily unavailable. Please try again shortly."
             );
         }
@@ -76,7 +78,9 @@ public class ResilientMessageRepository : IMessageRepository
                 "ScyllaDB circuit is OPEN — SaveAsync failed for MessageId: {MessageId}",
                 message.MessageId
             );
-            throw new InvalidOperationException("Message persistence is temporarily unavailable.");
+            throw new ServiceUnavailableException(
+                "Message persistence is temporarily unavailable."
+            );
         }
     }
 
@@ -92,7 +96,7 @@ public class ResilientMessageRepository : IMessageRepository
                 "ScyllaDB circuit is OPEN — DeleteAsync failed for MessageId: {MessageId}",
                 messageId
             );
-            throw new InvalidOperationException(
+            throw new ServiceUnavailableException(
                 "Message deletion is temporarily unavailable. Please try again shortly."
             );
         }
@@ -117,7 +121,7 @@ public class ResilientMessageRepository : IMessageRepository
                 "ScyllaDB circuit is OPEN — EditAsync failed for MessageId: {MessageId}",
                 messageId
             );
-            throw new InvalidOperationException(
+            throw new ServiceUnavailableException(
                 "Message editing is temporarily unavailable. Please try again shortly."
             );
         }
@@ -140,7 +144,7 @@ public class ResilientMessageRepository : IMessageRepository
                 "ScyllaDB circuit is OPEN — PinAsync failed for MessageId: {MessageId}",
                 messageId
             );
-            throw new InvalidOperationException(
+            throw new ServiceUnavailableException(
                 "Message pinning is temporarily unavailable. Please try again shortly."
             );
         }
@@ -158,7 +162,7 @@ public class ResilientMessageRepository : IMessageRepository
                 "ScyllaDB circuit is OPEN — UnpinAsync failed for ChannelId: {ChannelId}",
                 channelId
             );
-            throw new InvalidOperationException(
+            throw new ServiceUnavailableException(
                 "Message unpinning is temporarily unavailable. Please try again shortly."
             );
         }
@@ -179,7 +183,7 @@ public class ResilientMessageRepository : IMessageRepository
                 "ScyllaDB circuit is OPEN — GetPinnedAsync failed for ChannelId: {ChannelId}",
                 channelId
             );
-            throw new InvalidOperationException(
+            throw new ServiceUnavailableException(
                 "Pinned messages are temporarily unavailable. Please try again shortly."
             );
         }

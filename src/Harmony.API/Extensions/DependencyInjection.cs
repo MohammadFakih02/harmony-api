@@ -15,6 +15,7 @@ using Harmony.Infrastructure.Services;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 namespace Harmony.Infrastructure.Extensions;
 
@@ -32,13 +33,19 @@ public static class DependencyInjection
 
         // ScyllaDB setup
         services.AddSingleton<IScyllaSessionFactory, ScyllaSessionFactory>();
+
         services.AddHostedService<KeyspaceInitializer>();
+
+        // Singleton Resilience Policy Providers (Holds the shared Circuit Breaker states!)
+        services.AddSingleton<ScyllaPolicyProvider>();
+        services.AddSingleton<RabbitMQPolicyProvider>();
 
         // RabbitMQ setup
         services.AddSingleton<RabbitMQConnection>();
         services.AddScoped<RabbitMQPublisher>();
         services.AddScoped<IMessagePublisher>(sp => new ResilientMessagePublisher(
             sp.GetRequiredService<RabbitMQPublisher>(),
+            sp.GetRequiredService<RabbitMQPolicyProvider>(), // Pass the Singleton Provider
             sp.GetRequiredService<ILogger<ResilientMessagePublisher>>()
         ));
 
@@ -49,6 +56,7 @@ public static class DependencyInjection
         services.AddScoped<MessageRepository>();
         services.AddScoped<IMessageRepository>(sp => new ResilientMessageRepository(
             sp.GetRequiredService<MessageRepository>(),
+            sp.GetRequiredService<ScyllaPolicyProvider>(), // Pass the Singleton Provider
             sp.GetRequiredService<ILogger<ResilientMessageRepository>>()
         ));
         services.AddScoped<IReadStateRepository, ReadStateRepository>();

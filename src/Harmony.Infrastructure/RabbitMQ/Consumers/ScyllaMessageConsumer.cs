@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using Harmony.Core.Exceptions;
 using Harmony.Core.Interfaces;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -60,11 +61,6 @@ public class ScyllaMessageConsumer : BackgroundService
         var routingKey = ea.RoutingKey;
         var body = Encoding.UTF8.GetString(ea.Body.Span);
 
-        _logger.LogDebug(
-            "ScyllaConsumer received message with routing key: {RoutingKey}",
-            routingKey
-        );
-
         try
         {
             using var scope = _scopeFactory.CreateScope();
@@ -98,24 +94,37 @@ public class ScyllaMessageConsumer : BackgroundService
 
                 default:
                     _logger.LogWarning(
-                        "ScyllaConsumer — unknown routing key: {RoutingKey}",
+                        "ScyllaConsumer — unknown routing key: {RoutingKey} — nacking permanently",
                         routingKey
                     );
-                    await _channel!.BasicNackAsync(ea.DeliveryTag, false, false);
+                    // Unknown routing key — send to dead letter, don't retry
+                    await _channel!.BasicNackAsync(ea.DeliveryTag, false, requeue: false);
                     return;
             }
 
             await _channel!.BasicAckAsync(ea.DeliveryTag, multiple: false);
         }
+        catch (ServiceUnavailableException)
+        {
+            // Circuit is open — nack with requeue:false
+            // RabbitMQ routes to ScyllaRetryQueue via x-dead-letter-exchange
+            // After RetryTtlMs (15s) it auto-republishes back to the main queue
+            _logger.LogWarning(
+                "ScyllaDB unavailable — routing message to retry queue for {Ttl}ms",
+                Topology.RetryTtlMs
+            );
+
+            await _channel!.BasicNackAsync(ea.DeliveryTag, multiple: false, requeue: false);
+        }
         catch (Exception ex)
         {
             _logger.LogError(
                 ex,
-                "ScyllaConsumer failed to process message with routing key: {RoutingKey}",
+                "ScyllaConsumer failed to process routing key: {RoutingKey} — retrying via DLX",
                 routingKey
             );
 
-            await _channel!.BasicNackAsync(ea.DeliveryTag, multiple: false, requeue: true);
+            await _channel!.BasicNackAsync(ea.DeliveryTag, multiple: false, requeue: false);
         }
     }
 

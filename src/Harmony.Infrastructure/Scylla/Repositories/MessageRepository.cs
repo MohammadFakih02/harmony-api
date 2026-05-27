@@ -1,7 +1,7 @@
 using Cassandra;
-using Cassandra.Data.Linq;
 using Harmony.Core.Domain.Entities;
 using Harmony.Core.Interfaces.Repositories;
+using Harmony.Infrastructure.Scylla;
 using Microsoft.Extensions.Logging;
 
 namespace Harmony.Infrastructure.Scylla.Repositories;
@@ -10,142 +10,134 @@ public class MessageRepository : IMessageRepository
 {
     private readonly ISession _session;
     private readonly ILogger<MessageRepository> _logger;
-
-    // Prepared statements — compiled once on first use, reused on every call
-    private readonly Lazy<PreparedStatement> _insertByChannel;
-    private readonly Lazy<PreparedStatement> _insertById;
-    private readonly Lazy<PreparedStatement> _selectByChannel;
-    private readonly Lazy<PreparedStatement> _selectByChannelBefore;
-    private readonly Lazy<PreparedStatement> _selectById;
-    private readonly Lazy<PreparedStatement> _softDeleteByChannel;
-    private readonly Lazy<PreparedStatement> _softDeleteById;
-    private readonly Lazy<PreparedStatement> _editByChannel;
-    private readonly Lazy<PreparedStatement> _editById;
-    private readonly Lazy<PreparedStatement> _insertPinned;
-    private readonly Lazy<PreparedStatement> _deletePinned;
-    private readonly Lazy<PreparedStatement> _selectPinned;
-
     private readonly string _ks;
+
+    private PreparedStatement? _insertByChannel;
+    private PreparedStatement? _insertById;
+    private PreparedStatement? _selectByChannel;
+    private PreparedStatement? _selectByChannelBefore;
+    private PreparedStatement? _selectById;
+    private PreparedStatement? _softDeleteByChannel;
+    private PreparedStatement? _softDeleteById;
+    private PreparedStatement? _editByChannel;
+    private PreparedStatement? _editById;
+    private PreparedStatement? _insertPinned;
+    private PreparedStatement? _deletePinned;
+    private PreparedStatement? _selectPinned;
 
     public MessageRepository(IScyllaSessionFactory factory, ILogger<MessageRepository> logger)
     {
         _session = factory.Session;
         _ks = factory.Keyspace;
         _logger = logger;
-
-        _insertByChannel = new Lazy<PreparedStatement>(() =>
-            _session.Prepare(
-                $@"
-        INSERT INTO {_ks}.messages_by_channel
-            (channel_id, message_id, user_id, content, attachment_ids,
-             mention_ids, reply_to_id, is_deleted, is_edited, edited_at, message_type)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-            )
-        );
-
-        _insertById = new Lazy<PreparedStatement>(() =>
-            _session.Prepare(
-                $@"
-        INSERT INTO {_ks}.messages_by_id
-            (message_id, channel_id, user_id, content,
-             attachment_ids, reply_to_id, is_deleted, is_edited, edited_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
-            )
-        );
-
-        _selectByChannel = new Lazy<PreparedStatement>(() =>
-            _session.Prepare(
-                $@"
-        SELECT channel_id, message_id, user_id, content, attachment_ids,
-               mention_ids, reply_to_id, is_deleted, is_edited, edited_at, message_type
-        FROM {_ks}.messages_by_channel
-        WHERE channel_id = ?
-        LIMIT ?"
-            )
-        );
-
-        _selectByChannelBefore = new Lazy<PreparedStatement>(() =>
-            _session.Prepare(
-                $@"
-        SELECT channel_id, message_id, user_id, content, attachment_ids,
-               mention_ids, reply_to_id, is_deleted, is_edited, edited_at, message_type
-        FROM {_ks}.messages_by_channel
-        WHERE channel_id = ? AND message_id < ?
-        LIMIT ?"
-            )
-        );
-
-        _selectById = new Lazy<PreparedStatement>(() =>
-            _session.Prepare(
-                $@"
-        SELECT message_id, channel_id, user_id, content, attachment_ids,
-               reply_to_id, is_deleted, is_edited, edited_at
-        FROM {_ks}.messages_by_id
-        WHERE message_id = ?"
-            )
-        );
-
-        _softDeleteByChannel = new Lazy<PreparedStatement>(() =>
-            _session.Prepare(
-                $@"
-        UPDATE {_ks}.messages_by_channel
-        SET is_deleted = true
-        WHERE channel_id = ? AND message_id = ?"
-            )
-        );
-
-        _softDeleteById = new Lazy<PreparedStatement>(() =>
-            _session.Prepare(
-                $@"
-        UPDATE {_ks}.messages_by_id
-        SET is_deleted = true
-        WHERE message_id = ?"
-            )
-        );
-
-        _editByChannel = new Lazy<PreparedStatement>(() =>
-            _session.Prepare(
-                $@"
-        UPDATE {_ks}.messages_by_channel
-        SET content = ?, is_edited = true, edited_at = ?
-        WHERE channel_id = ? AND message_id = ?"
-            )
-        );
-
-        _editById = new Lazy<PreparedStatement>(() =>
-            _session.Prepare(
-                $@"
-        UPDATE {_ks}.messages_by_id
-        SET content = ?, is_edited = true, edited_at = ?
-        WHERE message_id = ?"
-            )
-        );
-
-        _insertPinned = new Lazy<PreparedStatement>(() =>
-            _session.Prepare(
-                $@"
-        INSERT INTO {_ks}.pinned_messages (channel_id, pinned_at, message_id, pinned_by)
-        VALUES (?, ?, ?, ?)"
-            )
-        );
-
-        _deletePinned = new Lazy<PreparedStatement>(() =>
-            _session.Prepare(
-                $@"
-        DELETE FROM {_ks}.pinned_messages
-        WHERE channel_id = ? AND pinned_at = ?"
-            )
-        );
-
-        _selectPinned = new Lazy<PreparedStatement>(() =>
-            _session.Prepare(
-                $@"
-        SELECT channel_id, pinned_at, message_id, pinned_by
-        FROM {_ks}.pinned_messages
-        WHERE channel_id = ?"
-            )
-        );
     }
+
+    // --- Prepared statement accessors ---
+    // Prepared inside method calls so Polly circuit breaker wraps both preparation and execution
+
+    private async Task<PreparedStatement> GetInsertByChannelAsync() =>
+        _insertByChannel ??= await _session.PrepareAsync(
+            $@"
+            INSERT INTO {_ks}.messages_by_channel
+                (channel_id, message_id, user_id, content, attachment_ids,
+                 mention_ids, reply_to_id, is_deleted, is_edited, edited_at, message_type)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        );
+
+    private async Task<PreparedStatement> GetInsertByIdAsync() =>
+        _insertById ??= await _session.PrepareAsync(
+            $@"
+            INSERT INTO {_ks}.messages_by_id
+                (message_id, channel_id, user_id, content,
+                 attachment_ids, reply_to_id, is_deleted, is_edited, edited_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        );
+
+    private async Task<PreparedStatement> GetSelectByChannelAsync() =>
+        _selectByChannel ??= await _session.PrepareAsync(
+            $@"
+            SELECT channel_id, message_id, user_id, content, attachment_ids,
+                   mention_ids, reply_to_id, is_deleted, is_edited, edited_at, message_type
+            FROM {_ks}.messages_by_channel
+            WHERE channel_id = ?
+            LIMIT ?"
+        );
+
+    private async Task<PreparedStatement> GetSelectByChannelBeforeAsync() =>
+        _selectByChannelBefore ??= await _session.PrepareAsync(
+            $@"
+            SELECT channel_id, message_id, user_id, content, attachment_ids,
+                   mention_ids, reply_to_id, is_deleted, is_edited, edited_at, message_type
+            FROM {_ks}.messages_by_channel
+            WHERE channel_id = ? AND message_id < ?
+            LIMIT ?"
+        );
+
+    private async Task<PreparedStatement> GetSelectByIdAsync() =>
+        _selectById ??= await _session.PrepareAsync(
+            $@"
+            SELECT message_id, channel_id, user_id, content, attachment_ids,
+                   reply_to_id, is_deleted, is_edited, edited_at
+            FROM {_ks}.messages_by_id
+            WHERE message_id = ?"
+        );
+
+    private async Task<PreparedStatement> GetSoftDeleteByChannelAsync() =>
+        _softDeleteByChannel ??= await _session.PrepareAsync(
+            $@"
+            UPDATE {_ks}.messages_by_channel
+            SET is_deleted = true
+            WHERE channel_id = ? AND message_id = ?"
+        );
+
+    private async Task<PreparedStatement> GetSoftDeleteByIdAsync() =>
+        _softDeleteById ??= await _session.PrepareAsync(
+            $@"
+            UPDATE {_ks}.messages_by_id
+            SET is_deleted = true
+            WHERE message_id = ?"
+        );
+
+    private async Task<PreparedStatement> GetEditByChannelAsync() =>
+        _editByChannel ??= await _session.PrepareAsync(
+            $@"
+            UPDATE {_ks}.messages_by_channel
+            SET content = ?, is_edited = true, edited_at = ?
+            WHERE channel_id = ? AND message_id = ?"
+        );
+
+    private async Task<PreparedStatement> GetEditByIdAsync() =>
+        _editById ??= await _session.PrepareAsync(
+            $@"
+            UPDATE {_ks}.messages_by_id
+            SET content = ?, is_edited = true, edited_at = ?
+            WHERE message_id = ?"
+        );
+
+    private async Task<PreparedStatement> GetInsertPinnedAsync() =>
+        _insertPinned ??= await _session.PrepareAsync(
+            $@"
+            INSERT INTO {_ks}.pinned_messages
+                (channel_id, pinned_at, message_id, pinned_by)
+            VALUES (?, ?, ?, ?)"
+        );
+
+    private async Task<PreparedStatement> GetDeletePinnedAsync() =>
+        _deletePinned ??= await _session.PrepareAsync(
+            $@"
+            DELETE FROM {_ks}.pinned_messages
+            WHERE channel_id = ? AND pinned_at = ?"
+        );
+
+    private async Task<PreparedStatement> GetSelectPinnedAsync() =>
+        _selectPinned ??= await _session.PrepareAsync(
+            $@"
+            SELECT channel_id, pinned_at, message_id, pinned_by
+            FROM {_ks}.pinned_messages
+            WHERE channel_id = ?"
+        );
+
+    // --- Repository methods ---
 
     public async Task<IEnumerable<Message>> GetChannelMessagesAsync(
         long channelId,
@@ -154,25 +146,34 @@ public class MessageRepository : IMessageRepository
         CancellationToken ct = default
     )
     {
-        RowSet rows;
+        BoundStatement bound;
 
         if (beforeMessageId.HasValue)
         {
-            var bound = _selectByChannelBefore.Value.Bind(channelId, beforeMessageId.Value, limit);
-            rows = await _session.ExecuteAsync(bound);
+            var stmt = await GetSelectByChannelBeforeAsync();
+            bound = stmt.Bind(channelId, beforeMessageId.Value, limit);
         }
         else
         {
-            var bound = _selectByChannel.Value.Bind(channelId, limit);
-            rows = await _session.ExecuteAsync(bound);
+            var stmt = await GetSelectByChannelAsync();
+            bound = stmt.Bind(channelId, limit);
         }
 
+        // Mark as idempotent — enables speculative execution and safe retries
+        bound.SetIdempotence(true);
+
+        var rows = await _session.ExecuteAsync(bound);
         return rows.Select(MapMessage);
     }
 
     public async Task<Message?> GetByIdAsync(long messageId, CancellationToken ct = default)
     {
-        var bound = _selectById.Value.Bind(messageId);
+        var stmt = await GetSelectByIdAsync();
+        var bound = stmt.Bind(messageId);
+
+        // Mark as idempotent — enables speculative execution and safe retries
+        bound.SetIdempotence(true);
+
         var rows = await _session.ExecuteAsync(bound);
         var row = rows.FirstOrDefault();
         return row is null ? null : MapMessageById(row);
@@ -180,9 +181,13 @@ public class MessageRepository : IMessageRepository
 
     public async Task SaveAsync(Message message, CancellationToken ct = default)
     {
-        // Dual-write to both tables — fire both and await together
+        var byChannelStmt = await GetInsertByChannelAsync();
+        var byIdStmt = await GetInsertByIdAsync();
+
+        // Writes are NOT idempotent — never marked SetIdempotence(true)
+        // IdempotenceAwareRetryPolicy will not retry these on timeout
         var byChannel = _session.ExecuteAsync(
-            _insertByChannel.Value.Bind(
+            byChannelStmt.Bind(
                 message.ChannelId,
                 message.MessageId,
                 message.UserId,
@@ -198,7 +203,7 @@ public class MessageRepository : IMessageRepository
         );
 
         var byId = _session.ExecuteAsync(
-            _insertById.Value.Bind(
+            byIdStmt.Bind(
                 message.MessageId,
                 message.ChannelId,
                 message.UserId,
@@ -222,13 +227,17 @@ public class MessageRepository : IMessageRepository
 
     public async Task DeleteAsync(long messageId, long channelId, CancellationToken ct = default)
     {
-        var byChannel = _session.ExecuteAsync(
-            _softDeleteByChannel.Value.Bind(channelId, messageId)
-        );
+        var byChannelStmt = await GetSoftDeleteByChannelAsync();
+        var byIdStmt = await GetSoftDeleteByIdAsync();
 
-        var byId = _session.ExecuteAsync(_softDeleteById.Value.Bind(messageId));
+        // Soft deletes are idempotent — setting is_deleted=true twice is safe
+        var byChannel = byChannelStmt.Bind(channelId, messageId);
+        byChannel.SetIdempotence(true);
 
-        await Task.WhenAll(byChannel, byId);
+        var byId = byIdStmt.Bind(messageId);
+        byId.SetIdempotence(true);
+
+        await Task.WhenAll(_session.ExecuteAsync(byChannel), _session.ExecuteAsync(byId));
     }
 
     public async Task EditAsync(
@@ -239,14 +248,14 @@ public class MessageRepository : IMessageRepository
     )
     {
         var now = DateTime.UtcNow;
+        var byChannelStmt = await GetEditByChannelAsync();
+        var byIdStmt = await GetEditByIdAsync();
 
-        var byChannel = _session.ExecuteAsync(
-            _editByChannel.Value.Bind(newContent, now, channelId, messageId)
+        // Edits are NOT idempotent — retrying with same timestamp could overwrite a newer edit
+        await Task.WhenAll(
+            _session.ExecuteAsync(byChannelStmt.Bind(newContent, now, channelId, messageId)),
+            _session.ExecuteAsync(byIdStmt.Bind(newContent, now, messageId))
         );
-
-        var byId = _session.ExecuteAsync(_editById.Value.Bind(newContent, now, messageId));
-
-        await Task.WhenAll(byChannel, byId);
     }
 
     public async Task PinAsync(
@@ -256,15 +265,17 @@ public class MessageRepository : IMessageRepository
         CancellationToken ct = default
     )
     {
-        // pinnedAt is a Snowflake ID used as a clustering key — use messageId as pinned_at
-        // so pins are ordered by when the message was sent, not when it was pinned
-        var bound = _insertPinned.Value.Bind(channelId, messageId, messageId, pinnedBy);
-        await _session.ExecuteAsync(bound);
+        var stmt = await GetInsertPinnedAsync();
+        // INSERT is not idempotent by default
+        await _session.ExecuteAsync(stmt.Bind(channelId, messageId, messageId, pinnedBy));
     }
 
     public async Task UnpinAsync(long channelId, long pinnedAt, CancellationToken ct = default)
     {
-        var bound = _deletePinned.Value.Bind(channelId, pinnedAt);
+        var stmt = await GetDeletePinnedAsync();
+        var bound = stmt.Bind(channelId, pinnedAt);
+        // DELETE is idempotent — deleting an already-deleted row is safe
+        bound.SetIdempotence(true);
         await _session.ExecuteAsync(bound);
     }
 
@@ -273,7 +284,9 @@ public class MessageRepository : IMessageRepository
         CancellationToken ct = default
     )
     {
-        var bound = _selectPinned.Value.Bind(channelId);
+        var stmt = await GetSelectPinnedAsync();
+        var bound = stmt.Bind(channelId);
+        bound.SetIdempotence(true);
         var rows = await _session.ExecuteAsync(bound);
         return rows.Select(MapPinnedMessage);
     }
