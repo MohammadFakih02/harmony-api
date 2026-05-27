@@ -1,23 +1,21 @@
-using Cassandra;
 using Microsoft.Extensions.Logging;
 using Polly;
 using Polly.CircuitBreaker;
-using RabbitMQ.Client.Exceptions;
+using Polly.Retry;
 
 namespace Harmony.Infrastructure.Resilience;
 
 public static class ResiliencePolicies
 {
-    // RabbitMQ — circuit breaker only on real connection failures
-    // No retry — if publish fails, fail fast and let the circuit track it
+    // RabbitMQ — circuit breaker only, no retry
+    // Rationale: retrying a publish on the same down broker wastes time.
+    // The circuit opens fast and fails immediately until RabbitMQ recovers.
     public static AsyncCircuitBreakerPolicy RabbitMQCircuitBreaker(ILogger logger) =>
         Policy
-            .Handle<RabbitMQClientException>()
-            .Or<System.Net.Sockets.SocketException>()
-            .Or<System.IO.IOException>()
+            .Handle<Exception>()
             .CircuitBreakerAsync(
                 exceptionsAllowedBeforeBreaking: 3,
-                durationOfBreak: TimeSpan.FromSeconds(10),
+                durationOfBreak: TimeSpan.FromSeconds(30),
                 onBreak: (ex, duration) =>
                     logger.LogWarning(
                         "RabbitMQ circuit breaker OPEN for {Duration}s — {Message}",
@@ -27,21 +25,34 @@ public static class ResiliencePolicies
                 onReset: () =>
                     logger.LogInformation("RabbitMQ circuit breaker CLOSED — connection restored"),
                 onHalfOpen: () =>
-                    logger.LogInformation("RabbitMQ circuit breaker HALF-OPEN — testing")
+                    logger.LogInformation("RabbitMQ circuit breaker HALF-OPEN — testing connection")
             );
 
-    // ScyllaDB — circuit breaker ONLY
-    // The ScyllaDB driver handles retries internally via IdempotenceAwareRetryPolicy
-    // and automatic failover. Adding Polly retries on top causes double-retrying
-    // and unnecessary load on a struggling cluster.
-    // The circuit breaker catches total cluster failures after the driver gives up.
+    // ScyllaDB — retry with exponential backoff, then circuit breaker
+    // Rationale: Scylla blips are often transient (GC pause, leader election).
+    // Retry 3 times before giving up, circuit opens after repeated failures.
+    public static AsyncPolicy ScyllaRetryPolicy(ILogger logger) =>
+        Policy
+            .Handle<Exception>()
+            .WaitAndRetryAsync(
+                retryCount: 3,
+                sleepDurationProvider: attempt =>
+                    TimeSpan.FromMilliseconds(100 * Math.Pow(2, attempt)),
+                onRetry: (ex, delay, attempt, _) =>
+                    logger.LogWarning(
+                        "ScyllaDB retry {Attempt}/3 after {Delay}ms — {Message}",
+                        attempt,
+                        delay.TotalMilliseconds,
+                        ex.Message
+                    )
+            );
+
     public static AsyncCircuitBreakerPolicy ScyllaCircuitBreaker(ILogger logger) =>
         Policy
-            .Handle<DriverException>()
-            .Or<NoHostAvailableException>()
+            .Handle<Exception>()
             .CircuitBreakerAsync(
-                exceptionsAllowedBeforeBreaking: 3,
-                durationOfBreak: TimeSpan.FromSeconds(30),
+                exceptionsAllowedBeforeBreaking: 5,
+                durationOfBreak: TimeSpan.FromSeconds(20),
                 onBreak: (ex, duration) =>
                     logger.LogWarning(
                         "ScyllaDB circuit breaker OPEN for {Duration}s — {Message}",
@@ -51,30 +62,9 @@ public static class ResiliencePolicies
                 onReset: () =>
                     logger.LogInformation("ScyllaDB circuit breaker CLOSED — connection restored"),
                 onHalfOpen: () =>
-                    logger.LogInformation("ScyllaDB circuit breaker HALF-OPEN — testing")
+                    logger.LogInformation("ScyllaDB circuit breaker HALF-OPEN — testing connection")
             );
 
-    // ScyllaPolicy is now just the circuit breaker — no Polly retry wrapper
-    public static AsyncPolicy ScyllaPolicy(ILogger logger) => ScyllaCircuitBreaker(logger);
-}
-
-// Singleton providers — share circuit breaker state across all scoped instances
-public class ScyllaPolicyProvider
-{
-    public IAsyncPolicy Policy { get; }
-
-    public ScyllaPolicyProvider(ILogger<ScyllaPolicyProvider> logger)
-    {
-        Policy = ResiliencePolicies.ScyllaPolicy(logger);
-    }
-}
-
-public class RabbitMQPolicyProvider
-{
-    public IAsyncPolicy Policy { get; }
-
-    public RabbitMQPolicyProvider(ILogger<RabbitMQPolicyProvider> logger)
-    {
-        Policy = ResiliencePolicies.RabbitMQCircuitBreaker(logger);
-    }
+    public static AsyncPolicy ScyllaPolicy(ILogger logger) =>
+        Policy.WrapAsync(ScyllaCircuitBreaker(logger), ScyllaRetryPolicy(logger));
 }

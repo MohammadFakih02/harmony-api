@@ -1,6 +1,4 @@
-using System.Net.Sockets; // Added for SocketException
 using FluentAssertions;
-using Harmony.Core.Exceptions;
 using Harmony.Core.Interfaces;
 using Harmony.Infrastructure.Resilience;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -16,14 +14,8 @@ public class ResilientMessagePublisherTests
     public ResilientMessagePublisherTests()
     {
         _innerMock = new Mock<IMessagePublisher>();
-
-        var policyProvider = new RabbitMQPolicyProvider(
-            NullLogger<RabbitMQPolicyProvider>.Instance
-        );
-
         _sut = new ResilientMessagePublisher(
             _innerMock.Object,
-            policyProvider,
             NullLogger<ResilientMessagePublisher>.Instance
         );
     }
@@ -46,9 +38,9 @@ public class ResilientMessagePublisherTests
     }
 
     [Fact]
-    public async Task PublishMessageSentAsync_ShouldThrowServiceUnavailable_WhenCircuitOpens()
+    public async Task PublishMessageSentAsync_ShouldThrowInvalidOperation_WhenCircuitOpens()
     {
-        // Fail 3 times throwing a SocketException to open the circuit
+        // Fail 3 times to open the circuit
         _innerMock
             .Setup(p =>
                 p.PublishMessageSentAsync(
@@ -56,7 +48,7 @@ public class ResilientMessagePublisherTests
                     It.IsAny<CancellationToken>()
                 )
             )
-            .ThrowsAsync(new SocketException()); // Throws realistic connection-level socket failure
+            .ThrowsAsync(new Exception("RabbitMQ connection refused"));
 
         // Exhaust the allowed failures to open the circuit
         for (int i = 0; i < 3; i++)
@@ -70,11 +62,11 @@ public class ResilientMessagePublisherTests
             }
         }
 
-        // Next call should hit open circuit and throw ServiceUnavailableException
+        // Next call should hit open circuit and throw InvalidOperationException
         var act = async () => await _sut.PublishMessageSentAsync(BuildMessageSentEvent());
 
         await act.Should()
-            .ThrowAsync<ServiceUnavailableException>()
+            .ThrowAsync<InvalidOperationException>()
             .WithMessage("*temporarily unavailable*");
     }
 
