@@ -7,45 +7,18 @@ namespace Harmony.Infrastructure.Scylla.Repositories;
 public class ReadStateRepository : IReadStateRepository
 {
     private readonly ISession _session;
+    private readonly ReadStateStatements _statements;
     private readonly ILogger<ReadStateRepository> _logger;
 
-    private readonly Lazy<PreparedStatement> _upsert;
-    private readonly Lazy<PreparedStatement> _selectOne;
-    private readonly Lazy<PreparedStatement> _selectForChannel;
-
-    private readonly string _ks;
-
-    public ReadStateRepository(IScyllaSessionFactory factory, ILogger<ReadStateRepository> logger)
+    public ReadStateRepository(
+        IScyllaSessionFactory factory,
+        ReadStateStatements statements,
+        ILogger<ReadStateRepository> logger
+    )
     {
         _session = factory.Session;
-        _ks = factory.Keyspace;
+        _statements = statements;
         _logger = logger;
-
-        _upsert = new Lazy<PreparedStatement>(() =>
-            _session.Prepare(
-                $@"
-        INSERT INTO {_ks}.read_states (user_id, channel_id, last_read_message_id)
-        VALUES (?, ?, ?)"
-            )
-        );
-
-        _selectOne = new Lazy<PreparedStatement>(() =>
-            _session.Prepare(
-                $@"
-        SELECT last_read_message_id
-        FROM {_ks}.read_states
-        WHERE user_id = ? AND channel_id = ?"
-            )
-        );
-
-        _selectForChannel = new Lazy<PreparedStatement>(() =>
-            _session.Prepare(
-                $@"
-        SELECT last_read_message_id
-        FROM {_ks}.read_states
-        WHERE user_id = ? AND channel_id = ?"
-            )
-        );
     }
 
     public async Task MarkAsReadAsync(
@@ -55,8 +28,9 @@ public class ReadStateRepository : IReadStateRepository
         CancellationToken ct = default
     )
     {
-        var bound = _upsert.Value.Bind(userId, channelId, lastReadMessageId);
-        await _session.ExecuteAsync(bound);
+        var bound = _statements.Upsert.Bind(userId, channelId, lastReadMessageId);
+        bound.SetIdempotence(true); // Constant value assignment is safe to retry/speculate
+        await _session.ExecuteAsync(bound, "read-states");
 
         _logger.LogDebug(
             "Marked channel {ChannelId} as read for user {UserId} up to message {MessageId}",
@@ -72,8 +46,9 @@ public class ReadStateRepository : IReadStateRepository
         CancellationToken ct = default
     )
     {
-        var bound = _selectOne.Value.Bind(userId, channelId);
-        var rows = await _session.ExecuteAsync(bound);
+        var bound = _statements.SelectOne.Bind(userId, channelId);
+        bound.SetIdempotence(true);
+        var rows = await _session.ExecuteAsync(bound, "read-states");
         var row = rows.FirstOrDefault();
         return row?.GetValue<long?>("last_read_message_id");
     }
@@ -84,13 +59,11 @@ public class ReadStateRepository : IReadStateRepository
         CancellationToken ct = default
     )
     {
-        // Fire all queries in parallel — one per channel
-        // ScyllaDB's read_states PRIMARY KEY is (user_id, channel_id) so each
-        // query hits exactly one partition — no scatter-gather, no secondary index needed
         var tasks = channelIds.Select(async channelId =>
         {
-            var bound = _selectForChannel.Value.Bind(userId, channelId);
-            var rows = await _session.ExecuteAsync(bound);
+            var bound = _statements.SelectOne.Bind(userId, channelId);
+            bound.SetIdempotence(true);
+            var rows = await _session.ExecuteAsync(bound, "read-states");
             var row = rows.FirstOrDefault();
             var lastRead = row?.GetValue<long?>("last_read_message_id");
             return (channelId, lastRead);

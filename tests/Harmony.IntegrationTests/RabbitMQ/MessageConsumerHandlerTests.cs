@@ -1,8 +1,10 @@
+// --- START OF FILE MessageConsumerHandlerTests.cs ---
 using FluentAssertions;
 using Harmony.Core.Domain.Entities;
 using Harmony.Core.Interfaces;
 using Harmony.Core.Interfaces.Repositories;
 using Harmony.Infrastructure.RabbitMQ;
+using Harmony.Infrastructure.Scylla; // Added to resolve MessageStatements
 using Harmony.Infrastructure.Scylla.Repositories;
 using Harmony.IntegrationTests.Infrastructure;
 using Microsoft.EntityFrameworkCore;
@@ -13,7 +15,7 @@ namespace Harmony.IntegrationTests.RabbitMQ;
 /// <summary>
 /// Tests the background worker (Consumer Handler).
 /// Inherits from ScyllaAndPostgresTestBase which uses Respawn to instantly wipe Postgres
-/// and TRUNCATEs Scylla tables between EVERY test, ensuring a 100% clean state.
+/// and TRUNCATEs Scylla tables between EVERY test, ensuring a clean state.
 /// </summary>
 public class MessageConsumerHandlerTests : ScyllaAndPostgresTestBase
 {
@@ -32,8 +34,15 @@ public class MessageConsumerHandlerTests : ScyllaAndPostgresTestBase
         // We use a "Stub" to bypass real connection logic and point the Repo to the test keyspace
         var stub = new ScyllaSessionFactoryStub(Session);
 
-        // Manual Dependency Injection: We inject the Stub and a NullLogger (so our console stays clean)
-        _messageRepository = new MessageRepository(stub, NullLogger<MessageRepository>.Instance);
+        // Compile statements cache inside the test context
+        var statements = new MessageStatements(stub);
+
+        // Manual Dependency Injection: We inject the Stub, the statements cache, and a NullLogger
+        _messageRepository = new MessageRepository(
+            stub,
+            statements,
+            NullLogger<MessageRepository>.Instance
+        );
 
         // Inject the mocked repo and the real test database context into the handler
         _handler = new MessageConsumerHandler(
@@ -168,7 +177,12 @@ public class MessageConsumerHandlerTests : ScyllaAndPostgresTestBase
     public async Task HandleMessageSentAsync_ShouldPersistToScylla()
     {
         var stub = new ScyllaSessionFactoryStub(Session);
-        var directRepo = new MessageRepository(stub, NullLogger<MessageRepository>.Instance);
+        var statements = new MessageStatements(stub);
+        var directRepo = new MessageRepository(
+            stub,
+            statements,
+            NullLogger<MessageRepository>.Instance
+        );
 
         await directRepo.SaveAsync(
             new Message
@@ -217,7 +231,6 @@ public class MessageConsumerHandlerTests : ScyllaAndPostgresTestBase
     }
 
     // --- Helpers ---
-    // (Helper methods remain identical to your original file)
     private static MessageSentEvent BuildMessageSentEvent(
         long messageId,
         List<long>? mentionIds = null

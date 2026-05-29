@@ -31,6 +31,8 @@ public static class DependencyInjection
 
         // ScyllaDB setup
         services.AddSingleton<IScyllaSessionFactory, ScyllaSessionFactory>();
+        services.AddSingleton<MessageStatements>();
+        services.AddSingleton<ReadStateStatements>();
         services.AddHostedService<KeyspaceInitializer>();
 
         // RabbitMQ setup

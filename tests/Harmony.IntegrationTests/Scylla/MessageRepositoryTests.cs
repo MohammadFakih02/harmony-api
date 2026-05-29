@@ -1,6 +1,6 @@
-using Cassandra;
 using FluentAssertions;
 using Harmony.Core.Domain.Entities;
+using Harmony.Infrastructure.Scylla;
 using Harmony.Infrastructure.Scylla.Repositories;
 using Harmony.IntegrationTests.Infrastructure;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -15,7 +15,8 @@ public class MessageRepositoryTests : ScyllaTestBase
     private MessageRepository CreateRepository()
     {
         var stub = new ScyllaSessionFactoryStub(Session);
-        return new MessageRepository(stub, NullLogger<MessageRepository>.Instance);
+        var statements = new MessageStatements(stub);
+        return new MessageRepository(stub, statements, NullLogger<MessageRepository>.Instance);
     }
 
     // --- SaveAsync + GetChannelMessagesAsync ---
@@ -26,12 +27,13 @@ public class MessageRepositoryTests : ScyllaTestBase
         var repo = CreateRepository();
         var message = BuildMessage(channelId: 1, messageId: 1001, content: "hello world");
 
-        // Check what keyspace the session is on
-        var keyspace = Session.Keyspace;
-        keyspace.Should().Be("harmony_test");
+        Session.Keyspace.Should().Be("harmony_test");
 
         await repo.SaveAsync(message);
-        await Task.Delay(500);
+        // No Task.Delay needed: ExecuteAsync with LocalQuorum consistency is
+        // synchronous from the coordinator's perspective — the write is
+        // acknowledged only after the quorum of replicas confirms it. Reading
+        // immediately after is safe.
 
         var results = await repo.GetChannelMessagesAsync(channelId: 1, limit: 10);
         results.Should().HaveCount(1);
@@ -140,11 +142,9 @@ public class MessageRepositoryTests : ScyllaTestBase
         await repo.SaveAsync(message);
         await repo.DeleteAsync(messageId: 6001, channelId: 6);
 
-        // Check messages_by_channel
         var byChannel = (await repo.GetChannelMessagesAsync(channelId: 6, limit: 10)).First();
         byChannel.IsDeleted.Should().BeTrue();
 
-        // Check messages_by_id
         var byId = await repo.GetByIdAsync(6001);
         byId!.IsDeleted.Should().BeTrue();
     }
