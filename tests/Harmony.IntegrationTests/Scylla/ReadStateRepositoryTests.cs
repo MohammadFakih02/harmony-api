@@ -1,4 +1,5 @@
 using FluentAssertions;
+using Harmony.Infrastructure.Scylla;
 using Harmony.Infrastructure.Scylla.Repositories;
 using Harmony.IntegrationTests.Infrastructure;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -12,7 +13,8 @@ public class ReadStateRepositoryTests : ScyllaTestBase
     private ReadStateRepository CreateRepository()
     {
         var stub = new ScyllaSessionFactoryStub(Session);
-        return new ReadStateRepository(stub, NullLogger<ReadStateRepository>.Instance);
+        var statements = new ReadStateStatements(stub);
+        return new ReadStateRepository(stub, statements, NullLogger<ReadStateRepository>.Instance);
     }
 
     // --- MarkAsReadAsync + GetLastReadMessageIdAsync ---

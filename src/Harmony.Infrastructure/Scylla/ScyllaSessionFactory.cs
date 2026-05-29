@@ -17,42 +17,86 @@ public class ScyllaSessionFactory : IScyllaSessionFactory, IDisposable
         _logger = logger;
 
         _keyspace = configuration.GetValue<string>("ScyllaDB:Keyspace", "harmony")!;
-        
 
         var contactPoints =
             configuration.GetSection("ScyllaDB:ContactPoints").Get<string[]>() ?? ["127.0.0.1"];
 
         var port = configuration.GetValue<int>("ScyllaDB:Port", 9042);
-        var keyspace = configuration.GetValue<string>("ScyllaDB:Keyspace", "harmony");
 
         _logger.LogInformation(
             "Connecting to ScyllaDB at {ContactPoints}:{Port}, keyspace: {Keyspace}",
             string.Join(", ", contactPoints),
             port,
-            keyspace
+            _keyspace
         );
 
         var cluster = Cluster
             .Builder()
             .AddContactPoints(contactPoints)
             .WithPort(port)
+            .WithLoadBalancingPolicy(Policies.DefaultLoadBalancingPolicy)
             .WithReconnectionPolicy(new ExponentialReconnectionPolicy(1000, 60000))
-            .WithRetryPolicy(new DefaultRetryPolicy())
+            .WithRetryPolicy(new LoggingRetryPolicy(new DefaultRetryPolicy()))
             .WithQueryOptions(
                 new QueryOptions()
                     .SetConsistencyLevel(ConsistencyLevel.LocalQuorum)
                     .SetSerialConsistencyLevel(ConsistencyLevel.LocalSerial)
+                    .SetPrepareOnAllHosts(true)
+                    .SetReprepareOnUp(true)
+            )
+            .WithExecutionProfiles(options =>
+                options
+                    .WithProfile(
+                        "default",
+                        profile =>
+                            profile
+                                .WithLoadBalancingPolicy(Policies.DefaultLoadBalancingPolicy)
+                                .WithConsistencyLevel(ConsistencyLevel.LocalQuorum)
+                                .WithSerialConsistencyLevel(ConsistencyLevel.LocalSerial)
+                                .WithRetryPolicy(new LoggingRetryPolicy(new DefaultRetryPolicy()))
+                    )
+                    .WithProfile(
+                        "write",
+                        profile =>
+                            profile
+                                .WithLoadBalancingPolicy(Policies.DefaultLoadBalancingPolicy)
+                                .WithConsistencyLevel(ConsistencyLevel.LocalQuorum)
+                                .WithSerialConsistencyLevel(ConsistencyLevel.LocalSerial)
+                                .WithRetryPolicy(new LoggingRetryPolicy(new DefaultRetryPolicy()))
+                    )
+                    .WithProfile(
+                        "read",
+                        profile =>
+                            profile
+                                .WithLoadBalancingPolicy(Policies.DefaultLoadBalancingPolicy)
+                                .WithConsistencyLevel(ConsistencyLevel.LocalQuorum)
+                                .WithRetryPolicy(new LoggingRetryPolicy(new DefaultRetryPolicy()))
+                                .WithSpeculativeExecutionPolicy(
+                                    new ConstantSpeculativeExecutionPolicy(200, 1)
+                                )
+                    )
+                    .WithProfile(
+                        "read-states",
+                        profile =>
+                            profile
+                                .WithLoadBalancingPolicy(Policies.DefaultLoadBalancingPolicy)
+                                .WithConsistencyLevel(ConsistencyLevel.LocalOne)
+                                .WithRetryPolicy(new LoggingRetryPolicy(new DefaultRetryPolicy()))
+                                .WithSpeculativeExecutionPolicy(
+                                    new ConstantSpeculativeExecutionPolicy(100, 1)
+                                )
+                    )
             )
             .Build();
 
         var session = cluster.Connect();
         session.Execute(
-            $"CREATE KEYSPACE IF NOT EXISTS {keyspace} WITH replication = {{'class': 'SimpleStrategy', 'replication_factor': 1}}"
+            $"CREATE KEYSPACE IF NOT EXISTS {_keyspace} WITH replication = {{'class': 'SimpleStrategy', 'replication_factor': 1}}"
         );
-        session.ChangeKeyspace(keyspace);
+        session.ChangeKeyspace(_keyspace);
         _session = session;
 
-        _logger.LogInformation("ScyllaDB session established");
+        _logger.LogInformation("ScyllaDB session established (shard-aware)");
     }
 
     public ISession Session => _session;
