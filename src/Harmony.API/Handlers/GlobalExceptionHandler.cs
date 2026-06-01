@@ -1,7 +1,9 @@
 using System.Security.Authentication;
-using Cassandra; // Reference the driver directly
+using Cassandra;
+using Harmony.Core.Exceptions;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Mvc;
+using Polly.CircuitBreaker;
 
 namespace Harmony.API.Handlers;
 
@@ -20,6 +22,29 @@ public class GlobalExceptionHandler : IExceptionHandler
         CancellationToken cancellationToken
     )
     {
+        if (exception is NoHostAvailableException noHostEx)
+        {
+            _logger.LogError("ScyllaDB connection failed. Listing raw host errors:");
+            if (noHostEx.Errors != null && noHostEx.Errors.Count > 0)
+            {
+                foreach (var entry in noHostEx.Errors)
+                {
+                    var host = entry.Key?.ToString() ?? "Unknown Host";
+                    var error =
+                        entry.Value != null
+                            ? entry.Value.ToString()
+                            : "No exception recorded (host is marked DOWN)";
+                    _logger.LogError("-> Host: {Host} | Error: {Error}", host, error);
+                }
+            }
+            else
+            {
+                _logger.LogError(
+                    "noHostEx.Errors is empty or null. The driver has marked all hosts down and skipped trying them."
+                );
+            }
+        }
+
         _logger.LogError(
             exception,
             "An unhandled exception occurred: {Message}",
@@ -36,7 +61,7 @@ public class GlobalExceptionHandler : IExceptionHandler
             UnauthorizedAccessException => (StatusCodes.Status403Forbidden, "Forbidden Access"),
             ArgumentException => (StatusCodes.Status400BadRequest, "Bad Request"),
 
-            // Map Cassandra driver exceptions to 503 directly here [1]
+            // Cassandra DB Driver Exceptions [1]
             NoHostAvailableException => (
                 StatusCodes.Status503ServiceUnavailable,
                 "Database Service Unavailable"
@@ -44,6 +69,16 @@ public class GlobalExceptionHandler : IExceptionHandler
             OperationTimedOutException => (
                 StatusCodes.Status503ServiceUnavailable,
                 "Database Query Timed Out"
+            ),
+
+            // New Resiliency Exceptions
+            ServiceUnavailableException => (
+                StatusCodes.Status503ServiceUnavailable,
+                "Service Unavailable"
+            ),
+            BrokenCircuitException => (
+                StatusCodes.Status503ServiceUnavailable,
+                "Service Unavailable (Circuit Open)"
             ),
 
             InvalidOperationException ex when ex.Message.Contains("already") => (
