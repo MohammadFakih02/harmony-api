@@ -4,6 +4,8 @@ using Harmony.Core.Interfaces;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Polly;
+using Polly.Retry;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
 
@@ -14,6 +16,7 @@ public class ScyllaMessageConsumer : BackgroundService
     private readonly RabbitMQConnection _connection;
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<ScyllaMessageConsumer> _logger;
+    private readonly AsyncRetryPolicy _retryPolicy;
     private IChannel? _channel;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -30,6 +33,23 @@ public class ScyllaMessageConsumer : BackgroundService
         _connection = connection;
         _scopeFactory = scopeFactory;
         _logger = logger;
+
+        // Setup Polly Retry Policy (3 retries, exponential backoff: 2s, 4s, 8s)
+        _retryPolicy = Policy
+            .Handle<Exception>(ex => !(ex is JsonException)) // Don't retry malformed JSON payload crashes
+            .WaitAndRetryAsync(
+                retryCount: 3,
+                sleepDurationProvider: attempt => TimeSpan.FromSeconds(Math.Pow(2, attempt)),
+                onRetry: (exception, timeSpan, retryCount, context) =>
+                {
+                    _logger.LogWarning(
+                        exception,
+                        "Error processing Scylla message. Retry {RetryCount} after {Delay}s",
+                        retryCount,
+                        timeSpan.TotalSeconds
+                    );
+                }
+            );
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -67,43 +87,49 @@ public class ScyllaMessageConsumer : BackgroundService
 
         try
         {
-            using var scope = _scopeFactory.CreateScope();
-            var handler = scope.ServiceProvider.GetRequiredService<IMessageConsumerHandler>();
-
-            switch (routingKey)
+            await _retryPolicy.ExecuteAsync(async () =>
             {
-                case Topology.MessageSentKey:
-                    var sentEvt = JsonSerializer.Deserialize<MessageSentEvent>(body, JsonOptions);
-                    if (sentEvt is not null)
-                        await handler.HandleMessageSentAsync(sentEvt);
-                    break;
+                // DI Scope is INSIDE the retry. If the DB fails, we get a fresh scope and DbContext on the next attempt.
+                using var scope = _scopeFactory.CreateScope();
+                var handler = scope.ServiceProvider.GetRequiredService<IMessageConsumerHandler>();
 
-                case Topology.MessageDeletedKey:
-                    var deletedEvt = JsonSerializer.Deserialize<MessageDeletedEvent>(
-                        body,
-                        JsonOptions
-                    );
-                    if (deletedEvt is not null)
-                        await handler.HandleMessageDeletedAsync(deletedEvt);
-                    break;
+                switch (routingKey)
+                {
+                    case Topology.MessageSentKey:
+                        var sentEvt = JsonSerializer.Deserialize<MessageSentEvent>(
+                            body,
+                            JsonOptions
+                        );
+                        if (sentEvt is not null)
+                            await handler.HandleMessageSentAsync(sentEvt);
+                        break;
 
-                case Topology.MessageEditedKey:
-                    var editedEvt = JsonSerializer.Deserialize<MessageEditedEvent>(
-                        body,
-                        JsonOptions
-                    );
-                    if (editedEvt is not null)
-                        await handler.HandleMessageEditedAsync(editedEvt);
-                    break;
+                    case Topology.MessageDeletedKey:
+                        var deletedEvt = JsonSerializer.Deserialize<MessageDeletedEvent>(
+                            body,
+                            JsonOptions
+                        );
+                        if (deletedEvt is not null)
+                            await handler.HandleMessageDeletedAsync(deletedEvt);
+                        break;
 
-                default:
-                    _logger.LogWarning(
-                        "ScyllaConsumer — unknown routing key: {RoutingKey}",
-                        routingKey
-                    );
-                    await _channel!.BasicNackAsync(ea.DeliveryTag, false, false);
-                    return;
-            }
+                    case Topology.MessageEditedKey:
+                        var editedEvt = JsonSerializer.Deserialize<MessageEditedEvent>(
+                            body,
+                            JsonOptions
+                        );
+                        if (editedEvt is not null)
+                            await handler.HandleMessageEditedAsync(editedEvt);
+                        break;
+
+                    default:
+                        _logger.LogWarning(
+                            "ScyllaConsumer — unknown routing key: {RoutingKey}",
+                            routingKey
+                        );
+                        break;
+                }
+            });
 
             await _channel!.BasicAckAsync(ea.DeliveryTag, multiple: false);
         }
@@ -111,11 +137,12 @@ public class ScyllaMessageConsumer : BackgroundService
         {
             _logger.LogError(
                 ex,
-                "ScyllaConsumer failed to process message with routing key: {RoutingKey}",
+                "ScyllaConsumer failed to process message with routing key: {RoutingKey} after retries. Routing to DLQ.",
                 routingKey
             );
 
-            await _channel!.BasicNackAsync(ea.DeliveryTag, multiple: false, requeue: true);
+            // KEY CHANGE: requeue: false immediately stops the CPU-pinning infinite loop and sends to the Dead Letter Queue.
+            await _channel!.BasicNackAsync(ea.DeliveryTag, multiple: false, requeue: false);
         }
     }
 
