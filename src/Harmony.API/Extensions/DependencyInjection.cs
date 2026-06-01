@@ -24,9 +24,17 @@ public static class DependencyInjection
         IConfiguration configuration
     )
     {
-        // Databases
+        // Databases - Added EnableRetryOnFailure
         services.AddDbContext<HarmonyDbContext>(options =>
-            options.UseNpgsql(configuration.GetConnectionString("Postgres"))
+            options.UseNpgsql(
+                configuration.GetConnectionString("Postgres"),
+                npgsqlOptions =>
+                    npgsqlOptions.EnableRetryOnFailure(
+                        maxRetryCount: 3,
+                        maxRetryDelay: TimeSpan.FromSeconds(2),
+                        errorCodesToAdd: null
+                    )
+            )
         );
 
         // ScyllaDB setup
