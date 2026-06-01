@@ -1,6 +1,6 @@
 using System.Text;
 using System.Text.Json;
-using Harmony.Core.Interfaces;
+using Harmony.Domain.Interfaces;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;

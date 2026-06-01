@@ -1,8 +1,8 @@
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using FluentAssertions;
-using Harmony.Core.Domain.Entities;
-using Harmony.Core.Services;
+using Harmony.Domain.Domain.Entities;
+using Harmony.Application.Services;
 using Microsoft.Extensions.Configuration;
 
 namespace Harmony.UnitTests.Services;

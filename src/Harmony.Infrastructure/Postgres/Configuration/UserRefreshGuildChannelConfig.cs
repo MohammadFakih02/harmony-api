@@ -1,4 +1,4 @@
-using Harmony.Core.Domain.Entities;
+using Harmony.Domain.Domain.Entities;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 

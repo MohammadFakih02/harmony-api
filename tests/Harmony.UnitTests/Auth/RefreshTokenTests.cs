@@ -1,5 +1,5 @@
 using FluentAssertions;
-using Harmony.Core.Domain.Entities;
+using Harmony.Domain.Domain.Entities;
 
 namespace Harmony.UnitTests.Auth;
 

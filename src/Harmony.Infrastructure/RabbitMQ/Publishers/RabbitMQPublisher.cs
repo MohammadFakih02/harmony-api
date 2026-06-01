@@ -1,6 +1,6 @@
 using System.Text;
 using System.Text.Json;
-using Harmony.Core.Interfaces;
+using Harmony.Domain.Interfaces;
 using Microsoft.Extensions.Logging;
 using RabbitMQ.Client;
 

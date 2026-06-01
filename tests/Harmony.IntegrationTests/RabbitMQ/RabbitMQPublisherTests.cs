@@ -1,5 +1,5 @@
 using FluentAssertions;
-using Harmony.Core.Interfaces;
+using Harmony.Domain.Interfaces;
 using Harmony.Infrastructure.RabbitMQ;
 using Harmony.Infrastructure.RabbitMQ.Producers;
 using Harmony.IntegrationTests.Infrastructure;

@@ -1,6 +1,6 @@
 using FluentAssertions;
-using Harmony.Core.Domain.Entities;
-using Harmony.Core.Interfaces;
+using Harmony.Domain.Domain.Entities;
+using Harmony.Domain.Interfaces;
 using Harmony.Infrastructure.RabbitMQ;
 using Harmony.IntegrationTests.Infrastructure;
 using Microsoft.EntityFrameworkCore;

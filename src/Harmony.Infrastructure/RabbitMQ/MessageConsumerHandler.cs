@@ -1,6 +1,6 @@
-using Harmony.Core.Domain.Entities;
-using Harmony.Core.Interfaces;
-using Harmony.Core.Interfaces.Repositories;
+using Harmony.Domain.Domain.Entities;
+using Harmony.Domain.Interfaces;
+using Harmony.Domain.Interfaces.Repositories;
 using Harmony.Infrastructure.Postgres;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;

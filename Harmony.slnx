@@ -1,7 +1,8 @@
 <Solution>
   <Folder Name="/src/">
     <Project Path="src/Harmony.API/Harmony.API.csproj" />
-    <Project Path="src/Harmony.Core/Harmony.Core.csproj" />
+    <Project Path="src/Harmony.Application/Harmony.Application.csproj" />
+    <Project Path="src/Harmony.Domain/Harmony.Domain.csproj" />
     <Project Path="src/Harmony.Infrastructure/Harmony.Infrastructure.csproj" />
   </Folder>
   <Folder Name="/tests/">

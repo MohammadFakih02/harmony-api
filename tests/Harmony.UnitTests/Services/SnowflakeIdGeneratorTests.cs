@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using FluentAssertions;
-using Harmony.Core.Services;
+using Harmony.Application.Services;
 using Xunit;
 
 namespace Harmony.UnitTests.Services;

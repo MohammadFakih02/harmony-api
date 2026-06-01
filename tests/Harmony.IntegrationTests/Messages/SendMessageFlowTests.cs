@@ -1,7 +1,7 @@
 using System.Net;
 using System.Net.Http.Json;
 using FluentAssertions;
-using Harmony.Core.DTOs.Responses;
+using Harmony.Application.DTOs.Responses;
 using Harmony.Infrastructure.Postgres;
 using Harmony.IntegrationTests.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;

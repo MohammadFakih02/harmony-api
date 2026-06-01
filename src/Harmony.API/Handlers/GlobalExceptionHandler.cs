@@ -1,6 +1,6 @@
 using System.Security.Authentication;
 using Cassandra;
-using Harmony.Core.Exceptions;
+using Harmony.Application.Exceptions;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Mvc;
 using Polly.CircuitBreaker;
