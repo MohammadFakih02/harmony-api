@@ -1,8 +1,8 @@
 using System.Text;
 using Harmony.API.Extensions;
 using Harmony.API.Handlers;
-using Harmony.Core.Domain.Entities;
-using Harmony.Core.Services;
+using Harmony.Domain.Domain.Entities;
+using Harmony.Application.Services;
 using Harmony.Infrastructure.Extensions;
 using Harmony.Infrastructure.RabbitMQ;
 using Microsoft.AspNetCore.Authentication.JwtBearer;

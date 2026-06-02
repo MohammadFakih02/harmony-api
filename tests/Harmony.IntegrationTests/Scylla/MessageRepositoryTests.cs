@@ -1,5 +1,5 @@
 using FluentAssertions;
-using Harmony.Core.Domain.Entities;
+using Harmony.Domain.Domain.Entities;
 using Harmony.Infrastructure.Scylla;
 using Harmony.Infrastructure.Scylla.Repositories;
 using Harmony.IntegrationTests.Infrastructure;

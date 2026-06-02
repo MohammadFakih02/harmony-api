@@ -1,6 +1,6 @@
 using System.Security.Claims;
-using Harmony.Core.DTOs.Requests;
-using Harmony.Core.Interfaces.Services;
+using Harmony.Application.DTOs.Requests;
+using Harmony.Domain.Interfaces.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;

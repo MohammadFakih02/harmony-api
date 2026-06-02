@@ -1,6 +1,6 @@
 using Cassandra;
-using Harmony.Core.Domain.Entities;
-using Harmony.Core.Interfaces.Repositories;
+using Harmony.Domain.Domain.Entities;
+using Harmony.Domain.Interfaces.Repositories;
 using Microsoft.Extensions.Logging;
 
 namespace Harmony.Infrastructure.Scylla.Repositories;
