@@ -1,8 +1,8 @@
 using System.Text;
-using Harmony.Core.Interfaces;
-using Harmony.Core.Interfaces.Repositories;
-using Harmony.Core.Interfaces.Services;
-using Harmony.Core.Services;
+using Harmony.Application.Services;
+using Harmony.Domain.Interfaces;
+using Harmony.Domain.Interfaces.Repositories;
+using Harmony.Domain.Interfaces.Services;
 using Harmony.Infrastructure.Postgres;
 using Harmony.Infrastructure.Postgres.Repositories;
 using Harmony.Infrastructure.RabbitMQ;
@@ -10,7 +10,6 @@ using Harmony.Infrastructure.RabbitMQ.Consumers;
 using Harmony.Infrastructure.RabbitMQ.Producers;
 using Harmony.Infrastructure.Scylla;
 using Harmony.Infrastructure.Scylla.Repositories;
-using Harmony.Infrastructure.Services;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -53,6 +52,10 @@ public static class DependencyInjection
         services.AddScoped<IUserRepository, UserRepository>();
         services.AddScoped<IMessageRepository, MessageRepository>();
         services.AddScoped<IReadStateRepository, ReadStateRepository>();
+        services.AddScoped<IRefreshTokenRepository, RefreshTokenRepository>();
+
+        // Infrastructure Services
+        services.AddScoped<IIdentityService, IdentityService>();
 
         // Core / Domain Services
         services.AddScoped<IJwtService, JwtService>();

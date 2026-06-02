@@ -1,5 +1,5 @@
 using Cassandra;
-using Harmony.Core.Interfaces.Repositories;
+using Harmony.Domain.Interfaces.Repositories;
 using Microsoft.Extensions.Logging;
 
 namespace Harmony.Infrastructure.Scylla.Repositories;

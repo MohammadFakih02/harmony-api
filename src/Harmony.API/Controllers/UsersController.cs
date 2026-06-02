@@ -1,8 +1,8 @@
 using System.Security.Claims;
-using Harmony.Core.DTOs.Requests;
-using Harmony.Core.DTOs.Responses;
-using Harmony.Core.Domain.Entities;
-using Harmony.Core.Interfaces.Repositories;
+using Harmony.Application.DTOs.Requests;
+using Harmony.Application.DTOs.Responses;
+using Harmony.Domain.Domain.Entities;
+using Harmony.Domain.Interfaces.Repositories;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;

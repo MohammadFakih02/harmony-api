@@ -25,5 +25,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Harmony.API\Harmony.API.csproj" />
+    <ProjectReference Include="..\..\src\Harmony.Application\Harmony.Application.csproj" />
+    <ProjectReference Include="..\..\src\Harmony.Domain\Harmony.Domain.csproj" />
   </ItemGroup>
 </Project>

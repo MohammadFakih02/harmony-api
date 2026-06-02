@@ -1,5 +1,5 @@
-using Harmony.Core.Domain.Entities;
-using Harmony.Core.Interfaces.Repositories;
+using Harmony.Domain.Domain.Entities;
+using Harmony.Domain.Interfaces.Repositories;
 using Microsoft.EntityFrameworkCore;
 
 namespace Harmony.Infrastructure.Postgres.Repositories;
@@ -16,14 +16,13 @@ public class ChannelRepository : IChannelRepository
     public async Task<Channel?> GetByIdAsync(long channelId) =>
         await _db.Channels.FirstOrDefaultAsync(c => c.Id == channelId);
 
-    public async Task<List<Channel>> GetByGuildIdAsync(long guildId) =>
-        await _db.Channels
-            .Where(c => c.GuildId == guildId)
-            .OrderBy(c => c.Position)
-            .ToListAsync();
+    public async Task<Channel?> GetByIdAndGuildIdAsync(long channelId, long guildId) =>
+        await _db.Channels.FirstOrDefaultAsync(c => c.Id == channelId && c.GuildId == guildId);
 
-    public async Task AddAsync(Channel channel) =>
-        await _db.Channels.AddAsync(channel);
+    public async Task<List<Channel>> GetByGuildIdAsync(long guildId) =>
+        await _db.Channels.Where(c => c.GuildId == guildId).OrderBy(c => c.Position).ToListAsync();
+
+    public async Task AddAsync(Channel channel) => await _db.Channels.AddAsync(channel);
 
     public Task DeleteAsync(Channel channel)
     {
@@ -31,6 +30,5 @@ public class ChannelRepository : IChannelRepository
         return Task.CompletedTask;
     }
 
-    public async Task SaveChangesAsync() =>
-        await _db.SaveChangesAsync();
+    public async Task SaveChangesAsync() => await _db.SaveChangesAsync();
 }
