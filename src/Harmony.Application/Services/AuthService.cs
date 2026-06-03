@@ -1,10 +1,10 @@
 using System.Security.Authentication;
-using Harmony.Domain.Domain.Entities;
 using Harmony.Application.DTOs.Requests;
 using Harmony.Application.DTOs.Responses;
+using Harmony.Application.Services;
+using Harmony.Domain.Domain.Entities;
 using Harmony.Domain.Interfaces.Repositories;
 using Harmony.Domain.Interfaces.Services;
-using Harmony.Application.Services;
 using Microsoft.Extensions.Configuration;
 
 namespace Harmony.Application.Services;
@@ -22,14 +22,14 @@ public class AuthService : IAuthService
         IRefreshTokenRepository tokenRepository,
         IJwtService jwtService,
         ISnowflakeIdGenerator snowflake,
-        IConfiguration _config
+        IConfiguration config
     )
     {
         _identityService = identityService;
         _tokenRepository = tokenRepository;
         _jwtService = jwtService;
         _snowflake = snowflake;
-        this._config = _config;
+        _config = config;
     }
 
     public async Task<(AuthResponse response, string rawRefreshToken)> RegisterAsync(
@@ -93,24 +93,64 @@ public class AuthService : IAuthService
 
         if (stored.RevokedAt is not null)
         {
-            await RevokeFamilyAsync(stored.FamilyId, ct);
-            throw new AuthenticationException("Refresh token reuse detected. Please log in again.");
+            var gracePeriod = TimeSpan.FromSeconds(30);
+            if (DateTimeOffset.UtcNow - stored.RevokedAt.Value > gracePeriod)
+            {
+                await RevokeFamilyAsync(stored.FamilyId, ct);
+                throw new AuthenticationException(
+                    "Refresh token reuse detected. Please log in again."
+                );
+            }
+
+            // --- GRACE PERIOD MITIGATION ---
+            // If the replayed token falls within the 30-second window, it's a concurrent retry.
+            // Do not rotate or generate another token. Instead, return a fresh access token
+            // and an empty refresh token string so the controller doesn't overwrite the cookie.
+            var graceAccessToken = _jwtService.GenerateAccessToken(stored.User);
+            return (new AuthResponse(graceAccessToken, ToUserResponse(stored.User)), string.Empty);
         }
 
         if (stored.ExpiresAt < DateTimeOffset.UtcNow)
         {
-            stored.RevokedAt = DateTimeOffset.UtcNow;
-            await _tokenRepository.SaveChangesAsync(ct);
+            if (stored.RevokedAt is null)
+            {
+                stored.RevokedAt = DateTimeOffset.UtcNow;
+                await _tokenRepository.SaveChangesAsync(ct);
+            }
             throw new AuthenticationException("Refresh token expired.");
         }
 
-        stored.RevokedAt = DateTimeOffset.UtcNow;
-        await _tokenRepository.SaveChangesAsync(ct);
+        // Generate values for the new rotated refresh token
+        var accessToken = _jwtService.GenerateAccessToken(stored.User);
+        var newRawRefreshToken = _jwtService.GenerateRefreshToken();
+        var refreshExpiry = int.Parse(_config["Jwt:RefreshTokenExpiryDays"] ?? "7");
 
-        var (accessToken, newRawRefreshToken) = await IssueTokensAsync(
-            stored.User,
-            stored.FamilyId
-        );
+        var newToken = new RefreshToken
+        {
+            Id = Guid.NewGuid(),
+            UserId = stored.User.Id,
+            TokenHash = _jwtService.HashRefreshToken(newRawRefreshToken),
+            FamilyId = stored.FamilyId,
+            ExpiresAt = DateTimeOffset.UtcNow.AddDays(refreshExpiry),
+            CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+        };
+
+        // Prepare modification state for Optimistic Concurrency validation (OCC)
+        stored.RevokedAt = DateTimeOffset.UtcNow;
+
+        try
+        {
+            // Execute atomic transaction update
+            await _tokenRepository.RotateTokenAsync(stored, newToken, ct);
+        }
+        catch (Exception ex)
+        {
+            throw new AuthenticationException(
+                "Token rotation conflict or transaction error. Please log in again.",
+                ex
+            );
+        }
+
         return (new AuthResponse(accessToken, ToUserResponse(stored.User)), newRawRefreshToken);
     }
 

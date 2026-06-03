@@ -11,4 +11,10 @@ public interface IRefreshTokenRepository
     );
     Task AddAsync(RefreshToken token, CancellationToken ct = default);
     Task SaveChangesAsync(CancellationToken ct = default);
+
+    Task RotateTokenAsync(
+        RefreshToken oldToken,
+        RefreshToken newToken,
+        CancellationToken ct = default
+    );
 }

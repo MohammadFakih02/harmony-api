@@ -1,4 +1,4 @@
-// src/Harmony.Infrastructure/Scylla/ScyllaSessionFactory.cs
+using System;
 using System.Net;
 using Cassandra;
 using Microsoft.Extensions.Configuration;
@@ -8,16 +8,15 @@ namespace Harmony.Infrastructure.Scylla;
 
 public class ScyllaSessionFactory : IScyllaSessionFactory, IDisposable
 {
-    private readonly ISession _session;
+    private readonly ICluster _cluster;
+    private readonly Lazy<ISession> _lazySession;
     private readonly ILogger<ScyllaSessionFactory> _logger;
-    private bool _disposed;
-
     private readonly string _keyspace;
+    private bool _disposed;
 
     public ScyllaSessionFactory(IConfiguration configuration, ILogger<ScyllaSessionFactory> logger)
     {
         _logger = logger;
-
         _keyspace = configuration.GetValue<string>("ScyllaDB:Keyspace", "harmony")!;
 
         var contactPoints =
@@ -25,21 +24,17 @@ public class ScyllaSessionFactory : IScyllaSessionFactory, IDisposable
 
         var port = configuration.GetValue<int>("ScyllaDB:Port", 9042);
 
-        _logger.LogInformation(
-            "Connecting to ScyllaDB at {ContactPoints}:{Port}, keyspace: {Keyspace}",
-            string.Join(", ", contactPoints),
-            port,
-            _keyspace
-        );
+        var env = configuration["ASPNETCORE_ENVIRONMENT"] ?? "Production";
+        var isLocal =
+            env.Equals("Development", StringComparison.OrdinalIgnoreCase)
+            || env.Equals("Test", StringComparison.OrdinalIgnoreCase);
 
-        var cluster = Cluster
+        var clusterBuilder = Cluster
             .Builder()
             .AddContactPoints(contactPoints)
             .WithPort(port)
             .WithLoadBalancingPolicy(Policies.DefaultLoadBalancingPolicy)
             .WithReconnectionPolicy(new ConstantReconnectionPolicy(2000))
-            // 1. Force the driver to map internal Docker container IPs back to 127.0.0.1
-            .WithAddressTranslator(new LocalhostAddressTranslator())
             .WithPoolingOptions(new PoolingOptions().SetHeartBeatInterval(5000))
             .WithQueryOptions(
                 new QueryOptions()
@@ -90,28 +85,52 @@ public class ScyllaSessionFactory : IScyllaSessionFactory, IDisposable
                                     new ConstantSpeculativeExecutionPolicy(100, 1)
                                 )
                     )
-            )
-            .Build();
+            );
 
-        var session = cluster.Connect();
-        session.Execute(
-            $"CREATE KEYSPACE IF NOT EXISTS {_keyspace} WITH replication = {{'class': 'SimpleStrategy', 'replication_factor': 1}}"
-        );
-        session.ChangeKeyspace(_keyspace);
-        _session = session;
+        if (isLocal)
+        {
+            clusterBuilder.WithAddressTranslator(new LocalhostAddressTranslator());
+            _logger.LogInformation(
+                "ScyllaDB LocalhostAddressTranslator enabled (Docker workaround)."
+            );
+        }
 
-        _logger.LogInformation("ScyllaDB session established (shard-aware)");
+        _cluster = clusterBuilder.Build();
+
+        // Lazy session context prevents database connectivity blocks during DI construction
+        _lazySession = new Lazy<ISession>(() =>
+        {
+            _logger.LogInformation(
+                "Establishing lazy ScyllaDB session for contact points: {ContactPoints}:{Port}",
+                string.Join(", ", contactPoints),
+                port
+            );
+            var session = _cluster.Connect();
+            session.Execute(
+                $"CREATE KEYSPACE IF NOT EXISTS {_keyspace} WITH replication = {{'class': 'SimpleStrategy', 'replication_factor': 1}}"
+            );
+            session.ChangeKeyspace(_keyspace);
+            _logger.LogInformation("ScyllaDB session established (lazy context)");
+            return session;
+        });
     }
 
-    public ISession Session => _session;
+    public ISession Session => _lazySession.Value;
     public string Keyspace => _keyspace;
 
     public void Dispose()
     {
         if (_disposed)
             return;
-        _session.Dispose();
+
+        if (_lazySession.IsValueCreated)
+        {
+            _lazySession.Value.Dispose();
+        }
+
+        _cluster.Dispose();
         _disposed = true;
+        GC.SuppressFinalize(this);
     }
 }
 

@@ -1,9 +1,9 @@
 using Harmony.Application.DTOs.Requests;
 using Harmony.Application.DTOs.Responses;
+using Harmony.Application.Services;
 using Harmony.Domain.Interfaces;
 using Harmony.Domain.Interfaces.Repositories;
 using Harmony.Domain.Interfaces.Services;
-using Harmony.Application.Services;
 
 namespace Harmony.Application.Services;
 
@@ -101,7 +101,12 @@ public class MessageService : IMessageService
         if (message is null)
             throw new KeyNotFoundException("Message not found.");
 
-        // Natively check owner permission via guild repository
+        // CRITICAL SECURITY FIX: Prevent cross-channel message deletion
+        if (message.ChannelId != channelId)
+            throw new UnauthorizedAccessException(
+                "Message does not belong to the specified channel."
+            );
+
         var guild = await _guildRepository.GetByIdAsync(guildId);
         var isOwner = guild is not null && guild.OwnerId == userId;
 
@@ -110,6 +115,10 @@ public class MessageService : IMessageService
                 "You do not have permission to delete this message."
             );
 
+        // 1. Synchronously update ScyllaDB
+        await _messageRepository.DeleteAsync(messageId, channelId, ct);
+
+        // 2. Publish event to background queues (search index update)
         await _publisher.PublishMessageDeletedAsync(
             new MessageDeletedEvent(
                 MessageId: messageId,
@@ -138,9 +147,19 @@ public class MessageService : IMessageService
         if (message is null)
             throw new KeyNotFoundException("Message not found.");
 
+        // CRITICAL SECURITY FIX: Prevent cross-channel message editing
+        if (message.ChannelId != channelId)
+            throw new UnauthorizedAccessException(
+                "Message does not belong to the specified channel."
+            );
+
         if (message.UserId != userId)
             throw new UnauthorizedAccessException("You can only edit your own messages.");
 
+        // 1. Synchronously update ScyllaDB
+        await _messageRepository.EditAsync(messageId, channelId, request.Content, ct);
+
+        // 2. Publish event to background queues (search index update)
         await _publisher.PublishMessageEditedAsync(
             new MessageEditedEvent(
                 MessageId: messageId,

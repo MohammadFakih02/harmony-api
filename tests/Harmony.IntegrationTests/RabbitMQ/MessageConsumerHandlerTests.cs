@@ -1,10 +1,10 @@
-// --- START OF FILE MessageConsumerHandlerTests.cs ---
 using FluentAssertions;
+using Harmony.Application.Services; // <- Ensure this is imported for SnowflakeIdGenerator
 using Harmony.Domain.Domain.Entities;
 using Harmony.Domain.Interfaces;
 using Harmony.Domain.Interfaces.Repositories;
 using Harmony.Infrastructure.RabbitMQ;
-using Harmony.Infrastructure.Scylla; // Added to resolve MessageStatements
+using Harmony.Infrastructure.Scylla;
 using Harmony.Infrastructure.Scylla.Repositories;
 using Harmony.IntegrationTests.Infrastructure;
 using Microsoft.EntityFrameworkCore;
@@ -48,6 +48,7 @@ public class MessageConsumerHandlerTests : ScyllaAndPostgresTestBase
         _handler = new MessageConsumerHandler(
             _messageRepository,
             Db,
+            new SnowflakeIdGenerator(0, 0), // <- Fixed: Pass the snowflake generator dependency
             NullLogger<MessageConsumerHandler>.Instance
         );
 

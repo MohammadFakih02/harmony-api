@@ -6,10 +6,12 @@ using RabbitMQ.Client;
 
 namespace Harmony.Infrastructure.RabbitMQ.Producers;
 
-public class RabbitMQPublisher : IMessagePublisher
+public class RabbitMQPublisher : IMessagePublisher, IAsyncDisposable
 {
     private readonly RabbitMQConnection _connection;
     private readonly ILogger<RabbitMQPublisher> _logger;
+    private IChannel? _channel;
+    private readonly SemaphoreSlim _lock = new(1, 1);
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -58,6 +60,31 @@ public class RabbitMQPublisher : IMessagePublisher
         );
     }
 
+    private async Task<IChannel> GetChannelAsync()
+    {
+        if (_channel is { IsOpen: true })
+            return _channel;
+
+        await _lock.WaitAsync();
+        try
+        {
+            if (_channel is { IsOpen: true })
+                return _channel;
+
+            if (_channel != null)
+            {
+                await _channel.DisposeAsync();
+            }
+
+            _channel = await _connection.CreateChannelAsync();
+            return _channel;
+        }
+        finally
+        {
+            _lock.Release();
+        }
+    }
+
     private async Task PublishAsync<T>(
         string exchange,
         string routingKey,
@@ -65,28 +92,35 @@ public class RabbitMQPublisher : IMessagePublisher
         CancellationToken ct
     )
     {
-        var channel = await _connection.CreateChannelAsync();
-        await using (channel)
+        var channel = await GetChannelAsync();
+        var body = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(message, JsonOptions));
+
+        var props = new BasicProperties
         {
-            var body = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(message, JsonOptions));
+            Persistent = true,
+            ContentType = "application/json",
+            ContentEncoding = "utf-8",
+            MessageId = Guid.NewGuid().ToString(),
+            Timestamp = new AmqpTimestamp(DateTimeOffset.UtcNow.ToUnixTimeSeconds()),
+        };
 
-            var props = new BasicProperties
-            {
-                Persistent = true,
-                ContentType = "application/json",
-                ContentEncoding = "utf-8",
-                MessageId = Guid.NewGuid().ToString(),
-                Timestamp = new AmqpTimestamp(DateTimeOffset.UtcNow.ToUnixTimeSeconds()),
-            };
+        await channel.BasicPublishAsync(
+            exchange: exchange,
+            routingKey: routingKey,
+            mandatory: false,
+            basicProperties: props,
+            body: body,
+            cancellationToken: ct
+        );
+    }
 
-            await channel.BasicPublishAsync(
-                exchange: exchange,
-                routingKey: routingKey,
-                mandatory: false,
-                basicProperties: props,
-                body: body,
-                cancellationToken: ct
-            );
+    public async ValueTask DisposeAsync()
+    {
+        if (_channel != null)
+        {
+            await _channel.DisposeAsync();
         }
+        _lock.Dispose();
+        GC.SuppressFinalize(this);
     }
 }

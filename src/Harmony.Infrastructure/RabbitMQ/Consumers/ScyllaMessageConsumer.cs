@@ -18,6 +18,7 @@ public class ScyllaMessageConsumer : BackgroundService
     private readonly ILogger<ScyllaMessageConsumer> _logger;
     private readonly AsyncRetryPolicy _retryPolicy;
     private IChannel? _channel;
+    private string? _consumerTag; // <- Store the consumer tag here
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -34,9 +35,8 @@ public class ScyllaMessageConsumer : BackgroundService
         _scopeFactory = scopeFactory;
         _logger = logger;
 
-        // Setup Polly Retry Policy (3 retries, exponential backoff: 2s, 4s, 8s)
         _retryPolicy = Policy
-            .Handle<Exception>(ex => !(ex is JsonException)) // Don't retry malformed JSON payload crashes
+            .Handle<Exception>(ex => !(ex is JsonException))
             .WaitAndRetryAsync(
                 retryCount: 3,
                 sleepDurationProvider: attempt => TimeSpan.FromSeconds(Math.Pow(2, attempt)),
@@ -61,7 +61,8 @@ public class ScyllaMessageConsumer : BackgroundService
         var consumer = new AsyncEventingBasicConsumer(_channel);
         consumer.ReceivedAsync += OnMessageReceivedAsync;
 
-        await _channel.BasicConsumeAsync(
+        // Capture the consumer tag returned by BasicConsumeAsync
+        _consumerTag = await _channel.BasicConsumeAsync(
             queue: Topology.ScyllaMessageQueue,
             autoAck: false,
             consumer: consumer
@@ -89,7 +90,6 @@ public class ScyllaMessageConsumer : BackgroundService
         {
             await _retryPolicy.ExecuteAsync(async () =>
             {
-                // DI Scope is INSIDE the retry. If the DB fails, we get a fresh scope and DbContext on the next attempt.
                 using var scope = _scopeFactory.CreateScope();
                 var handler = scope.ServiceProvider.GetRequiredService<IMessageConsumerHandler>();
 
@@ -141,7 +141,6 @@ public class ScyllaMessageConsumer : BackgroundService
                 routingKey
             );
 
-            // KEY CHANGE: requeue: false immediately stops the CPU-pinning infinite loop and sends to the Dead Letter Queue.
             await _channel!.BasicNackAsync(ea.DeliveryTag, multiple: false, requeue: false);
         }
     }
@@ -152,12 +151,35 @@ public class ScyllaMessageConsumer : BackgroundService
         {
             try
             {
-                await _channel.CloseAsync();
+                // 1. Cancel the active consumer first using its tag
+                if (!string.IsNullOrEmpty(_consumerTag))
+                {
+                    await _channel.BasicCancelAsync(
+                        _consumerTag,
+                        cancellationToken: cancellationToken
+                    );
+                }
+
+                // 2. Gracefully close the channel
+                await _channel.CloseAsync(cancellationToken);
             }
-            catch (ObjectDisposedException) { }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "Exception occurred while closing RabbitMQ channel during shutdown."
+                );
+            }
             finally
             {
-                await _channel.DisposeAsync();
+                try
+                {
+                    await _channel.DisposeAsync();
+                }
+                catch
+                {
+                    // Ignore double-disposal / shutdown errors
+                }
             }
         }
 

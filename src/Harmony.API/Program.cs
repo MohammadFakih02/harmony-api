@@ -1,11 +1,12 @@
 using System.Text;
 using Harmony.API.Extensions;
 using Harmony.API.Handlers;
-using Harmony.Domain.Domain.Entities;
 using Harmony.Application.Services;
+using Harmony.Domain.Domain.Entities;
 using Harmony.Infrastructure.Extensions;
 using Harmony.Infrastructure.RabbitMQ;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.HttpOverrides; // Add this namespace
 using Microsoft.AspNetCore.Identity;
 using Microsoft.IdentityModel.Tokens;
 
@@ -18,6 +19,24 @@ builder.Services.AddSingleton<ISnowflakeIdGenerator>(_ => new SnowflakeIdGenerat
     workerId,
     datacenterId
 ));
+
+// Configure Forwarded Headers for reverse proxies
+builder.Services.Configure<ForwardedHeadersOptions>(options =>
+{
+    options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
+
+    // Mitigate IP spoofing rate-limit bypasses in production
+    if (builder.Environment.IsDevelopment() || builder.Environment.IsEnvironment("Test"))
+    {
+        options.KnownIPNetworks.Clear();
+        options.KnownProxies.Clear();
+    }
+    else
+    {
+        // In production, explicitly restrict forwarding to trusted edge proxy IP/subnets
+        // options.KnownProxies.Add(IPAddress.Parse("YOUR_LOAD_BALANCER_INTERNAL_IP"));
+    }
+});
 
 // CORS
 builder.Services.AddCors(options =>
@@ -108,6 +127,9 @@ if (app.Environment.IsDevelopment())
 
 // Force RabbitMQ connection and topology declaration on startup
 app.Services.GetRequiredService<RabbitMQConnection>();
+
+// Forwarded headers MUST be evaluated before routing, rate limiting, and CORS
+app.UseForwardedHeaders();
 
 app.UseHttpsRedirection();
 app.UseCors("HarmonyClient");
