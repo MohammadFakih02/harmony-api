@@ -10,6 +10,7 @@ using Harmony.Infrastructure.RabbitMQ.Consumers;
 using Harmony.Infrastructure.RabbitMQ.Producers;
 using Harmony.Infrastructure.Scylla;
 using Harmony.Infrastructure.Scylla.Repositories;
+using Harmony.Infrastructure.Services;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -44,7 +45,7 @@ public static class DependencyInjection
 
         // RabbitMQ setup
         services.AddSingleton<RabbitMQConnection>();
-        services.AddScoped<IMessagePublisher, RabbitMQPublisher>();
+        services.AddSingleton<IMessagePublisher, RabbitMQPublisher>(); // Singleton matching channel-reuser
 
         // Repositories
         services.AddScoped<IGuildRepository, GuildRepository>();
@@ -67,6 +68,9 @@ public static class DependencyInjection
         services.AddScoped<SearchIndexConsumerHandler>();
         services.AddHostedService<ScyllaMessageConsumer>();
         services.AddHostedService<SearchIndexConsumer>();
+
+        // Postgres Background Workers
+        services.AddHostedService<TokenPruningService>();
 
         return services;
     }

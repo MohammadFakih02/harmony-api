@@ -1,0 +1,73 @@
+using System;
+using System.Threading;
+using System.Threading.Tasks;
+using Harmony.Infrastructure.Postgres;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+
+namespace Harmony.Infrastructure.Services;
+
+public class TokenPruningService : BackgroundService
+{
+    private readonly IServiceScopeFactory _scopeFactory;
+    private readonly ILogger<TokenPruningService> _logger;
+    private readonly TimeSpan _pruneInterval = TimeSpan.FromDays(1); // Execution interval: Once daily
+
+    public TokenPruningService(
+        IServiceScopeFactory scopeFactory,
+        ILogger<TokenPruningService> logger
+    )
+    {
+        _scopeFactory = scopeFactory;
+        _logger = logger;
+    }
+
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        _logger.LogInformation("TokenPruningService background worker started.");
+
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            try
+            {
+                _logger.LogInformation("Starting background refresh token pruning cycle.");
+
+                using (var scope = _scopeFactory.CreateScope())
+                {
+                    var db = scope.ServiceProvider.GetRequiredService<HarmonyDbContext>();
+
+                    // Clean up revoked tokens after 30 days. This gives ample time to support
+                    // forensic theft-detection audits on rotated token families.
+                    var revokedCutoff = DateTimeOffset.UtcNow.AddDays(-30);
+
+                    // Execute a high-performance direct bulk deletion on Postgres.
+                    // This removes:
+                    // 1. Any token that has passed its expiration time.
+                    // 2. Any token that was revoked more than 30 days ago.
+                    var deletedCount = await db.Database.ExecuteSqlRawAsync(
+                        "DELETE FROM \"RefreshTokens\" WHERE \"expires_at\" < {0} OR (\"revoked_at\" IS NOT NULL AND \"revoked_at\" < {1})",
+                        DateTimeOffset.UtcNow,
+                        revokedCutoff,
+                        stoppingToken
+                    );
+
+                    _logger.LogInformation(
+                        "Successfully pruned {Count} expired or historically revoked refresh tokens.",
+                        deletedCount
+                    );
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "An error occurred during the refresh token pruning cycle.");
+            }
+
+            // Wait until the next execution window or exit if stopping is requested
+            await Task.Delay(_pruneInterval, stoppingToken);
+        }
+
+        _logger.LogInformation("TokenPruningService background worker stopped.");
+    }
+}

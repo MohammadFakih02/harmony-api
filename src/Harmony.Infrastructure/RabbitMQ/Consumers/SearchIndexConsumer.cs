@@ -18,6 +18,7 @@ public class SearchIndexConsumer : BackgroundService
     private readonly ILogger<SearchIndexConsumer> _logger;
     private readonly AsyncRetryPolicy _retryPolicy;
     private IChannel? _channel;
+    private string? _consumerTag; // <- Store the consumer tag here
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -60,7 +61,8 @@ public class SearchIndexConsumer : BackgroundService
         var consumer = new AsyncEventingBasicConsumer(_channel);
         consumer.ReceivedAsync += OnMessageReceivedAsync;
 
-        await _channel.BasicConsumeAsync(
+        // Capture the consumer tag returned by BasicConsumeAsync
+        _consumerTag = await _channel.BasicConsumeAsync(
             queue: Topology.SearchIndexQueue,
             autoAck: false,
             consumer: consumer
@@ -140,7 +142,6 @@ public class SearchIndexConsumer : BackgroundService
                 routingKey
             );
 
-            // Requeue = false routes it to the Dead Letter Exchange
             await _channel!.BasicNackAsync(ea.DeliveryTag, multiple: false, requeue: false);
         }
     }
@@ -151,12 +152,30 @@ public class SearchIndexConsumer : BackgroundService
         {
             try
             {
-                await _channel.CloseAsync();
+                // 1. Cancel the active consumer first using its tag
+                if (!string.IsNullOrEmpty(_consumerTag))
+                {
+                    await _channel.BasicCancelAsync(_consumerTag,cancellationToken: cancellationToken);
+                }
+
+                // 2. Gracefully close the channel
+                await _channel.CloseAsync(cancellationToken);
             }
-            catch (ObjectDisposedException) { }
+            catch (Exception ex)
+            {
+                // Log and absorb any unpreventable client library teardown exceptions
+                _logger.LogWarning(ex, "Exception occurred while closing RabbitMQ channel during shutdown.");
+            }
             finally
             {
-                await _channel.DisposeAsync();
+                try
+                {
+                    await _channel.DisposeAsync();
+                }
+                catch
+                {
+                    // Ignore double-disposal / shutdown errors
+                }
             }
         }
 

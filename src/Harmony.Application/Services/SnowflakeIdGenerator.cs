@@ -20,25 +20,32 @@ public sealed class SnowflakeIdGenerator : ISnowflakeIdGenerator
 {
     // 2024-01-01 00:00:00.000 UTC — Harmony's custom epoch
     // Never change this after IDs are in production.
-    public static readonly DateTimeOffset HarmonyEpoch =
-        new DateTimeOffset(2024, 1, 1, 0, 0, 0, TimeSpan.Zero);
+    public static readonly DateTimeOffset HarmonyEpoch = new DateTimeOffset(
+        2024,
+        1,
+        1,
+        0,
+        0,
+        0,
+        TimeSpan.Zero
+    );
 
     private static readonly long EpochMs = HarmonyEpoch.ToUnixTimeMilliseconds();
 
     // Bit widths
-    private const int WorkerIdBits     = 5;
+    private const int WorkerIdBits = 5;
     private const int DatacenterIdBits = 5;
-    private const int SequenceBits     = 12;
+    private const int SequenceBits = 12;
 
     // Max values (inclusive)
-    private const long MaxWorkerId     = (1L << WorkerIdBits) - 1;     // 31
+    private const long MaxWorkerId = (1L << WorkerIdBits) - 1; // 31
     private const long MaxDatacenterId = (1L << DatacenterIdBits) - 1; // 31
-    private const long MaxSequence     = (1L << SequenceBits) - 1;     // 4095
+    private const long MaxSequence = (1L << SequenceBits) - 1; // 4095
 
     // Bit shift offsets
-    private const int WorkerIdShift     = SequenceBits;                              // 12
-    private const int DatacenterIdShift = SequenceBits + WorkerIdBits;               // 17
-    private const int TimestampShift    = SequenceBits + WorkerIdBits + DatacenterIdBits; // 22
+    private const int WorkerIdShift = SequenceBits; // 12
+    private const int DatacenterIdShift = SequenceBits + WorkerIdBits; // 17
+    private const int TimestampShift = SequenceBits + WorkerIdBits + DatacenterIdBits; // 22
 
     private readonly long _workerId;
     private readonly long _datacenterId;
@@ -53,12 +60,16 @@ public sealed class SnowflakeIdGenerator : ISnowflakeIdGenerator
     public SnowflakeIdGenerator(long workerId = 0, long datacenterId = 0)
     {
         if (workerId < 0 || workerId > MaxWorkerId)
-            throw new ArgumentOutOfRangeException(nameof(workerId),
-                $"Worker ID must be between 0 and {MaxWorkerId}.");
+            throw new ArgumentOutOfRangeException(
+                nameof(workerId),
+                $"Worker ID must be between 0 and {MaxWorkerId}."
+            );
 
         if (datacenterId < 0 || datacenterId > MaxDatacenterId)
-            throw new ArgumentOutOfRangeException(nameof(datacenterId),
-                $"Datacenter ID must be between 0 and {MaxDatacenterId}.");
+            throw new ArgumentOutOfRangeException(
+                nameof(datacenterId),
+                $"Datacenter ID must be between 0 and {MaxDatacenterId}."
+            );
 
         _workerId = workerId;
         _datacenterId = datacenterId;
@@ -80,7 +91,8 @@ public sealed class SnowflakeIdGenerator : ISnowflakeIdGenerator
                 var drift = _lastTimestamp - timestamp;
                 if (drift > 5)
                     throw new InvalidOperationException(
-                        $"Clock moved backward by {drift}ms. Refusing to generate ID to prevent duplicates.");
+                        $"Clock moved backward by {drift}ms. Refusing to generate ID to prevent duplicates."
+                    );
 
                 // For small drifts (≤5ms), spin-wait until the clock catches up.
                 timestamp = WaitForNextMs(_lastTimestamp);
@@ -103,9 +115,9 @@ public sealed class SnowflakeIdGenerator : ISnowflakeIdGenerator
             _lastTimestamp = timestamp;
 
             return ((timestamp - EpochMs) << TimestampShift)
-                 | (_datacenterId << DatacenterIdShift)
-                 | (_workerId << WorkerIdShift)
-                 | _sequence;
+                | (_datacenterId << DatacenterIdShift)
+                | (_workerId << WorkerIdShift)
+                | _sequence;
         }
     }
 
@@ -134,18 +146,20 @@ public sealed class SnowflakeIdGenerator : ISnowflakeIdGenerator
     /// <summary>
     /// Extracts the sequence number embedded in a Snowflake ID.
     /// </summary>
-    public static int ExtractSequence(long snowflakeId) =>
-        (int)(snowflakeId & MaxSequence);
+    public static int ExtractSequence(long snowflakeId) => (int)(snowflakeId & MaxSequence);
 
     // Returns the current Unix time in milliseconds.
-    private static long CurrentMs() =>
-        DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-
+    private static long CurrentMs() => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
     // Spin-wait until the system clock has advanced past lastTimestamp.
     private static long WaitForNextMs(long lastTimestamp)
     {
         long ts;
-        do { ts = CurrentMs(); } while (ts <= lastTimestamp);
+        do
+        {
+            // Yield the execution thread momentarily to prevent 100% CPU core utilization
+            Thread.SpinWait(1);
+            ts = CurrentMs();
+        } while (ts <= lastTimestamp);
         return ts;
     }
 }

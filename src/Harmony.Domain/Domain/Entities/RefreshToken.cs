@@ -1,3 +1,5 @@
+using System.ComponentModel.DataAnnotations;
+
 namespace Harmony.Domain.Domain.Entities;
 
 public class RefreshToken
@@ -7,6 +9,8 @@ public class RefreshToken
     public string TokenHash { get; set; } = null!;
     public Guid FamilyId { get; set; }
     public DateTimeOffset ExpiresAt { get; set; }
+
+    [ConcurrencyCheck]
     public DateTimeOffset? RevokedAt { get; set; }
     public long CreatedAt { get; set; }
 
