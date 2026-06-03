@@ -50,7 +50,14 @@ public class AuthController : ControllerBase
             return Unauthorized(new { error = "No refresh token." });
 
         var (response, rawRefreshToken) = await _authService.RefreshAsync(rawToken);
-        SetRefreshCookie(rawRefreshToken);
+
+        // Write the cookie only if a new refresh token was actually generated
+        // (Grace-period requests bypass this to preserve the active cookie)
+        if (!string.IsNullOrEmpty(rawRefreshToken))
+        {
+            SetRefreshCookie(rawRefreshToken);
+        }
+
         return Ok(response);
     }
 

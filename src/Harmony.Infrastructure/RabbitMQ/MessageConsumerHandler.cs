@@ -1,3 +1,4 @@
+using Harmony.Application.Services;
 using Harmony.Domain.Domain.Entities;
 using Harmony.Domain.Interfaces;
 using Harmony.Domain.Interfaces.Repositories;
@@ -11,16 +12,19 @@ public class MessageConsumerHandler : IMessageConsumerHandler
 {
     private readonly IMessageRepository _messageRepository;
     private readonly HarmonyDbContext _db;
+    private readonly ISnowflakeIdGenerator _snowflake;
     private readonly ILogger<MessageConsumerHandler> _logger;
 
     public MessageConsumerHandler(
         IMessageRepository messageRepository,
         HarmonyDbContext db,
+        ISnowflakeIdGenerator snowflake,
         ILogger<MessageConsumerHandler> logger
     )
     {
         _messageRepository = messageRepository;
         _db = db;
+        _snowflake = snowflake;
         _logger = logger;
     }
 
@@ -131,7 +135,7 @@ public class MessageConsumerHandler : IMessageConsumerHandler
             notifications.Add(
                 new Notification
                 {
-                    Id = evt.MessageId + mentionedUserId,
+                    Id = _snowflake.NextId(),
                     UserId = mentionedUserId,
                     Type = "mention",
                     ActorId = evt.UserId,
