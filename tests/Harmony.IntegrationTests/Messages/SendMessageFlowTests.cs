@@ -209,7 +209,30 @@ public class SendMessageFlowTests : ApiTestBase
         response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
     }
 
+    [Fact]
+    public async Task EditMessage_WithSpoofedChannelIdInRoute_ShouldReturn403Forbidden()
+    {
+        // Arrange: Create a valid message in the correct channel
+        var sendResponse = await Client.PostAsJsonAsync(
+            $"/api/guilds/{_guildId}/channels/{_channelId}/messages",
+            new { content = "genuine message" }
+        );
+        var message = await sendResponse.Content.ReadFromJsonAsync<SendMessageResponse>();
+        await WaitForMessageInScyllaAsync(message!.MessageId);
+
+        // Act: Attempt to edit that message, passing the spoofed channel ID in the URL route
+        var response = await Client.PatchAsJsonAsync(
+            $"/api/guilds/{_guildId}/channels/{_otherChannelId}/messages/{message.MessageId}",
+            new { content = "exploit edit" }
+        );
+
+        // Assert: The API must reject the write and return 403 Forbidden
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+    }
+
     // --- Helpers ---
+
+    private long _otherChannelId; // Add this private field at the top of SendMessageFlowTests class
 
     private async Task SeedGuildAndChannelAsync()
     {
@@ -231,7 +254,7 @@ public class SendMessageFlowTests : ApiTestBase
         Client.DefaultRequestHeaders.Authorization =
             new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _token);
 
-        // Create guild
+        // Create guild - Restored to correct endpoint
         var guildResponse = await Client.PostAsJsonAsync(
             "/api/guilds",
             new { name = "Test Guild" }
@@ -241,15 +264,23 @@ public class SendMessageFlowTests : ApiTestBase
         var guild = await guildResponse.Content.ReadFromJsonAsync<GuildIdResponse>();
         _guildId = guild!.Id;
 
-        // Create channel
-        var channelResponse = await Client.PostAsJsonAsync(
+        // Create primary channel
+        var channelResponse1 = await Client.PostAsJsonAsync(
             $"/api/guilds/{_guildId}/channels",
             new { name = "general", type = "text" }
         );
+        channelResponse1.EnsureSuccessStatusCode();
+        var channel1 = await channelResponse1.Content.ReadFromJsonAsync<ChannelIdResponse>();
+        _channelId = channel1!.Id;
 
-        channelResponse.EnsureSuccessStatusCode();
-        var channel = await channelResponse.Content.ReadFromJsonAsync<ChannelIdResponse>();
-        _channelId = channel!.Id;
+        // Create second spoof-target channel
+        var channelResponse2 = await Client.PostAsJsonAsync(
+            $"/api/guilds/{_guildId}/channels",
+            new { name = "random", type = "text" }
+        );
+        channelResponse2.EnsureSuccessStatusCode();
+        var channel2 = await channelResponse2.Content.ReadFromJsonAsync<ChannelIdResponse>();
+        _otherChannelId = channel2!.Id;
     }
 
     private async Task WaitForMessageInScyllaAsync(long messageId)
