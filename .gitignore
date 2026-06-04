@@ -450,3 +450,5 @@ docker/docker-compose.override.yml
 publish/
 
 *.lscache
+
+repomix-output.xml

@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using Harmony.Application.Exceptions; // Required for ServiceUnavailableException
 using Harmony.Domain.Interfaces;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -18,7 +19,8 @@ public class SearchIndexConsumer : BackgroundService
     private readonly ILogger<SearchIndexConsumer> _logger;
     private readonly AsyncRetryPolicy _retryPolicy;
     private IChannel? _channel;
-    private string? _consumerTag; // <- Store the consumer tag here
+    private string? _consumerTag;
+    private CancellationToken _stoppingToken; // Capture stopping token globally
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -36,7 +38,7 @@ public class SearchIndexConsumer : BackgroundService
         _logger = logger;
 
         _retryPolicy = Policy
-            .Handle<Exception>(ex => !(ex is JsonException))
+            .Handle<Exception>(ex => !(ex is JsonException) && !(ex is ServiceUnavailableException)) // Do not retry transient lags inside the Polly policy
             .WaitAndRetryAsync(
                 retryCount: 3,
                 sleepDurationProvider: attempt => TimeSpan.FromSeconds(Math.Pow(2, attempt)),
@@ -54,6 +56,7 @@ public class SearchIndexConsumer : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        _stoppingToken = stoppingToken; // Capture token
         _channel = await _connection.CreateChannelAsync();
 
         await _channel.BasicQosAsync(prefetchSize: 0, prefetchCount: 1, global: false);
@@ -61,7 +64,6 @@ public class SearchIndexConsumer : BackgroundService
         var consumer = new AsyncEventingBasicConsumer(_channel);
         consumer.ReceivedAsync += OnMessageReceivedAsync;
 
-        // Capture the consumer tag returned by BasicConsumeAsync
         _consumerTag = await _channel.BasicConsumeAsync(
             queue: Topology.SearchIndexQueue,
             autoAck: false,
@@ -102,7 +104,7 @@ public class SearchIndexConsumer : BackgroundService
                             JsonOptions
                         );
                         if (sentEvt is not null)
-                            await handler.HandleMessageSentAsync(sentEvt);
+                            await handler.HandleMessageSentAsync(sentEvt, _stoppingToken);
                         break;
 
                     case Topology.MessageDeletedKey:
@@ -111,7 +113,7 @@ public class SearchIndexConsumer : BackgroundService
                             JsonOptions
                         );
                         if (deletedEvt is not null)
-                            await handler.HandleMessageDeletedAsync(deletedEvt);
+                            await handler.HandleMessageDeletedAsync(deletedEvt, _stoppingToken);
                         break;
 
                     case Topology.MessageEditedKey:
@@ -120,7 +122,7 @@ public class SearchIndexConsumer : BackgroundService
                             JsonOptions
                         );
                         if (editedEvt is not null)
-                            await handler.HandleMessageEditedAsync(editedEvt);
+                            await handler.HandleMessageEditedAsync(editedEvt, _stoppingToken);
                         break;
 
                     default:
@@ -133,6 +135,20 @@ public class SearchIndexConsumer : BackgroundService
             });
 
             await _channel!.BasicAckAsync(ea.DeliveryTag, multiple: false);
+        }
+        catch (ServiceUnavailableException ex)
+        {
+            _logger.LogWarning(
+                "Transient out-of-order write lag detected in FTS indexer: {Message}. Throttling and requeuing event to main queue.",
+                ex.Message
+            );
+
+            // Throttle for 2 seconds before putting the message back to allow
+            // the delayed 'MessageSentEvent' to be processed on the indexer
+            await Task.Delay(2000, _stoppingToken);
+
+            // Requeue the message so it can be retried on the main queue
+            await _channel!.BasicNackAsync(ea.DeliveryTag, multiple: false, requeue: true);
         }
         catch (Exception ex)
         {
@@ -152,19 +168,22 @@ public class SearchIndexConsumer : BackgroundService
         {
             try
             {
-                // 1. Cancel the active consumer first using its tag
                 if (!string.IsNullOrEmpty(_consumerTag))
                 {
-                    await _channel.BasicCancelAsync(_consumerTag,cancellationToken: cancellationToken);
+                    await _channel.BasicCancelAsync(
+                        _consumerTag,
+                        cancellationToken: cancellationToken
+                    );
                 }
 
-                // 2. Gracefully close the channel
                 await _channel.CloseAsync(cancellationToken);
             }
             catch (Exception ex)
             {
-                // Log and absorb any unpreventable client library teardown exceptions
-                _logger.LogWarning(ex, "Exception occurred while closing RabbitMQ channel during shutdown.");
+                _logger.LogWarning(
+                    ex,
+                    "Exception occurred while closing RabbitMQ channel during shutdown."
+                );
             }
             finally
             {
@@ -174,7 +193,7 @@ public class SearchIndexConsumer : BackgroundService
                 }
                 catch
                 {
-                    // Ignore double-disposal / shutdown errors
+                    // Ignore double disposal
                 }
             }
         }

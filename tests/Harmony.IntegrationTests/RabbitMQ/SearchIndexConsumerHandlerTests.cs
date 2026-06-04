@@ -1,7 +1,11 @@
 using FluentAssertions;
+using Harmony.Application.Exceptions;
 using Harmony.Domain.Domain.Entities;
 using Harmony.Domain.Interfaces;
+using Harmony.Domain.Interfaces.Repositories; // Required namespace
 using Harmony.Infrastructure.RabbitMQ;
+using Harmony.Infrastructure.Scylla;
+using Harmony.Infrastructure.Scylla.Repositories; // Required namespace
 using Harmony.IntegrationTests.Infrastructure;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -16,13 +20,24 @@ public class SearchIndexConsumerHandlerTests : ScyllaAndPostgresTestBase
     protected override IEnumerable<string> PostgresTablesToIgnore => ["__EFMigrationsHistory"];
 
     private SearchIndexConsumerHandler _handler = null!;
+    private IMessageRepository _messageRepository = null!;
 
     public override async Task InitializeAsync()
     {
         await base.InitializeAsync();
 
+        // Instantiate primary storage repository stub for testing
+        var stub = new ScyllaSessionFactoryStub(Session);
+        var statements = new MessageStatements(stub);
+        _messageRepository = new MessageRepository(
+            stub,
+            statements,
+            NullLogger<MessageRepository>.Instance
+        );
+
         _handler = new SearchIndexConsumerHandler(
             Db,
+            _messageRepository, // Pass Scylla repository
             NullLogger<SearchIndexConsumerHandler>.Instance
         );
 
@@ -80,6 +95,19 @@ public class SearchIndexConsumerHandlerTests : ScyllaAndPostgresTestBase
         var sentEvt = BuildMessageSentEvent(messageId: 2002);
         await _handler.HandleMessageSentAsync(sentEvt);
 
+        // Pre-populate ScyllaDB with the sent message so the handler knows the
+        // deleted message was a completed deletion (idempotent) and not out-of-order write lag
+        var scyllaMessage = new Message
+        {
+            MessageId = 2002,
+            ChannelId = 1,
+            UserId = 99,
+            Content = "hello world",
+            IsDeleted = true,
+            MessageType = "text",
+        };
+        await _messageRepository.SaveAsync(scyllaMessage);
+
         var deletedEvt = new MessageDeletedEvent(
             MessageId: 2002,
             ChannelId: 1,
@@ -89,7 +117,11 @@ public class SearchIndexConsumerHandlerTests : ScyllaAndPostgresTestBase
         );
 
         await _handler.HandleMessageDeletedAsync(deletedEvt);
-        await _handler.HandleMessageDeletedAsync(deletedEvt); // second call — should not throw
+
+        // This second delete execution will query ScyllaDB, find the deleted message,
+        // and return success idempotently instead of throwing a requeuing exception
+        var act = () => _handler.HandleMessageDeletedAsync(deletedEvt);
+        await act.Should().NotThrowAsync();
 
         var entry = await Db.MessagesSearch.FirstOrDefaultAsync(m => m.MessageId == 2002);
         entry.Should().BeNull();
@@ -136,6 +168,26 @@ public class SearchIndexConsumerHandlerTests : ScyllaAndPostgresTestBase
 
         var entry = await Db.MessagesSearch.FirstOrDefaultAsync(m => m.MessageId == 3002);
         entry!.Content.Should().Be("final content");
+    }
+
+    [Fact]
+    public async Task HandleMessageEditedAsync_WhenMessageNotFoundInIndex_ShouldThrowServiceUnavailableException()
+    {
+        // Arrange: Build an edit event targeting a message ID that does not exist in Postgres FTS or Scylla yet
+        var editedEvt = new MessageEditedEvent(
+            MessageId: 999999L,
+            ChannelId: 1,
+            GuildId: 1,
+            EditedByUserId: 99,
+            NewContent: "should requeue",
+            EditedAt: DateTimeOffset.UtcNow
+        );
+
+        // Act: Invoke the handler directly
+        var act = () => _handler.HandleMessageEditedAsync(editedEvt);
+
+        // Assert: The handler must throw ServiceUnavailableException to trigger RabbitMQ requeue backoff
+        await act.Should().ThrowAsync<ServiceUnavailableException>();
     }
 
     // --- Helpers ---

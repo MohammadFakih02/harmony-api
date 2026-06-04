@@ -163,6 +163,8 @@ src/
     Harmony.Infrastructure.csproj
 tests/
   Harmony.IntegrationTests/
+    Architecture/
+      ArchitectureTests.cs
     Auth/
       AuthControllerTests.cs
     Infrastructure/
@@ -198,91 +200,91 @@ README.md
 <files>
 This section contains the contents of the repository's files.
 
-<file path="src/Harmony.Infrastructure/Services/TokenPruningService.cs">
-using System;
-using System.Threading;
-using System.Threading.Tasks;
-using Harmony.Infrastructure.Postgres;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Logging;
+<file path="tests/Harmony.IntegrationTests/Architecture/ArchitectureTests.cs">
+using System.Reflection;
+using FluentAssertions;
+using NetArchTest.Rules;
+using Xunit;
 
-namespace Harmony.Infrastructure.Services;
+namespace Harmony.IntegrationTests.Architecture;
 
-public class TokenPruningService : BackgroundService
+public class ArchitectureTests
 {
-    private readonly IServiceScopeFactory _scopeFactory;
-    private readonly ILogger<TokenPruningService> _logger;
-    private readonly TimeSpan _pruneInterval = TimeSpan.FromDays(1); // Execution interval: Once daily
+    private static readonly Assembly DomainAssembly =
+        typeof(Harmony.Domain.Domain.Entities.User).Assembly;
+    private static readonly Assembly ApplicationAssembly =
+        typeof(Harmony.Application.Services.AuthService).Assembly;
+    private static readonly Assembly InfrastructureAssembly =
+        typeof(Harmony.Infrastructure.Postgres.HarmonyDbContext).Assembly;
+    private static readonly Assembly ApiAssembly =
+        typeof(Harmony.API.Controllers.AuthController).Assembly;
 
-    public TokenPruningService(
-        IServiceScopeFactory scopeFactory,
-        ILogger<TokenPruningService> logger
-    )
+    [Fact]
+    public void Domain_Should_Not_HaveDependencyOn_OtherProjects()
     {
-        _scopeFactory = scopeFactory;
-        _logger = logger;
+        var result = Types
+            .InAssembly(DomainAssembly)
+            .ShouldNot()
+            .HaveDependencyOnAll("Harmony.Application", "Harmony.Infrastructure", "Harmony.API")
+            .GetResult();
+
+        result
+            .IsSuccessful.Should()
+            .BeTrue(
+                "Domain layer should never depend on higher-level layers (Application, Infrastructure, API)."
+            );
     }
 
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    [Fact]
+    public void Application_Should_Not_HaveDependencyOn_InfrastructureOrApi()
     {
-        _logger.LogInformation("TokenPruningService background worker started.");
+        var result = Types
+            .InAssembly(ApplicationAssembly)
+            .ShouldNot()
+            .HaveDependencyOnAll("Harmony.Infrastructure", "Harmony.API")
+            .GetResult();
 
-        while (!stoppingToken.IsCancellationRequested)
-        {
-            try
-            {
-                _logger.LogInformation("Starting background refresh token pruning cycle.");
+        result
+            .IsSuccessful.Should()
+            .BeTrue(
+                "Application layer should only depend on Domain, never on Infrastructure or API."
+            );
+    }
 
-                using (var scope = _scopeFactory.CreateScope())
-                {
-                    var db = scope.ServiceProvider.GetRequiredService<HarmonyDbContext>();
+    [Fact]
+    public void Infrastructure_Should_Not_HaveDependencyOn_Api()
+    {
+        var result = Types
+            .InAssembly(InfrastructureAssembly)
+            .ShouldNot()
+            .HaveDependencyOn("Harmony.API")
+            .GetResult();
 
-                    // Clean up revoked tokens after 30 days. This gives ample time to support
-                    // forensic theft-detection audits on rotated token families.
-                    var revokedCutoff = DateTimeOffset.UtcNow.AddDays(-30);
+        result
+            .IsSuccessful.Should()
+            .BeTrue("Infrastructure layer should not depend on the API layer.");
+    }
 
-                    // Execute a high-performance direct bulk deletion on Postgres.
-                    // This removes:
-                    // 1. Any token that has passed its expiration time.
-                    // 2. Any token that was revoked more than 30 days ago.
-                    var deletedCount = await db.Database.ExecuteSqlRawAsync(
-                        "DELETE FROM \"RefreshTokens\" WHERE \"expires_at\" < {0} OR (\"revoked_at\" IS NOT NULL AND \"revoked_at\" < {1})",
-                        DateTimeOffset.UtcNow,
-                        revokedCutoff,
-                        stoppingToken
-                    );
+    [Fact]
+    public void Controllers_Should_Not_HaveDependencyOn_InfrastructureOrDbContext()
+    {
+        // Controllers should communicate strictly via interfaces / Application abstractions,
+        // never directly with Entity Framework DbContexts or raw infrastructure models.
+        var result = Types
+            .InAssembly(ApiAssembly)
+            .That()
+            .HaveNameEndingWith("Controller")
+            .ShouldNot()
+            .HaveDependencyOnAll("Harmony.Infrastructure.Postgres", "Microsoft.EntityFrameworkCore")
+            .GetResult();
 
-                    _logger.LogInformation(
-                        "Successfully pruned {Count} expired or historically revoked refresh tokens.",
-                        deletedCount
-                    );
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "An error occurred during the refresh token pruning cycle.");
-            }
-
-            // Wait until the next execution window or exit if stopping is requested
-            await Task.Delay(_pruneInterval, stoppingToken);
-        }
-
-        _logger.LogInformation("TokenPruningService background worker stopped.");
+        result
+            .IsSuccessful.Should()
+            .BeTrue(
+                "Controllers must not directly depend on DbContext or Postgres Infrastructure concrete classes."
+            );
     }
 }
-</file>
-
-<file path="docker/.env.example">
-POSTGRES_PASSWORD=
-RABBITMQ_PASSWORD=
-Jwt__Key=
-MINIO_ACCESS_KEY=
-MINIO_SECRET_KEY=
-LIVEKIT_KEY=
-LIVEKIT_SECRET=
-DUCKDNS_TOKEN=
 </file>
 
 <file path="src/Harmony.API/Properties/launchSettings.json">
@@ -711,242 +713,6 @@ public interface ISnowflakeIdGenerator
 }
 </file>
 
-<file path="src/Harmony.Application/Services/AuthService.cs">
-using System.Security.Authentication;
-using Harmony.Application.DTOs.Requests;
-using Harmony.Application.DTOs.Responses;
-using Harmony.Application.Services;
-using Harmony.Domain.Domain.Entities;
-using Harmony.Domain.Interfaces.Repositories;
-using Harmony.Domain.Interfaces.Services;
-using Microsoft.Extensions.Configuration;
-
-namespace Harmony.Application.Services;
-
-public class AuthService : IAuthService
-{
-    private readonly IIdentityService _identityService;
-    private readonly IRefreshTokenRepository _tokenRepository;
-    private readonly IJwtService _jwtService;
-    private readonly ISnowflakeIdGenerator _snowflake;
-    private readonly IConfiguration _config;
-
-    public AuthService(
-        IIdentityService identityService,
-        IRefreshTokenRepository tokenRepository,
-        IJwtService jwtService,
-        ISnowflakeIdGenerator snowflake,
-        IConfiguration config
-    )
-    {
-        _identityService = identityService;
-        _tokenRepository = tokenRepository;
-        _jwtService = jwtService;
-        _snowflake = snowflake;
-        _config = config;
-    }
-
-    public async Task<(AuthResponse response, string rawRefreshToken)> RegisterAsync(
-        RegisterRequest request,
-        CancellationToken ct = default
-    )
-    {
-        if (!IsValidEmail(request.Email))
-            throw new ArgumentException("Invalid email format.");
-
-        if (await _identityService.FindByEmailAsync(request.Email) is not null)
-            throw new InvalidOperationException("Email already in use.");
-
-        if (await _identityService.FindByNameAsync(request.Username) is not null)
-            throw new InvalidOperationException("Username already taken.");
-
-        var user = new User
-        {
-            Id = _snowflake.NextId(),
-            UserName = request.Username,
-            Email = request.Email,
-            Discriminator = GenerateDiscriminator(),
-            AccountStatus = "active",
-            CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-        };
-
-        var (succeeded, errors) = await _identityService.CreateUserAsync(user, request.Password);
-        if (!succeeded)
-            throw new InvalidOperationException(string.Join(", ", errors));
-
-        var (accessToken, rawRefreshToken) = await IssueTokensAsync(user);
-        return (new AuthResponse(accessToken, ToUserResponse(user)), rawRefreshToken);
-    }
-
-    public async Task<(AuthResponse response, string rawRefreshToken)> LoginAsync(
-        LoginRequest request,
-        CancellationToken ct = default
-    )
-    {
-        var user = await _identityService.FindByEmailAsync(request.Email);
-        if (user is null || !await _identityService.CheckPasswordAsync(user, request.Password))
-            throw new AuthenticationException("Invalid email or password.");
-
-        if (user.AccountStatus != "active")
-            throw new AuthenticationException("Account is not active.");
-
-        var (accessToken, rawRefreshToken) = await IssueTokensAsync(user);
-        return (new AuthResponse(accessToken, ToUserResponse(user)), rawRefreshToken);
-    }
-
-    public async Task<(AuthResponse response, string rawRefreshToken)> RefreshAsync(
-        string rawRefreshToken,
-        CancellationToken ct = default
-    )
-    {
-        var tokenHash = _jwtService.HashRefreshToken(rawRefreshToken);
-        var stored = await _tokenRepository.GetByTokenHashAsync(tokenHash, ct);
-
-        if (stored is null)
-            throw new AuthenticationException("Invalid refresh token.");
-
-        if (stored.RevokedAt is not null)
-        {
-            var gracePeriod = TimeSpan.FromSeconds(30);
-            if (DateTimeOffset.UtcNow - stored.RevokedAt.Value > gracePeriod)
-            {
-                await RevokeFamilyAsync(stored.FamilyId, ct);
-                throw new AuthenticationException(
-                    "Refresh token reuse detected. Please log in again."
-                );
-            }
-
-            // --- GRACE PERIOD MITIGATION ---
-            // If the replayed token falls within the 30-second window, it's a concurrent retry.
-            // Do not rotate or generate another token. Instead, return a fresh access token
-            // and an empty refresh token string so the controller doesn't overwrite the cookie.
-            var graceAccessToken = _jwtService.GenerateAccessToken(stored.User);
-            return (new AuthResponse(graceAccessToken, ToUserResponse(stored.User)), string.Empty);
-        }
-
-        if (stored.ExpiresAt < DateTimeOffset.UtcNow)
-        {
-            if (stored.RevokedAt is null)
-            {
-                stored.RevokedAt = DateTimeOffset.UtcNow;
-                await _tokenRepository.SaveChangesAsync(ct);
-            }
-            throw new AuthenticationException("Refresh token expired.");
-        }
-
-        // Generate values for the new rotated refresh token
-        var accessToken = _jwtService.GenerateAccessToken(stored.User);
-        var newRawRefreshToken = _jwtService.GenerateRefreshToken();
-        var refreshExpiry = int.Parse(_config["Jwt:RefreshTokenExpiryDays"] ?? "7");
-
-        var newToken = new RefreshToken
-        {
-            Id = Guid.NewGuid(),
-            UserId = stored.User.Id,
-            TokenHash = _jwtService.HashRefreshToken(newRawRefreshToken),
-            FamilyId = stored.FamilyId,
-            ExpiresAt = DateTimeOffset.UtcNow.AddDays(refreshExpiry),
-            CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-        };
-
-        // Prepare modification state for Optimistic Concurrency validation (OCC)
-        stored.RevokedAt = DateTimeOffset.UtcNow;
-
-        try
-        {
-            // Execute atomic transaction update
-            await _tokenRepository.RotateTokenAsync(stored, newToken, ct);
-        }
-        catch (Exception ex)
-        {
-            throw new AuthenticationException(
-                "Token rotation conflict or transaction error. Please log in again.",
-                ex
-            );
-        }
-
-        return (new AuthResponse(accessToken, ToUserResponse(stored.User)), newRawRefreshToken);
-    }
-
-    public async Task LogoutAsync(string rawRefreshToken, CancellationToken ct = default)
-    {
-        if (string.IsNullOrEmpty(rawRefreshToken))
-            return;
-
-        var tokenHash = _jwtService.HashRefreshToken(rawRefreshToken);
-        var stored = await _tokenRepository.GetByTokenHashAsync(tokenHash, ct);
-
-        if (stored is not null && stored.RevokedAt is null)
-        {
-            stored.RevokedAt = DateTimeOffset.UtcNow;
-            await _tokenRepository.SaveChangesAsync(ct);
-        }
-    }
-
-    // --- Helpers ---
-
-    public async Task<(string accessToken, string rawRefreshToken)> IssueTokensAsync(
-        User user,
-        Guid? familyId = null
-    )
-    {
-        var accessToken = _jwtService.GenerateAccessToken(user);
-        var rawRefresh = _jwtService.GenerateRefreshToken();
-        var refreshExpiry = int.Parse(_config["Jwt:RefreshTokenExpiryDays"] ?? "7");
-
-        var refreshToken = new RefreshToken
-        {
-            Id = Guid.NewGuid(),
-            UserId = user.Id,
-            TokenHash = _jwtService.HashRefreshToken(rawRefresh),
-            FamilyId = familyId ?? Guid.NewGuid(),
-            ExpiresAt = DateTimeOffset.UtcNow.AddDays(refreshExpiry),
-            CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-        };
-
-        await _tokenRepository.AddAsync(refreshToken);
-        await _tokenRepository.SaveChangesAsync();
-
-        return (accessToken, rawRefresh);
-    }
-
-    private async Task RevokeFamilyAsync(Guid familyId, CancellationToken ct)
-    {
-        var tokens = await _tokenRepository.GetActiveFamilyTokensAsync(familyId, ct);
-
-        foreach (var t in tokens)
-            t.RevokedAt = DateTimeOffset.UtcNow;
-
-        await _tokenRepository.SaveChangesAsync(ct);
-    }
-
-    private static string GenerateDiscriminator() => Random.Shared.Next(0, 10000).ToString("D4");
-
-    private static UserResponse ToUserResponse(User user) =>
-        new(
-            user.Id,
-            user.UserName!,
-            user.Discriminator,
-            user.Email!,
-            user.AvatarKey,
-            user.AccountStatus
-        );
-
-    private static bool IsValidEmail(string email)
-    {
-        try
-        {
-            var addr = new System.Net.Mail.MailAddress(email);
-            return addr.Address == email;
-        }
-        catch
-        {
-            return false;
-        }
-    }
-}
-</file>
-
 <file path="src/Harmony.Application/Services/JwtService.cs">
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
@@ -1004,396 +770,6 @@ public class JwtService : IJwtService
     {
         var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(token));
         return Convert.ToBase64String(bytes);
-    }
-}
-</file>
-
-<file path="src/Harmony.Application/Services/MessageService.cs">
-using Harmony.Application.DTOs.Requests;
-using Harmony.Application.DTOs.Responses;
-using Harmony.Application.Services;
-using Harmony.Domain.Interfaces;
-using Harmony.Domain.Interfaces.Repositories;
-using Harmony.Domain.Interfaces.Services;
-
-namespace Harmony.Application.Services;
-
-public class MessageService : IMessageService
-{
-    private readonly IChannelRepository _channelRepository;
-    private readonly IGuildRepository _guildRepository;
-    private readonly IMessagePublisher _publisher;
-    private readonly ISnowflakeIdGenerator _snowflake;
-    private readonly IMessageRepository _messageRepository;
-
-    public MessageService(
-        IChannelRepository channelRepository,
-        IGuildRepository guildRepository,
-        IMessagePublisher publisher,
-        ISnowflakeIdGenerator snowflake,
-        IMessageRepository messageRepository
-    )
-    {
-        _channelRepository = channelRepository;
-        _guildRepository = guildRepository;
-        _publisher = publisher;
-        _snowflake = snowflake;
-        _messageRepository = messageRepository;
-    }
-
-    public async Task<SendMessageResponse> SendMessageAsync(
-        long userId,
-        long guildId,
-        long channelId,
-        SendMessageRequest request,
-        CancellationToken ct = default
-    )
-    {
-        // Verify channel exists and belongs to guild natively via repository
-        var channel = await _channelRepository.GetByIdAndGuildIdAsync(channelId, guildId);
-        if (channel is null)
-            throw new KeyNotFoundException("Channel not found.");
-
-        // Verify user is a member of the guild natively via repository
-        var isMember = await _guildRepository.IsMemberAsync(guildId, userId);
-        if (!isMember)
-            throw new UnauthorizedAccessException("You are not a member of this guild.");
-
-        // Validate content
-        if (string.IsNullOrWhiteSpace(request.Content) || request.Content.Length > 2000)
-            throw new ArgumentException("Message content must be between 1 and 2000 characters.");
-
-        var messageId = _snowflake.NextId();
-        var sentAt = DateTimeOffset.UtcNow;
-
-        await _publisher.PublishMessageSentAsync(
-            new MessageSentEvent(
-                MessageId: messageId,
-                ChannelId: channelId,
-                GuildId: guildId,
-                UserId: userId,
-                Content: request.Content,
-                MessageType: request.MessageType ?? "text",
-                AttachmentIds: request.AttachmentIds ?? [],
-                MentionIds: request.MentionIds ?? [],
-                ReplyToId: request.ReplyToId,
-                SentAt: sentAt
-            ),
-            ct
-        );
-
-        return new SendMessageResponse(
-            MessageId: messageId,
-            ChannelId: channelId,
-            GuildId: guildId,
-            UserId: userId,
-            Content: request.Content,
-            MessageType: request.MessageType ?? "text",
-            ReplyToId: request.ReplyToId,
-            MentionIds: request.MentionIds ?? [],
-            AttachmentIds: request.AttachmentIds ?? [],
-            SentAt: sentAt.ToUnixTimeMilliseconds()
-        );
-    }
-
-    public async Task DeleteMessageAsync(
-        long userId,
-        long guildId,
-        long channelId,
-        long messageId,
-        CancellationToken ct = default
-    )
-    {
-        var channel = await _channelRepository.GetByIdAndGuildIdAsync(channelId, guildId);
-        if (channel is null)
-            throw new KeyNotFoundException("Channel not found.");
-
-        var message = await _messageRepository.GetByIdAsync(messageId, ct);
-        if (message is null)
-            throw new KeyNotFoundException("Message not found.");
-
-        // CRITICAL SECURITY FIX: Prevent cross-channel message deletion
-        if (message.ChannelId != channelId)
-            throw new UnauthorizedAccessException(
-                "Message does not belong to the specified channel."
-            );
-
-        var guild = await _guildRepository.GetByIdAsync(guildId);
-        var isOwner = guild is not null && guild.OwnerId == userId;
-
-        if (message.UserId != userId && !isOwner)
-            throw new UnauthorizedAccessException(
-                "You do not have permission to delete this message."
-            );
-
-        // 1. Synchronously update ScyllaDB
-        await _messageRepository.DeleteAsync(messageId, channelId, ct);
-
-        // 2. Publish event to background queues (search index update)
-        await _publisher.PublishMessageDeletedAsync(
-            new MessageDeletedEvent(
-                MessageId: messageId,
-                ChannelId: channelId,
-                GuildId: guildId,
-                DeletedByUserId: userId,
-                DeletedAt: DateTimeOffset.UtcNow
-            ),
-            ct
-        );
-    }
-
-    public async Task EditMessageAsync(
-        long userId,
-        long guildId,
-        long channelId,
-        long messageId,
-        EditMessageRequest request,
-        CancellationToken ct = default
-    )
-    {
-        if (string.IsNullOrWhiteSpace(request.Content) || request.Content.Length > 2000)
-            throw new ArgumentException("Message content must be between 1 and 2000 characters.");
-
-        var message = await _messageRepository.GetByIdAsync(messageId, ct);
-        if (message is null)
-            throw new KeyNotFoundException("Message not found.");
-
-        // CRITICAL SECURITY FIX: Prevent cross-channel message editing
-        if (message.ChannelId != channelId)
-            throw new UnauthorizedAccessException(
-                "Message does not belong to the specified channel."
-            );
-
-        if (message.UserId != userId)
-            throw new UnauthorizedAccessException("You can only edit your own messages.");
-
-        // 1. Synchronously update ScyllaDB
-        await _messageRepository.EditAsync(messageId, channelId, request.Content, ct);
-
-        // 2. Publish event to background queues (search index update)
-        await _publisher.PublishMessageEditedAsync(
-            new MessageEditedEvent(
-                MessageId: messageId,
-                ChannelId: channelId,
-                GuildId: guildId,
-                EditedByUserId: userId,
-                NewContent: request.Content,
-                EditedAt: DateTimeOffset.UtcNow
-            ),
-            ct
-        );
-    }
-
-    public async Task<IEnumerable<MessageResponse>> GetChannelMessagesAsync(
-        long userId,
-        long guildId,
-        long channelId,
-        int limit = 50,
-        long? beforeMessageId = null,
-        CancellationToken ct = default
-    )
-    {
-        var channel = await _channelRepository.GetByIdAndGuildIdAsync(channelId, guildId);
-        if (channel is null)
-            throw new KeyNotFoundException("Channel not found.");
-
-        var isMember = await _guildRepository.IsMemberAsync(guildId, userId);
-        if (!isMember)
-            throw new UnauthorizedAccessException("You are not a member of this guild.");
-
-        limit = Math.Clamp(limit, 1, 100);
-        var messages = await _messageRepository.GetChannelMessagesAsync(
-            channelId,
-            limit,
-            beforeMessageId,
-            ct
-        );
-
-        return messages.Select(m => new MessageResponse(
-            MessageId: m.MessageId,
-            ChannelId: m.ChannelId,
-            GuildId: guildId,
-            UserId: m.UserId,
-            Content: m.IsDeleted ? string.Empty : m.Content,
-            MessageType: m.MessageType,
-            IsDeleted: m.IsDeleted,
-            IsEdited: m.IsEdited,
-            ReplyToId: m.ReplyToId,
-            MentionIds: m.IsDeleted ? [] : m.MentionIds,
-            AttachmentIds: m.IsDeleted ? [] : m.AttachmentIds,
-            SentAt: ((DateTimeOffset)m.CreatedAt).ToUnixTimeMilliseconds(),
-            EditedAt: m.EditedAt.HasValue
-                ? ((DateTimeOffset)m.EditedAt.Value).ToUnixTimeMilliseconds()
-                : null
-        ));
-    }
-}
-</file>
-
-<file path="src/Harmony.Application/Services/SnowflakeIdGenerator.cs">
-using System;
-using System.Threading;
-
-namespace Harmony.Application.Services;
-
-/// <summary>
-/// Generates 64-bit Snowflake IDs.
-///
-/// Bit layout (64 bits total):
-///   [63]       Sign bit — always 0 (keeps IDs positive as long)
-///   [62..22]   41 bits — milliseconds since HarmonyEpoch (~69 year range)
-///   [21..17]    5 bits — datacenter ID (0–31)
-///   [16..12]    5 bits — worker ID (0–31)
-///   [11..0]    12 bits — sequence number per millisecond (0–4095)
-///
-/// Max throughput: 4,096 IDs/ms per worker = ~4 million IDs/sec cluster-wide (32 workers).
-/// IDs are time-ordered and sortable as bigint in PostgreSQL and ScyllaDB.
-/// </summary>
-public sealed class SnowflakeIdGenerator : ISnowflakeIdGenerator
-{
-    // 2024-01-01 00:00:00.000 UTC — Harmony's custom epoch
-    // Never change this after IDs are in production.
-    public static readonly DateTimeOffset HarmonyEpoch = new DateTimeOffset(
-        2024,
-        1,
-        1,
-        0,
-        0,
-        0,
-        TimeSpan.Zero
-    );
-
-    private static readonly long EpochMs = HarmonyEpoch.ToUnixTimeMilliseconds();
-
-    // Bit widths
-    private const int WorkerIdBits = 5;
-    private const int DatacenterIdBits = 5;
-    private const int SequenceBits = 12;
-
-    // Max values (inclusive)
-    private const long MaxWorkerId = (1L << WorkerIdBits) - 1; // 31
-    private const long MaxDatacenterId = (1L << DatacenterIdBits) - 1; // 31
-    private const long MaxSequence = (1L << SequenceBits) - 1; // 4095
-
-    // Bit shift offsets
-    private const int WorkerIdShift = SequenceBits; // 12
-    private const int DatacenterIdShift = SequenceBits + WorkerIdBits; // 17
-    private const int TimestampShift = SequenceBits + WorkerIdBits + DatacenterIdBits; // 22
-
-    private readonly long _workerId;
-    private readonly long _datacenterId;
-
-    private long _lastTimestamp = -1L;
-    private long _sequence = 0L;
-
-    private readonly object _lock = new();
-
-    /// <param name="workerId">0–31. Unique per process instance. Read from config in production.</param>
-    /// <param name="datacenterId">0–31. Unique per datacenter/region. Read from config in production.</param>
-    public SnowflakeIdGenerator(long workerId = 0, long datacenterId = 0)
-    {
-        if (workerId < 0 || workerId > MaxWorkerId)
-            throw new ArgumentOutOfRangeException(
-                nameof(workerId),
-                $"Worker ID must be between 0 and {MaxWorkerId}."
-            );
-
-        if (datacenterId < 0 || datacenterId > MaxDatacenterId)
-            throw new ArgumentOutOfRangeException(
-                nameof(datacenterId),
-                $"Datacenter ID must be between 0 and {MaxDatacenterId}."
-            );
-
-        _workerId = workerId;
-        _datacenterId = datacenterId;
-    }
-
-    /// <summary>
-    /// Generates the next unique Snowflake ID. Thread-safe.
-    /// </summary>
-    public long NextId()
-    {
-        lock (_lock)
-        {
-            var timestamp = CurrentMs();
-
-            if (timestamp < _lastTimestamp)
-            {
-                // Clock moved backward — this can happen after NTP corrections.
-                // Wait until we catch up rather than generating a duplicate.
-                var drift = _lastTimestamp - timestamp;
-                if (drift > 5)
-                    throw new InvalidOperationException(
-                        $"Clock moved backward by {drift}ms. Refusing to generate ID to prevent duplicates."
-                    );
-
-                // For small drifts (≤5ms), spin-wait until the clock catches up.
-                timestamp = WaitForNextMs(_lastTimestamp);
-            }
-
-            if (timestamp == _lastTimestamp)
-            {
-                _sequence = (_sequence + 1) & MaxSequence;
-                if (_sequence == 0)
-                {
-                    // Sequence exhausted for this millisecond — wait for the next one.
-                    timestamp = WaitForNextMs(_lastTimestamp);
-                }
-            }
-            else
-            {
-                _sequence = 0L;
-            }
-
-            _lastTimestamp = timestamp;
-
-            return ((timestamp - EpochMs) << TimestampShift)
-                | (_datacenterId << DatacenterIdShift)
-                | (_workerId << WorkerIdShift)
-                | _sequence;
-        }
-    }
-
-    /// <summary>
-    /// Extracts the UTC timestamp embedded in a Snowflake ID.
-    /// Useful for debugging and audit log display.
-    /// </summary>
-    public static DateTimeOffset ExtractTimestamp(long snowflakeId)
-    {
-        var ms = (snowflakeId >> TimestampShift) + EpochMs;
-        return DateTimeOffset.FromUnixTimeMilliseconds(ms);
-    }
-
-    /// <summary>
-    /// Extracts the worker ID embedded in a Snowflake ID.
-    /// </summary>
-    public static int ExtractWorkerId(long snowflakeId) =>
-        (int)((snowflakeId >> WorkerIdShift) & MaxWorkerId);
-
-    /// <summary>
-    /// Extracts the datacenter ID embedded in a Snowflake ID.
-    /// </summary>
-    public static int ExtractDatacenterId(long snowflakeId) =>
-        (int)((snowflakeId >> DatacenterIdShift) & MaxDatacenterId);
-
-    /// <summary>
-    /// Extracts the sequence number embedded in a Snowflake ID.
-    /// </summary>
-    public static int ExtractSequence(long snowflakeId) => (int)(snowflakeId & MaxSequence);
-
-    // Returns the current Unix time in milliseconds.
-    private static long CurrentMs() => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-    // Spin-wait until the system clock has advanced past lastTimestamp.
-    private static long WaitForNextMs(long lastTimestamp)
-    {
-        long ts;
-        do
-        {
-            // Yield the execution thread momentarily to prevent 100% CPU core utilization
-            Thread.SpinWait(1);
-            ts = CurrentMs();
-        } while (ts <= lastTimestamp);
-        return ts;
     }
 }
 </file>
@@ -1703,31 +1079,6 @@ public class PinnedMessage
 }
 </file>
 
-<file path="src/Harmony.Domain/Domain/Entities/RefreshToken.cs">
-using System.ComponentModel.DataAnnotations;
-
-namespace Harmony.Domain.Domain.Entities;
-
-public class RefreshToken
-{
-    public Guid Id { get; set; }
-    public long UserId { get; set; }
-    public string TokenHash { get; set; } = null!;
-    public Guid FamilyId { get; set; }
-    public DateTimeOffset ExpiresAt { get; set; }
-
-    [ConcurrencyCheck]
-    public DateTimeOffset? RevokedAt { get; set; }
-    public long CreatedAt { get; set; }
-
-    public bool IsExpired => DateTimeOffset.UtcNow >= ExpiresAt;
-    public bool IsActive => RevokedAt is null && !IsExpired;
-
-    // Navigation
-    public User User { get; set; } = null!;
-}
-</file>
-
 <file path="src/Harmony.Domain/Domain/Entities/Social.cs">
 namespace Harmony.Domain.Domain.Entities;
 
@@ -1917,29 +1268,6 @@ public interface IReadStateRepository
     Task<IReadOnlyDictionary<long, long>> GetAllForUserAsync(
         long userId,
         IEnumerable<long> channelIds,
-        CancellationToken ct = default
-    );
-}
-</file>
-
-<file path="src/Harmony.Domain/Interfaces/Repositories/IRefreshTokenRepositroy.cs">
-using Harmony.Domain.Domain.Entities;
-
-namespace Harmony.Domain.Interfaces.Repositories;
-
-public interface IRefreshTokenRepository
-{
-    Task<RefreshToken?> GetByTokenHashAsync(string tokenHash, CancellationToken ct = default);
-    Task<List<RefreshToken>> GetActiveFamilyTokensAsync(
-        Guid familyId,
-        CancellationToken ct = default
-    );
-    Task AddAsync(RefreshToken token, CancellationToken ct = default);
-    Task SaveChangesAsync(CancellationToken ct = default);
-
-    Task RotateTokenAsync(
-        RefreshToken oldToken,
-        RefreshToken newToken,
         CancellationToken ct = default
     );
 }
@@ -6181,82 +5509,6 @@ namespace Harmony.Infrastructure.Postgres.Migrations
 }
 </file>
 
-<file path="src/Harmony.Infrastructure/Postgres/Repositories/RefreshTokenRepository.cs">
-using Harmony.Domain.Domain.Entities;
-using Harmony.Domain.Interfaces.Repositories;
-using Microsoft.EntityFrameworkCore;
-
-namespace Harmony.Infrastructure.Postgres.Repositories;
-
-public class RefreshTokenRepository : IRefreshTokenRepository
-{
-    private readonly HarmonyDbContext _db;
-
-    public RefreshTokenRepository(HarmonyDbContext db)
-    {
-        _db = db;
-    }
-
-    public async Task<RefreshToken?> GetByTokenHashAsync(
-        string tokenHash,
-        CancellationToken ct = default
-    ) =>
-        await _db
-            .RefreshTokens.Include(r => r.User)
-            .FirstOrDefaultAsync(r => r.TokenHash == tokenHash, ct);
-
-    public async Task<List<RefreshToken>> GetActiveFamilyTokensAsync(
-        Guid familyId,
-        CancellationToken ct = default
-    ) =>
-        await _db
-            .RefreshTokens.Where(r => r.FamilyId == familyId && r.RevokedAt == null)
-            .ToListAsync(ct);
-
-    public async Task AddAsync(RefreshToken token, CancellationToken ct = default) =>
-        await _db.RefreshTokens.AddAsync(token, ct);
-
-    public async Task SaveChangesAsync(CancellationToken ct = default) =>
-        await _db.SaveChangesAsync(ct);
-
-    public async Task RotateTokenAsync(
-        RefreshToken oldToken,
-        RefreshToken newToken,
-        CancellationToken ct = default
-    )
-    {
-        // Resolve the configured execution strategy (e.g. NpgsqlRetryingExecutionStrategy)
-        var strategy = _db.Database.CreateExecutionStrategy();
-
-        // Execute the transaction inside the retriable strategy block to comply with connection resiliency
-        await strategy.ExecuteAsync(async () =>
-        {
-            await using var transaction = await _db.Database.BeginTransactionAsync(ct);
-            try
-            {
-                var entry = _db.Entry(oldToken);
-                if (entry.State == EntityState.Detached)
-                {
-                    _db.RefreshTokens.Attach(oldToken);
-                }
-
-                // Explicitly mark only the RevokedAt property as modified
-                entry.Property(r => r.RevokedAt).IsModified = true;
-
-                await _db.RefreshTokens.AddAsync(newToken, ct);
-                await _db.SaveChangesAsync(ct);
-                await transaction.CommitAsync(ct);
-            }
-            catch
-            {
-                await transaction.RollbackAsync(ct);
-                throw;
-            }
-        });
-    }
-}
-</file>
-
 <file path="src/Harmony.Infrastructure/Scylla/Interfaces/IScyllaSessionFactory.cs">
 using Cassandra;
 
@@ -6433,6 +5685,77 @@ public class IdentityService : IIdentityService
 
     public async Task<bool> CheckPasswordAsync(User user, string password) =>
         await _userManager.CheckPasswordAsync(user, password);
+}
+</file>
+
+<file path="src/Harmony.Infrastructure/Services/TokenPruningService.cs">
+using System;
+using System.Threading;
+using System.Threading.Tasks;
+using Harmony.Infrastructure.Postgres;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+
+namespace Harmony.Infrastructure.Services;
+
+public class TokenPruningService : BackgroundService
+{
+    private readonly IServiceScopeFactory _scopeFactory;
+    private readonly ILogger<TokenPruningService> _logger;
+    private readonly TimeSpan _pruneInterval = TimeSpan.FromDays(1); // Execution interval: Once daily
+
+    public TokenPruningService(
+        IServiceScopeFactory scopeFactory,
+        ILogger<TokenPruningService> logger
+    )
+    {
+        _scopeFactory = scopeFactory;
+        _logger = logger;
+    }
+
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        _logger.LogInformation("TokenPruningService background worker started.");
+
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            try
+            {
+                _logger.LogInformation("Starting background refresh token pruning cycle.");
+
+                using (var scope = _scopeFactory.CreateScope())
+                {
+                    var db = scope.ServiceProvider.GetRequiredService<HarmonyDbContext>();
+
+                    // Clean up revoked tokens after 30 days.
+                    var revokedCutoff = DateTimeOffset.UtcNow.AddDays(-30);
+
+                    // Explicitly name cancellationToken to prevent EF Core from mapping it as a query parameter
+                    var deletedCount = await db.Database.ExecuteSqlRawAsync(
+                        "DELETE FROM \"RefreshTokens\" WHERE \"expires_at\" < {0} OR (\"revoked_at\" IS NOT NULL AND \"revoked_at\" < {1})",
+                        [DateTimeOffset.UtcNow, revokedCutoff],
+                        cancellationToken: stoppingToken
+                    );
+
+                    _logger.LogInformation(
+                        "Successfully pruned {Count} expired or historically revoked refresh tokens.",
+                        deletedCount
+                    );
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "An error occurred during the refresh token pruning cycle.");
+            }
+
+            // Wait until the next execution window or exit if stopping is requested
+            await Task.Delay(_pruneInterval, stoppingToken);
+        }
+
+        _logger.LogInformation("TokenPruningService background worker stopped.");
+    }
 }
 </file>
 
@@ -6752,6 +6075,27 @@ public class AuthControllerTests : ApiTestBase
             ); // family revoked
     }
 
+    [Fact]
+    public async Task Refresh_WithConcurrentRequests_ShouldAllowOnlyOneToSucceed()
+    {
+        // Arrange: Register and log in once to obtain the active refresh token cookie
+        await RegisterUserAsync("concurrentuser", "concurrent@example.com", "Password123!");
+
+        // Act: Fire two concurrent refresh requests simultaneously
+        var task1 = Client.PostAsJsonAsync("/api/auth/refresh", new { });
+        var task2 = Client.PostAsJsonAsync("/api/auth/refresh", new { });
+
+        await Task.WhenAll(task1, task2);
+
+        var res1 = await task1;
+        var res2 = await task2;
+
+        // Assert: One request must successfully rotate, and the other must fail with 401 Unauthorized
+        var statusCodes = new[] { res1.StatusCode, res2.StatusCode };
+        statusCodes.Should().ContainSingle(s => s == HttpStatusCode.OK);
+        statusCodes.Should().ContainSingle(s => s == HttpStatusCode.Unauthorized);
+    }
+
     // --- Helpers ---
 
     private async Task<AuthResponse> RegisterUserAsync(
@@ -6940,6 +6284,691 @@ keys:
 logging:
   level: info
 development: true
+</file>
+
+<file path="docker/.env.example">
+POSTGRES_PASSWORD=
+RABBITMQ_PASSWORD=
+Jwt__Key=
+MINIO_ACCESS_KEY=
+MINIO_SECRET_KEY=
+LIVEKIT_KEY=
+LIVEKIT_SECRET=
+DUCKDNS_TOKEN=
+</file>
+
+<file path="src/Harmony.Application/Services/AuthService.cs">
+using System.Security.Authentication;
+using Harmony.Application.DTOs.Requests;
+using Harmony.Application.DTOs.Responses;
+using Harmony.Application.Services;
+using Harmony.Domain.Domain.Entities;
+using Harmony.Domain.Interfaces.Repositories;
+using Harmony.Domain.Interfaces.Services;
+using Microsoft.Extensions.Configuration;
+
+namespace Harmony.Application.Services;
+
+public class AuthService : IAuthService
+{
+    private readonly IIdentityService _identityService;
+    private readonly IRefreshTokenRepository _tokenRepository;
+    private readonly IJwtService _jwtService;
+    private readonly ISnowflakeIdGenerator _snowflake;
+    private readonly IConfiguration _config;
+
+    public AuthService(
+        IIdentityService identityService,
+        IRefreshTokenRepository tokenRepository,
+        IJwtService jwtService,
+        ISnowflakeIdGenerator snowflake,
+        IConfiguration config
+    )
+    {
+        _identityService = identityService;
+        _tokenRepository = tokenRepository;
+        _jwtService = jwtService;
+        _snowflake = snowflake;
+        _config = config;
+    }
+
+    public async Task<(AuthResponse response, string rawRefreshToken)> RegisterAsync(
+        RegisterRequest request,
+        CancellationToken ct = default
+    )
+    {
+        if (!IsValidEmail(request.Email))
+            throw new ArgumentException("Invalid email format.");
+
+        if (await _identityService.FindByEmailAsync(request.Email) is not null)
+            throw new InvalidOperationException("Email already in use.");
+
+        if (await _identityService.FindByNameAsync(request.Username) is not null)
+            throw new InvalidOperationException("Username already taken.");
+
+        var user = new User
+        {
+            Id = _snowflake.NextId(),
+            UserName = request.Username,
+            Email = request.Email,
+            Discriminator = GenerateDiscriminator(),
+            AccountStatus = "active",
+            CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+        };
+
+        var (succeeded, errors) = await _identityService.CreateUserAsync(user, request.Password);
+        if (!succeeded)
+            throw new InvalidOperationException(string.Join(", ", errors));
+
+        var (accessToken, rawRefreshToken) = await IssueTokensAsync(user);
+        return (new AuthResponse(accessToken, ToUserResponse(user)), rawRefreshToken);
+    }
+
+    public async Task<(AuthResponse response, string rawRefreshToken)> LoginAsync(
+        LoginRequest request,
+        CancellationToken ct = default
+    )
+    {
+        var user = await _identityService.FindByEmailAsync(request.Email);
+        if (user is null || !await _identityService.CheckPasswordAsync(user, request.Password))
+            throw new AuthenticationException("Invalid email or password.");
+
+        if (user.AccountStatus != "active")
+            throw new AuthenticationException("Account is not active.");
+
+        var (accessToken, rawRefreshToken) = await IssueTokensAsync(user);
+        return (new AuthResponse(accessToken, ToUserResponse(user)), rawRefreshToken);
+    }
+
+    public async Task<(AuthResponse response, string rawRefreshToken)> RefreshAsync(
+        string rawRefreshToken,
+        CancellationToken ct = default
+    )
+    {
+        var tokenHash = _jwtService.HashRefreshToken(rawRefreshToken);
+        var stored = await _tokenRepository.GetByTokenHashAsync(tokenHash, ct);
+
+        if (stored is null)
+            throw new AuthenticationException("Invalid refresh token.");
+
+        if (stored.RevokedAt is not null)
+        {
+            var gracePeriod = TimeSpan.FromSeconds(30);
+            if (DateTimeOffset.UtcNow - stored.RevokedAt.Value > gracePeriod)
+            {
+                await RevokeFamilyAsync(stored.FamilyId, ct);
+                throw new AuthenticationException(
+                    "Refresh token reuse detected. Please log in again."
+                );
+            }
+
+            // --- GRACE PERIOD MITIGATION ---
+            // If the replayed token falls within the 30-second window, it's a concurrent retry.
+            // Do not rotate or generate another token. Instead, return a fresh access token
+            // and an empty refresh token string so the controller doesn't overwrite the cookie.
+            var graceAccessToken = _jwtService.GenerateAccessToken(stored.User);
+            return (new AuthResponse(graceAccessToken, ToUserResponse(stored.User)), string.Empty);
+        }
+
+        if (stored.ExpiresAt < DateTimeOffset.UtcNow)
+        {
+            if (stored.RevokedAt is null)
+            {
+                stored.RevokedAt = DateTimeOffset.UtcNow;
+                await _tokenRepository.SaveChangesAsync(ct);
+            }
+            throw new AuthenticationException("Refresh token expired.");
+        }
+
+        // Generate values for the new rotated refresh token
+        var accessToken = _jwtService.GenerateAccessToken(stored.User);
+        var newRawRefreshToken = _jwtService.GenerateRefreshToken();
+        var refreshExpiry = int.Parse(_config["Jwt:RefreshTokenExpiryDays"] ?? "7");
+
+        var newToken = new RefreshToken
+        {
+            Id = Guid.NewGuid(),
+            UserId = stored.User.Id,
+            TokenHash = _jwtService.HashRefreshToken(newRawRefreshToken),
+            FamilyId = stored.FamilyId,
+            ExpiresAt = DateTimeOffset.UtcNow.AddDays(refreshExpiry),
+            CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+        };
+
+        // Prepare modification state for Optimistic Concurrency validation (OCC)
+        stored.RevokedAt = DateTimeOffset.UtcNow;
+
+        try
+        {
+            // Execute atomic transaction update
+            await _tokenRepository.RotateTokenAsync(stored, newToken, ct);
+        }
+        catch (Exception ex)
+        {
+            throw new AuthenticationException(
+                "Token rotation conflict or transaction error. Please log in again.",
+                ex
+            );
+        }
+
+        return (new AuthResponse(accessToken, ToUserResponse(stored.User)), newRawRefreshToken);
+    }
+
+    public async Task LogoutAsync(string rawRefreshToken, CancellationToken ct = default)
+    {
+        if (string.IsNullOrEmpty(rawRefreshToken))
+            return;
+
+        var tokenHash = _jwtService.HashRefreshToken(rawRefreshToken);
+        var stored = await _tokenRepository.GetByTokenHashAsync(tokenHash, ct);
+
+        if (stored is not null && stored.RevokedAt is null)
+        {
+            stored.RevokedAt = DateTimeOffset.UtcNow;
+            await _tokenRepository.SaveChangesAsync(ct);
+        }
+    }
+
+    // --- Helpers ---
+
+    public async Task<(string accessToken, string rawRefreshToken)> IssueTokensAsync(
+        User user,
+        Guid? familyId = null
+    )
+    {
+        var accessToken = _jwtService.GenerateAccessToken(user);
+        var rawRefresh = _jwtService.GenerateRefreshToken();
+        var refreshExpiry = int.Parse(_config["Jwt:RefreshTokenExpiryDays"] ?? "7");
+
+        var refreshToken = new RefreshToken
+        {
+            Id = Guid.NewGuid(),
+            UserId = user.Id,
+            TokenHash = _jwtService.HashRefreshToken(rawRefresh),
+            FamilyId = familyId ?? Guid.NewGuid(),
+            ExpiresAt = DateTimeOffset.UtcNow.AddDays(refreshExpiry),
+            CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+        };
+
+        await _tokenRepository.AddAsync(refreshToken);
+        await _tokenRepository.SaveChangesAsync();
+
+        return (accessToken, rawRefresh);
+    }
+
+    private async Task RevokeFamilyAsync(Guid familyId, CancellationToken ct)
+    {
+        var tokens = await _tokenRepository.GetActiveFamilyTokensAsync(familyId, ct);
+
+        foreach (var t in tokens)
+            t.RevokedAt = DateTimeOffset.UtcNow;
+
+        await _tokenRepository.SaveChangesAsync(ct);
+    }
+
+    private static string GenerateDiscriminator() => Random.Shared.Next(0, 10000).ToString("D4");
+
+    private static UserResponse ToUserResponse(User user) =>
+        new(
+            user.Id,
+            user.UserName!,
+            user.Discriminator,
+            user.Email!,
+            user.AvatarKey,
+            user.AccountStatus
+        );
+
+    private static bool IsValidEmail(string email)
+    {
+        try
+        {
+            var addr = new System.Net.Mail.MailAddress(email);
+            return addr.Address == email;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+}
+</file>
+
+<file path="src/Harmony.Application/Services/MessageService.cs">
+using Harmony.Application.DTOs.Requests;
+using Harmony.Application.DTOs.Responses;
+using Harmony.Application.Services;
+using Harmony.Domain.Interfaces;
+using Harmony.Domain.Interfaces.Repositories;
+using Harmony.Domain.Interfaces.Services;
+
+namespace Harmony.Application.Services;
+
+public class MessageService : IMessageService
+{
+    private readonly IChannelRepository _channelRepository;
+    private readonly IGuildRepository _guildRepository;
+    private readonly IMessagePublisher _publisher;
+    private readonly ISnowflakeIdGenerator _snowflake;
+    private readonly IMessageRepository _messageRepository;
+
+    public MessageService(
+        IChannelRepository channelRepository,
+        IGuildRepository guildRepository,
+        IMessagePublisher publisher,
+        ISnowflakeIdGenerator snowflake,
+        IMessageRepository messageRepository
+    )
+    {
+        _channelRepository = channelRepository;
+        _guildRepository = guildRepository;
+        _publisher = publisher;
+        _snowflake = snowflake;
+        _messageRepository = messageRepository;
+    }
+
+    public async Task<SendMessageResponse> SendMessageAsync(
+        long userId,
+        long guildId,
+        long channelId,
+        SendMessageRequest request,
+        CancellationToken ct = default
+    )
+    {
+        // Verify channel exists and belongs to guild natively via repository
+        var channel = await _channelRepository.GetByIdAndGuildIdAsync(channelId, guildId);
+        if (channel is null)
+            throw new KeyNotFoundException("Channel not found.");
+
+        // Verify user is a member of the guild natively via repository
+        var isMember = await _guildRepository.IsMemberAsync(guildId, userId);
+        if (!isMember)
+            throw new UnauthorizedAccessException("You are not a member of this guild.");
+
+        // Validate content
+        if (string.IsNullOrWhiteSpace(request.Content) || request.Content.Length > 2000)
+            throw new ArgumentException("Message content must be between 1 and 2000 characters.");
+
+        var messageId = _snowflake.NextId();
+        var sentAt = DateTimeOffset.UtcNow;
+
+        await _publisher.PublishMessageSentAsync(
+            new MessageSentEvent(
+                MessageId: messageId,
+                ChannelId: channelId,
+                GuildId: guildId,
+                UserId: userId,
+                Content: request.Content,
+                MessageType: request.MessageType ?? "text",
+                AttachmentIds: request.AttachmentIds ?? [],
+                MentionIds: request.MentionIds ?? [],
+                ReplyToId: request.ReplyToId,
+                SentAt: sentAt
+            ),
+            ct
+        );
+
+        return new SendMessageResponse(
+            MessageId: messageId,
+            ChannelId: channelId,
+            GuildId: guildId,
+            UserId: userId,
+            Content: request.Content,
+            MessageType: request.MessageType ?? "text",
+            ReplyToId: request.ReplyToId,
+            MentionIds: request.MentionIds ?? [],
+            AttachmentIds: request.AttachmentIds ?? [],
+            SentAt: sentAt.ToUnixTimeMilliseconds()
+        );
+    }
+
+    public async Task DeleteMessageAsync(
+        long userId,
+        long guildId,
+        long channelId,
+        long messageId,
+        CancellationToken ct = default
+    )
+    {
+        var channel = await _channelRepository.GetByIdAndGuildIdAsync(channelId, guildId);
+        if (channel is null)
+            throw new KeyNotFoundException("Channel not found.");
+
+        var message = await _messageRepository.GetByIdAsync(messageId, ct);
+        if (message is null)
+            throw new KeyNotFoundException("Message not found.");
+
+        // CRITICAL SECURITY FIX: Prevent cross-channel message deletion
+        if (message.ChannelId != channelId)
+            throw new UnauthorizedAccessException(
+                "Message does not belong to the specified channel."
+            );
+
+        var guild = await _guildRepository.GetByIdAsync(guildId);
+        var isOwner = guild is not null && guild.OwnerId == userId;
+
+        if (message.UserId != userId && !isOwner)
+            throw new UnauthorizedAccessException(
+                "You do not have permission to delete this message."
+            );
+
+        // 1. Synchronously update ScyllaDB
+        await _messageRepository.DeleteAsync(messageId, channelId, ct);
+
+        // 2. Publish event to background queues (search index update)
+        await _publisher.PublishMessageDeletedAsync(
+            new MessageDeletedEvent(
+                MessageId: messageId,
+                ChannelId: channelId,
+                GuildId: guildId,
+                DeletedByUserId: userId,
+                DeletedAt: DateTimeOffset.UtcNow
+            ),
+            ct
+        );
+    }
+
+    public async Task EditMessageAsync(
+        long userId,
+        long guildId,
+        long channelId,
+        long messageId,
+        EditMessageRequest request,
+        CancellationToken ct = default
+    )
+    {
+        if (string.IsNullOrWhiteSpace(request.Content) || request.Content.Length > 2000)
+            throw new ArgumentException("Message content must be between 1 and 2000 characters.");
+
+        var message = await _messageRepository.GetByIdAsync(messageId, ct);
+        if (message is null)
+            throw new KeyNotFoundException("Message not found.");
+
+        // CRITICAL SECURITY FIX: Prevent cross-channel message editing
+        if (message.ChannelId != channelId)
+            throw new UnauthorizedAccessException(
+                "Message does not belong to the specified channel."
+            );
+
+        if (message.UserId != userId)
+            throw new UnauthorizedAccessException("You can only edit your own messages.");
+
+        // 1. Synchronously update ScyllaDB
+        await _messageRepository.EditAsync(messageId, channelId, request.Content, ct);
+
+        // 2. Publish event to background queues (search index update)
+        await _publisher.PublishMessageEditedAsync(
+            new MessageEditedEvent(
+                MessageId: messageId,
+                ChannelId: channelId,
+                GuildId: guildId,
+                EditedByUserId: userId,
+                NewContent: request.Content,
+                EditedAt: DateTimeOffset.UtcNow
+            ),
+            ct
+        );
+    }
+
+    public async Task<IEnumerable<MessageResponse>> GetChannelMessagesAsync(
+        long userId,
+        long guildId,
+        long channelId,
+        int limit = 50,
+        long? beforeMessageId = null,
+        CancellationToken ct = default
+    )
+    {
+        var channel = await _channelRepository.GetByIdAndGuildIdAsync(channelId, guildId);
+        if (channel is null)
+            throw new KeyNotFoundException("Channel not found.");
+
+        var isMember = await _guildRepository.IsMemberAsync(guildId, userId);
+        if (!isMember)
+            throw new UnauthorizedAccessException("You are not a member of this guild.");
+
+        limit = Math.Clamp(limit, 1, 100);
+        var messages = await _messageRepository.GetChannelMessagesAsync(
+            channelId,
+            limit,
+            beforeMessageId,
+            ct
+        );
+
+        return messages.Select(m => new MessageResponse(
+            MessageId: m.MessageId,
+            ChannelId: m.ChannelId,
+            GuildId: guildId,
+            UserId: m.UserId,
+            Content: m.IsDeleted ? string.Empty : m.Content,
+            MessageType: m.MessageType,
+            IsDeleted: m.IsDeleted,
+            IsEdited: m.IsEdited,
+            ReplyToId: m.ReplyToId,
+            MentionIds: m.IsDeleted ? [] : m.MentionIds,
+            AttachmentIds: m.IsDeleted ? [] : m.AttachmentIds,
+            SentAt: ((DateTimeOffset)m.CreatedAt).ToUnixTimeMilliseconds(),
+            EditedAt: m.EditedAt.HasValue
+                ? ((DateTimeOffset)m.EditedAt.Value).ToUnixTimeMilliseconds()
+                : null
+        ));
+    }
+}
+</file>
+
+<file path="src/Harmony.Application/Services/SnowflakeIdGenerator.cs">
+using System;
+using System.Threading;
+
+namespace Harmony.Application.Services;
+
+/// <summary>
+/// Generates 64-bit Snowflake IDs.
+///
+/// Bit layout (64 bits total):
+///   [63]       Sign bit — always 0 (keeps IDs positive as long)
+///   [62..22]   41 bits — milliseconds since HarmonyEpoch (~69 year range)
+///   [21..17]    5 bits — datacenter ID (0–31)
+///   [16..12]    5 bits — worker ID (0–31)
+///   [11..0]    12 bits — sequence number per millisecond (0–4095)
+///
+/// Max throughput: 4,096 IDs/ms per worker = ~4 million IDs/sec cluster-wide (32 workers).
+/// IDs are time-ordered and sortable as bigint in PostgreSQL and ScyllaDB.
+/// </summary>
+public sealed class SnowflakeIdGenerator : ISnowflakeIdGenerator
+{
+    // 2024-01-01 00:00:00.000 UTC — Harmony's custom epoch
+    // Never change this after IDs are in production.
+    public static readonly DateTimeOffset HarmonyEpoch = new DateTimeOffset(
+        2024,
+        1,
+        1,
+        0,
+        0,
+        0,
+        TimeSpan.Zero
+    );
+
+    private static readonly long EpochMs = HarmonyEpoch.ToUnixTimeMilliseconds();
+
+    // Bit widths
+    private const int WorkerIdBits = 5;
+    private const int DatacenterIdBits = 5;
+    private const int SequenceBits = 12;
+
+    // Max values (inclusive)
+    private const long MaxWorkerId = (1L << WorkerIdBits) - 1; // 31
+    private const long MaxDatacenterId = (1L << DatacenterIdBits) - 1; // 31
+    private const long MaxSequence = (1L << SequenceBits) - 1; // 4095
+
+    // Bit shift offsets
+    private const int WorkerIdShift = SequenceBits; // 12
+    private const int DatacenterIdShift = SequenceBits + WorkerIdBits; // 17
+    private const int TimestampShift = SequenceBits + WorkerIdBits + DatacenterIdBits; // 22
+
+    private readonly long _workerId;
+    private readonly long _datacenterId;
+
+    private long _lastTimestamp = -1L;
+    private long _sequence = 0L;
+
+    private readonly object _lock = new();
+
+    /// <param name="workerId">0–31. Unique per process instance. Read from config in production.</param>
+    /// <param name="datacenterId">0–31. Unique per datacenter/region. Read from config in production.</param>
+    public SnowflakeIdGenerator(long workerId = 0, long datacenterId = 0)
+    {
+        if (workerId < 0 || workerId > MaxWorkerId)
+            throw new ArgumentOutOfRangeException(
+                nameof(workerId),
+                $"Worker ID must be between 0 and {MaxWorkerId}."
+            );
+
+        if (datacenterId < 0 || datacenterId > MaxDatacenterId)
+            throw new ArgumentOutOfRangeException(
+                nameof(datacenterId),
+                $"Datacenter ID must be between 0 and {MaxDatacenterId}."
+            );
+
+        _workerId = workerId;
+        _datacenterId = datacenterId;
+    }
+
+    /// <summary>
+    /// Generates the next unique Snowflake ID. Thread-safe.
+    /// </summary>
+    public long NextId()
+    {
+        lock (_lock)
+        {
+            var timestamp = CurrentMs();
+
+            if (timestamp < _lastTimestamp)
+            {
+                // Clock moved backward — this can happen after NTP corrections.
+                // Wait until we catch up rather than generating a duplicate.
+                var drift = _lastTimestamp - timestamp;
+                if (drift > 5)
+                    throw new InvalidOperationException(
+                        $"Clock moved backward by {drift}ms. Refusing to generate ID to prevent duplicates."
+                    );
+
+                // For small drifts (≤5ms), spin-wait until the clock catches up.
+                timestamp = WaitForNextMs(_lastTimestamp);
+            }
+
+            if (timestamp == _lastTimestamp)
+            {
+                _sequence = (_sequence + 1) & MaxSequence;
+                if (_sequence == 0)
+                {
+                    // Sequence exhausted for this millisecond — wait for the next one.
+                    timestamp = WaitForNextMs(_lastTimestamp);
+                }
+            }
+            else
+            {
+                _sequence = 0L;
+            }
+
+            _lastTimestamp = timestamp;
+
+            return ((timestamp - EpochMs) << TimestampShift)
+                | (_datacenterId << DatacenterIdShift)
+                | (_workerId << WorkerIdShift)
+                | _sequence;
+        }
+    }
+
+    /// <summary>
+    /// Extracts the UTC timestamp embedded in a Snowflake ID.
+    /// Useful for debugging and audit log display.
+    /// </summary>
+    public static DateTimeOffset ExtractTimestamp(long snowflakeId)
+    {
+        var ms = (snowflakeId >> TimestampShift) + EpochMs;
+        return DateTimeOffset.FromUnixTimeMilliseconds(ms);
+    }
+
+    /// <summary>
+    /// Extracts the worker ID embedded in a Snowflake ID.
+    /// </summary>
+    public static int ExtractWorkerId(long snowflakeId) =>
+        (int)((snowflakeId >> WorkerIdShift) & MaxWorkerId);
+
+    /// <summary>
+    /// Extracts the datacenter ID embedded in a Snowflake ID.
+    /// </summary>
+    public static int ExtractDatacenterId(long snowflakeId) =>
+        (int)((snowflakeId >> DatacenterIdShift) & MaxDatacenterId);
+
+    /// <summary>
+    /// Extracts the sequence number embedded in a Snowflake ID.
+    /// </summary>
+    public static int ExtractSequence(long snowflakeId) => (int)(snowflakeId & MaxSequence);
+
+    // Returns the current Unix time in milliseconds.
+    private static long CurrentMs() => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+    // Spin-wait until the system clock has advanced past lastTimestamp.
+    private static long WaitForNextMs(long lastTimestamp)
+    {
+        long ts;
+        do
+        {
+            // Yield the execution thread momentarily to prevent 100% CPU core utilization
+            Thread.SpinWait(1);
+            ts = CurrentMs();
+        } while (ts <= lastTimestamp);
+        return ts;
+    }
+}
+</file>
+
+<file path="src/Harmony.Domain/Domain/Entities/RefreshToken.cs">
+using System.ComponentModel.DataAnnotations;
+
+namespace Harmony.Domain.Domain.Entities;
+
+public class RefreshToken
+{
+    public Guid Id { get; set; }
+    public long UserId { get; set; }
+    public string TokenHash { get; set; } = null!;
+    public Guid FamilyId { get; set; }
+    public DateTimeOffset ExpiresAt { get; set; }
+
+    [ConcurrencyCheck]
+    public DateTimeOffset? RevokedAt { get; set; }
+    public long CreatedAt { get; set; }
+
+    public bool IsExpired => DateTimeOffset.UtcNow >= ExpiresAt;
+    public bool IsActive => RevokedAt is null && !IsExpired;
+
+    // Navigation
+    public User User { get; set; } = null!;
+}
+</file>
+
+<file path="src/Harmony.Domain/Interfaces/Repositories/IRefreshTokenRepositroy.cs">
+using Harmony.Domain.Domain.Entities;
+
+namespace Harmony.Domain.Interfaces.Repositories;
+
+public interface IRefreshTokenRepository
+{
+    Task<RefreshToken?> GetByTokenHashAsync(string tokenHash, CancellationToken ct = default);
+    Task<List<RefreshToken>> GetActiveFamilyTokensAsync(
+        Guid familyId,
+        CancellationToken ct = default
+    );
+    Task AddAsync(RefreshToken token, CancellationToken ct = default);
+    Task SaveChangesAsync(CancellationToken ct = default);
+
+    Task RotateTokenAsync(
+        RefreshToken oldToken,
+        RefreshToken newToken,
+        CancellationToken ct = default
+    );
+}
 </file>
 
 <file path="src/Harmony.Infrastructure/Postgres/Configuration/FilesNotificationsVoiceConfig.cs">
@@ -8964,6 +8993,82 @@ public class GuildRepository : IGuildRepository
 }
 </file>
 
+<file path="src/Harmony.Infrastructure/Postgres/Repositories/RefreshTokenRepository.cs">
+using Harmony.Domain.Domain.Entities;
+using Harmony.Domain.Interfaces.Repositories;
+using Microsoft.EntityFrameworkCore;
+
+namespace Harmony.Infrastructure.Postgres.Repositories;
+
+public class RefreshTokenRepository : IRefreshTokenRepository
+{
+    private readonly HarmonyDbContext _db;
+
+    public RefreshTokenRepository(HarmonyDbContext db)
+    {
+        _db = db;
+    }
+
+    public async Task<RefreshToken?> GetByTokenHashAsync(
+        string tokenHash,
+        CancellationToken ct = default
+    ) =>
+        await _db
+            .RefreshTokens.Include(r => r.User)
+            .FirstOrDefaultAsync(r => r.TokenHash == tokenHash, ct);
+
+    public async Task<List<RefreshToken>> GetActiveFamilyTokensAsync(
+        Guid familyId,
+        CancellationToken ct = default
+    ) =>
+        await _db
+            .RefreshTokens.Where(r => r.FamilyId == familyId && r.RevokedAt == null)
+            .ToListAsync(ct);
+
+    public async Task AddAsync(RefreshToken token, CancellationToken ct = default) =>
+        await _db.RefreshTokens.AddAsync(token, ct);
+
+    public async Task SaveChangesAsync(CancellationToken ct = default) =>
+        await _db.SaveChangesAsync(ct);
+
+    public async Task RotateTokenAsync(
+        RefreshToken oldToken,
+        RefreshToken newToken,
+        CancellationToken ct = default
+    )
+    {
+        // Resolve the configured execution strategy (e.g. NpgsqlRetryingExecutionStrategy)
+        var strategy = _db.Database.CreateExecutionStrategy();
+
+        // Execute the transaction inside the retriable strategy block to comply with connection resiliency
+        await strategy.ExecuteAsync(async () =>
+        {
+            await using var transaction = await _db.Database.BeginTransactionAsync(ct);
+            try
+            {
+                var entry = _db.Entry(oldToken);
+                if (entry.State == EntityState.Detached)
+                {
+                    _db.RefreshTokens.Attach(oldToken);
+                }
+
+                // Explicitly mark only the RevokedAt property as modified
+                entry.Property(r => r.RevokedAt).IsModified = true;
+
+                await _db.RefreshTokens.AddAsync(newToken, ct);
+                await _db.SaveChangesAsync(ct);
+                await transaction.CommitAsync(ct);
+            }
+            catch
+            {
+                await transaction.RollbackAsync(ct);
+                throw;
+            }
+        });
+    }
+}
+</file>
+
 <file path="src/Harmony.Infrastructure/Postgres/Repositories/UserRepository.cs">
 using Harmony.Domain.Domain.Entities;
 using Harmony.Domain.Interfaces.Repositories;
@@ -9046,138 +9151,11 @@ public class HarmonyDbContext
 }
 </file>
 
-<file path="src/Harmony.Infrastructure/RabbitMQ/Publishers/RabbitMQPublisher.cs">
-using System.Text;
-using System.Text.Json;
-using Harmony.Domain.Interfaces;
-using Microsoft.Extensions.Logging;
-using RabbitMQ.Client;
-
-namespace Harmony.Infrastructure.RabbitMQ.Producers;
-
-public class RabbitMQPublisher : IMessagePublisher, IAsyncDisposable
-{
-    private readonly RabbitMQConnection _connection;
-    private readonly ILogger<RabbitMQPublisher> _logger;
-    private IChannel? _channel;
-    private readonly SemaphoreSlim _lock = new(1, 1);
-
-    private static readonly JsonSerializerOptions JsonOptions = new()
-    {
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-    };
-
-    public RabbitMQPublisher(RabbitMQConnection connection, ILogger<RabbitMQPublisher> logger)
-    {
-        _connection = connection;
-        _logger = logger;
-    }
-
-    public async Task PublishMessageSentAsync(MessageSentEvent evt, CancellationToken ct = default)
-    {
-        await PublishAsync(Topology.MessageExchange, Topology.MessageSentKey, evt, ct);
-        _logger.LogDebug(
-            "Published MessageSent — MessageId: {MessageId}, ChannelId: {ChannelId}",
-            evt.MessageId,
-            evt.ChannelId
-        );
-    }
-
-    public async Task PublishMessageDeletedAsync(
-        MessageDeletedEvent evt,
-        CancellationToken ct = default
-    )
-    {
-        await PublishAsync(Topology.MessageExchange, Topology.MessageDeletedKey, evt, ct);
-        _logger.LogDebug(
-            "Published MessageDeleted — MessageId: {MessageId}, ChannelId: {ChannelId}",
-            evt.MessageId,
-            evt.ChannelId
-        );
-    }
-
-    public async Task PublishMessageEditedAsync(
-        MessageEditedEvent evt,
-        CancellationToken ct = default
-    )
-    {
-        await PublishAsync(Topology.MessageExchange, Topology.MessageEditedKey, evt, ct);
-        _logger.LogDebug(
-            "Published MessageEdited — MessageId: {MessageId}, ChannelId: {ChannelId}",
-            evt.MessageId,
-            evt.ChannelId
-        );
-    }
-
-    private async Task<IChannel> GetChannelAsync()
-    {
-        if (_channel is { IsOpen: true })
-            return _channel;
-
-        await _lock.WaitAsync();
-        try
-        {
-            if (_channel is { IsOpen: true })
-                return _channel;
-
-            if (_channel != null)
-            {
-                await _channel.DisposeAsync();
-            }
-
-            _channel = await _connection.CreateChannelAsync();
-            return _channel;
-        }
-        finally
-        {
-            _lock.Release();
-        }
-    }
-
-    private async Task PublishAsync<T>(
-        string exchange,
-        string routingKey,
-        T message,
-        CancellationToken ct
-    )
-    {
-        var channel = await GetChannelAsync();
-        var body = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(message, JsonOptions));
-
-        var props = new BasicProperties
-        {
-            Persistent = true,
-            ContentType = "application/json",
-            ContentEncoding = "utf-8",
-            MessageId = Guid.NewGuid().ToString(),
-            Timestamp = new AmqpTimestamp(DateTimeOffset.UtcNow.ToUnixTimeSeconds()),
-        };
-
-        await channel.BasicPublishAsync(
-            exchange: exchange,
-            routingKey: routingKey,
-            mandatory: false,
-            basicProperties: props,
-            body: body,
-            cancellationToken: ct
-        );
-    }
-
-    public async ValueTask DisposeAsync()
-    {
-        if (_channel != null)
-        {
-            await _channel.DisposeAsync();
-        }
-        _lock.Dispose();
-        GC.SuppressFinalize(this);
-    }
-}
-</file>
-
 <file path="src/Harmony.Infrastructure/RabbitMQ/SearchIndexConsumerHandler.cs">
+using Harmony.Application.Exceptions;
 using Harmony.Domain.Domain.Entities;
 using Harmony.Domain.Interfaces;
+using Harmony.Domain.Interfaces.Repositories; // Required namespace
 using Harmony.Infrastructure.Postgres;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
@@ -9187,14 +9165,17 @@ namespace Harmony.Infrastructure.RabbitMQ;
 public class SearchIndexConsumerHandler
 {
     private readonly HarmonyDbContext _db;
+    private readonly IMessageRepository _messageRepository; // Inject primary message store
     private readonly ILogger<SearchIndexConsumerHandler> _logger;
 
     public SearchIndexConsumerHandler(
         HarmonyDbContext db,
+        IMessageRepository messageRepository,
         ILogger<SearchIndexConsumerHandler> logger
     )
     {
         _db = db;
+        _messageRepository = messageRepository;
         _logger = logger;
     }
 
@@ -9244,7 +9225,21 @@ public class SearchIndexConsumerHandler
 
         if (entry is null)
         {
-            _logger.LogDebug("Search index delete skipped — not found: {MessageId}", evt.MessageId);
+            // Verify if the message exists in primary storage
+            var scyllaMessage = await _messageRepository.GetByIdAsync(evt.MessageId, ct);
+            if (scyllaMessage is null)
+            {
+                // Out of order: Requeue and wait for insert
+                throw new ServiceUnavailableException(
+                    $"Message {evt.MessageId} not yet present in primary storage. Requeuing deletion event."
+                );
+            }
+
+            // Idempotency: The message exists in ScyllaDB but is already deleted from Postgres FTS. Return success.
+            _logger.LogInformation(
+                "MessageDeleted skipped — search index already clean for MessageId: {MessageId}",
+                evt.MessageId
+            );
             return;
         }
 
@@ -9271,8 +9266,29 @@ public class SearchIndexConsumerHandler
 
         if (entry is null)
         {
-            _logger.LogDebug("Search index edit skipped — not found: {MessageId}", evt.MessageId);
-            return;
+            var scyllaMessage = await _messageRepository.GetByIdAsync(evt.MessageId, ct);
+            if (scyllaMessage is null)
+            {
+                // Out of order: Requeue and wait for insert
+                throw new ServiceUnavailableException(
+                    $"Message {evt.MessageId} not yet present in primary storage. Requeuing edit event."
+                );
+            }
+
+            if (scyllaMessage.IsDeleted)
+            {
+                // Safe bypass: cannot edit an already deleted message
+                _logger.LogInformation(
+                    "MessageEdited skipped — message is deleted in Scylla: {MessageId}",
+                    evt.MessageId
+                );
+                return;
+            }
+
+            // Out-of-order write lag: Message exists in Scylla but is missing in Postgres
+            throw new ServiceUnavailableException(
+                $"Message {evt.MessageId} present in Scylla but missing in Postgres FTS. Requeuing edit event."
+            );
         }
 
         entry.Content = evt.NewContent;
@@ -9356,9 +9372,13 @@ public abstract class ApiTestBase : IAsyncLifetime
 
 <file path="tests/Harmony.IntegrationTests/RabbitMQ/SearchIndexConsumerHandlerTests.cs">
 using FluentAssertions;
+using Harmony.Application.Exceptions;
 using Harmony.Domain.Domain.Entities;
 using Harmony.Domain.Interfaces;
+using Harmony.Domain.Interfaces.Repositories; // Required namespace
 using Harmony.Infrastructure.RabbitMQ;
+using Harmony.Infrastructure.Scylla;
+using Harmony.Infrastructure.Scylla.Repositories; // Required namespace
 using Harmony.IntegrationTests.Infrastructure;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -9373,13 +9393,24 @@ public class SearchIndexConsumerHandlerTests : ScyllaAndPostgresTestBase
     protected override IEnumerable<string> PostgresTablesToIgnore => ["__EFMigrationsHistory"];
 
     private SearchIndexConsumerHandler _handler = null!;
+    private IMessageRepository _messageRepository = null!;
 
     public override async Task InitializeAsync()
     {
         await base.InitializeAsync();
 
+        // Instantiate primary storage repository stub for testing
+        var stub = new ScyllaSessionFactoryStub(Session);
+        var statements = new MessageStatements(stub);
+        _messageRepository = new MessageRepository(
+            stub,
+            statements,
+            NullLogger<MessageRepository>.Instance
+        );
+
         _handler = new SearchIndexConsumerHandler(
             Db,
+            _messageRepository, // Pass Scylla repository
             NullLogger<SearchIndexConsumerHandler>.Instance
         );
 
@@ -9437,6 +9468,19 @@ public class SearchIndexConsumerHandlerTests : ScyllaAndPostgresTestBase
         var sentEvt = BuildMessageSentEvent(messageId: 2002);
         await _handler.HandleMessageSentAsync(sentEvt);
 
+        // Pre-populate ScyllaDB with the sent message so the handler knows the
+        // deleted message was a completed deletion (idempotent) and not out-of-order write lag
+        var scyllaMessage = new Message
+        {
+            MessageId = 2002,
+            ChannelId = 1,
+            UserId = 99,
+            Content = "hello world",
+            IsDeleted = true,
+            MessageType = "text",
+        };
+        await _messageRepository.SaveAsync(scyllaMessage);
+
         var deletedEvt = new MessageDeletedEvent(
             MessageId: 2002,
             ChannelId: 1,
@@ -9446,7 +9490,11 @@ public class SearchIndexConsumerHandlerTests : ScyllaAndPostgresTestBase
         );
 
         await _handler.HandleMessageDeletedAsync(deletedEvt);
-        await _handler.HandleMessageDeletedAsync(deletedEvt); // second call — should not throw
+
+        // This second delete execution will query ScyllaDB, find the deleted message,
+        // and return success idempotently instead of throwing a requeuing exception
+        var act = () => _handler.HandleMessageDeletedAsync(deletedEvt);
+        await act.Should().NotThrowAsync();
 
         var entry = await Db.MessagesSearch.FirstOrDefaultAsync(m => m.MessageId == 2002);
         entry.Should().BeNull();
@@ -9493,6 +9541,26 @@ public class SearchIndexConsumerHandlerTests : ScyllaAndPostgresTestBase
 
         var entry = await Db.MessagesSearch.FirstOrDefaultAsync(m => m.MessageId == 3002);
         entry!.Content.Should().Be("final content");
+    }
+
+    [Fact]
+    public async Task HandleMessageEditedAsync_WhenMessageNotFoundInIndex_ShouldThrowServiceUnavailableException()
+    {
+        // Arrange: Build an edit event targeting a message ID that does not exist in Postgres FTS or Scylla yet
+        var editedEvt = new MessageEditedEvent(
+            MessageId: 999999L,
+            ChannelId: 1,
+            GuildId: 1,
+            EditedByUserId: 99,
+            NewContent: "should requeue",
+            EditedAt: DateTimeOffset.UtcNow
+        );
+
+        // Act: Invoke the handler directly
+        var act = () => _handler.HandleMessageEditedAsync(editedEvt);
+
+        // Assert: The handler must throw ServiceUnavailableException to trigger RabbitMQ requeue backoff
+        await act.Should().ThrowAsync<ServiceUnavailableException>();
     }
 
     // --- Helpers ---
@@ -10888,104 +10956,6 @@ public class UsersController : ControllerBase
 }
 </file>
 
-<file path="src/Harmony.API/Extensions/RateLimitingExtensions.cs">
-using System.Security.Claims;
-using System.Threading.RateLimiting;
-using Microsoft.AspNetCore.RateLimiting;
-
-namespace Harmony.API.Extensions;
-
-public static class RateLimitingExtensions
-{
-    public static IServiceCollection AddHarmonyRateLimiting(this IServiceCollection services)
-    {
-        services.AddRateLimiter(options =>
-        {
-            // ----------------------------------------------------------------
-            // Login limiter — Partitioned by IP address
-            // 10 attempts per minute per IP. Hits auth endpoints hard before
-            // Identity even checks the password.
-            // ----------------------------------------------------------------
-            options.AddPolicy(
-                "login",
-                context =>
-                {
-                    var ip = context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
-                    return RateLimitPartition.GetFixedWindowLimiter(
-                        partitionKey: $"login:{ip}",
-                        factory: _ => new FixedWindowRateLimiterOptions
-                        {
-                            PermitLimit = 10,
-                            Window = TimeSpan.FromMinutes(1),
-                            QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
-                            QueueLimit = 0, // reject immediately
-                        }
-                    );
-                }
-            );
-
-            // ----------------------------------------------------------------
-            // General API limiter — keyed by user ID if authenticated,
-            // IP address if anonymous. 100 requests per 10 seconds.
-            // ----------------------------------------------------------------
-            options.AddPolicy(
-                "api",
-                context =>
-                {
-                    var userId = context.User.FindFirstValue(ClaimTypes.NameIdentifier);
-
-                    if (!string.IsNullOrEmpty(userId))
-                    {
-                        // Authenticated — partition by user ID
-                        return RateLimitPartition.GetFixedWindowLimiter(
-                            partitionKey: $"user:{userId}",
-                            factory: _ => new FixedWindowRateLimiterOptions
-                            {
-                                PermitLimit = 100,
-                                Window = TimeSpan.FromSeconds(10),
-                                QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
-                                QueueLimit = 0,
-                            }
-                        );
-                    }
-
-                    // Anonymous — partition by IP
-                    var ip = context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
-                    return RateLimitPartition.GetFixedWindowLimiter(
-                        partitionKey: $"anon:{ip}",
-                        factory: _ => new FixedWindowRateLimiterOptions
-                        {
-                            PermitLimit = 20,
-                            Window = TimeSpan.FromSeconds(10),
-                            QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
-                            QueueLimit = 0,
-                        }
-                    );
-                }
-            );
-
-            // Return 429 with a Retry-After header instead of the default empty response
-            options.OnRejected = async (context, cancellationToken) =>
-            {
-                context.HttpContext.Response.StatusCode = StatusCodes.Status429TooManyRequests;
-
-                if (context.Lease.TryGetMetadata(MetadataName.RetryAfter, out var retryAfter))
-                    context.HttpContext.Response.Headers.RetryAfter = (
-                        (int)retryAfter.TotalSeconds
-                    ).ToString();
-
-                await context.HttpContext.Response.WriteAsJsonAsync(
-                    new { error = "Too many requests. Please slow down." },
-                    cancellationToken
-                );
-            };
-        });
-
-        return services;
-    }
-}
-</file>
-
 <file path="src/Harmony.Infrastructure/Postgres/Configuration/UserRefreshGuildChannelConfig.cs">
 using Harmony.Domain.Domain.Entities;
 using Microsoft.EntityFrameworkCore;
@@ -11114,178 +11084,131 @@ public class ChannelConfiguration : IEntityTypeConfiguration<Channel>
 }
 </file>
 
-<file path="src/Harmony.Infrastructure/RabbitMQ/MessageConsumerHandler.cs">
-using Harmony.Application.Services;
-using Harmony.Domain.Domain.Entities;
+<file path="src/Harmony.Infrastructure/RabbitMQ/Publishers/RabbitMQPublisher.cs">
+using System.Text;
+using System.Text.Json;
 using Harmony.Domain.Interfaces;
-using Harmony.Domain.Interfaces.Repositories;
-using Harmony.Infrastructure.Postgres;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using RabbitMQ.Client;
 
-namespace Harmony.Infrastructure.RabbitMQ;
+namespace Harmony.Infrastructure.RabbitMQ.Producers;
 
-public class MessageConsumerHandler : IMessageConsumerHandler
+public class RabbitMQPublisher : IMessagePublisher, IAsyncDisposable
 {
-    private readonly IMessageRepository _messageRepository;
-    private readonly HarmonyDbContext _db;
-    private readonly ISnowflakeIdGenerator _snowflake;
-    private readonly ILogger<MessageConsumerHandler> _logger;
+    private readonly RabbitMQConnection _connection;
+    private readonly ILogger<RabbitMQPublisher> _logger;
+    private IChannel? _channel;
+    private readonly SemaphoreSlim _lock = new(1, 1);
 
-    public MessageConsumerHandler(
-        IMessageRepository messageRepository,
-        HarmonyDbContext db,
-        ISnowflakeIdGenerator snowflake,
-        ILogger<MessageConsumerHandler> logger
-    )
+    private static readonly JsonSerializerOptions JsonOptions = new()
     {
-        _messageRepository = messageRepository;
-        _db = db;
-        _snowflake = snowflake;
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+    };
+
+    public RabbitMQPublisher(RabbitMQConnection connection, ILogger<RabbitMQPublisher> logger)
+    {
+        _connection = connection;
         _logger = logger;
     }
 
-    public async Task HandleMessageSentAsync(MessageSentEvent evt, CancellationToken ct = default)
+    public async Task PublishMessageSentAsync(MessageSentEvent evt, CancellationToken ct = default)
     {
+        await PublishAsync(Topology.MessageExchange, Topology.MessageSentKey, evt, ct);
         _logger.LogDebug(
-            "Handling MessageSent — MessageId: {MessageId}, ChannelId: {ChannelId}",
+            "Published MessageSent — MessageId: {MessageId}, ChannelId: {ChannelId}",
             evt.MessageId,
             evt.ChannelId
         );
-
-        // Persist to ScyllaDB only — Postgres search index is handled by SearchIndexConsumerHandler
-        var message = new Message
-        {
-            MessageId = evt.MessageId,
-            ChannelId = evt.ChannelId,
-            UserId = evt.UserId,
-            Content = evt.Content,
-            AttachmentIds = evt.AttachmentIds,
-            MentionIds = evt.MentionIds,
-            ReplyToId = evt.ReplyToId,
-            IsDeleted = false,
-            IsEdited = false,
-            MessageType = evt.MessageType,
-        };
-
-        await _messageRepository.SaveAsync(message, ct);
-
-        // Parse mentions and create notifications
-        if (evt.MentionIds.Count > 0)
-            await CreateMentionNotificationsAsync(evt, ct);
-
-        _logger.LogInformation(
-            "MessageSent handled (Scylla) — MessageId: {MessageId}",
-            evt.MessageId
-        );
     }
 
-    public async Task HandleMessageDeletedAsync(
+    public async Task PublishMessageDeletedAsync(
         MessageDeletedEvent evt,
         CancellationToken ct = default
     )
     {
-        _logger.LogDebug("Handling MessageDeleted — MessageId: {MessageId}", evt.MessageId);
-
-        // Idempotency check — skip if already deleted
-        var existing = await _messageRepository.GetByIdAsync(evt.MessageId, ct);
-        if (existing is null || existing.IsDeleted)
-        {
-            _logger.LogDebug(
-                "MessageDeleted skipped — already deleted or not found: {MessageId}",
-                evt.MessageId
-            );
-            return;
-        }
-
-        await _messageRepository.DeleteAsync(evt.MessageId, evt.ChannelId, ct);
-
-        _logger.LogInformation(
-            "MessageDeleted handled (Scylla) — MessageId: {MessageId}",
-            evt.MessageId
+        await PublishAsync(Topology.MessageExchange, Topology.MessageDeletedKey, evt, ct);
+        _logger.LogDebug(
+            "Published MessageDeleted — MessageId: {MessageId}, ChannelId: {ChannelId}",
+            evt.MessageId,
+            evt.ChannelId
         );
     }
 
-    public async Task HandleMessageEditedAsync(
+    public async Task PublishMessageEditedAsync(
         MessageEditedEvent evt,
         CancellationToken ct = default
     )
     {
-        _logger.LogDebug("Handling MessageEdited — MessageId: {MessageId}", evt.MessageId);
-
-        // Idempotency check — skip if deleted
-        var existing = await _messageRepository.GetByIdAsync(evt.MessageId, ct);
-        if (existing is null || existing.IsDeleted)
-        {
-            _logger.LogDebug(
-                "MessageEdited skipped — deleted or not found: {MessageId}",
-                evt.MessageId
-            );
-            return;
-        }
-
-        await _messageRepository.EditAsync(evt.MessageId, evt.ChannelId, evt.NewContent, ct);
-
-        _logger.LogInformation(
-            "MessageEdited handled (Scylla) — MessageId: {MessageId}",
-            evt.MessageId
+        await PublishAsync(Topology.MessageExchange, Topology.MessageEditedKey, evt, ct);
+        _logger.LogDebug(
+            "Published MessageEdited — MessageId: {MessageId}, ChannelId: {ChannelId}",
+            evt.MessageId,
+            evt.ChannelId
         );
     }
 
-    private async Task CreateMentionNotificationsAsync(MessageSentEvent evt, CancellationToken ct)
+    private async Task<IChannel> GetChannelAsync()
     {
-        var preferences = await _db
-            .NotificationPreferences.Where(p => evt.MentionIds.Contains(p.UserId))
-            .ToListAsync(ct);
+        if (_channel is { IsOpen: true })
+            return _channel;
 
-        var preferenceMap = preferences.ToDictionary(p => p.UserId);
-        var notifications = new List<Notification>();
-
-        foreach (var mentionedUserId in evt.MentionIds)
+        await _lock.WaitAsync();
+        try
         {
-            if (preferenceMap.TryGetValue(mentionedUserId, out var pref) && !pref.MentionsEnabled)
-                continue;
+            if (_channel is { IsOpen: true })
+                return _channel;
 
-            if (mentionedUserId == evt.UserId)
-                continue;
+            if (_channel != null)
+            {
+                await _channel.DisposeAsync();
+            }
 
-            notifications.Add(
-                new Notification
-                {
-                    Id = _snowflake.NextId(),
-                    UserId = mentionedUserId,
-                    Type = "mention",
-                    ActorId = evt.UserId,
-                    GuildId = evt.GuildId,
-                    ChannelId = evt.ChannelId,
-                    MessageId = evt.MessageId,
-                    IsRead = false,
-                    CreatedAt = evt.SentAt.ToUnixTimeMilliseconds(),
-                }
-            );
+            _channel = await _connection.CreateChannelAsync();
+            return _channel;
         }
-
-        if (notifications.Count == 0)
-            return;
-
-        var existingIds = await _db
-            .Notifications.Where(n => notifications.Select(x => x.Id).Contains(n.Id))
-            .Select(n => n.Id)
-            .ToListAsync(ct);
-
-        var toInsert = notifications.Where(n => !existingIds.Contains(n.Id)).ToList();
-
-        if (toInsert.Count > 0)
+        finally
         {
-            _db.Notifications.AddRange(toInsert);
-            await _db.SaveChangesAsync(ct);
+            _lock.Release();
         }
+    }
 
-        _logger.LogDebug(
-            "Created {Count} mention notifications for MessageId: {MessageId}",
-            toInsert.Count,
-            evt.MessageId
+    private async Task PublishAsync<T>(
+        string exchange,
+        string routingKey,
+        T message,
+        CancellationToken ct
+    )
+    {
+        var channel = await GetChannelAsync();
+        var body = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(message, JsonOptions));
+
+        var props = new BasicProperties
+        {
+            Persistent = true,
+            ContentType = "application/json",
+            ContentEncoding = "utf-8",
+            MessageId = Guid.NewGuid().ToString(),
+            Timestamp = new AmqpTimestamp(DateTimeOffset.UtcNow.ToUnixTimeSeconds()),
+        };
+
+        await channel.BasicPublishAsync(
+            exchange: exchange,
+            routingKey: routingKey,
+            mandatory: false,
+            basicProperties: props,
+            body: body,
+            cancellationToken: ct
         );
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_channel != null)
+        {
+            await _channel.DisposeAsync();
+        }
+        _lock.Dispose();
+        GC.SuppressFinalize(this);
     }
 }
 </file>
@@ -11754,51 +11677,101 @@ public class MessagesController : ControllerBase
 }
 </file>
 
-<file path="src/Harmony.API/appsettings.json">
+<file path="src/Harmony.API/Extensions/RateLimitingExtensions.cs">
+using System.Security.Claims;
+using System.Threading.RateLimiting;
+using Microsoft.AspNetCore.RateLimiting;
+
+namespace Harmony.API.Extensions;
+
+public static class RateLimitingExtensions
 {
-  "Logging": {
-    "LogLevel": {
-      "Default": "Information",
-      "Microsoft.AspNetCore": "Warning"
+    public static IServiceCollection AddHarmonyRateLimiting(this IServiceCollection services)
+    {
+        services.AddRateLimiter(options =>
+        {
+            // ----------------------------------------------------------------
+            // Login limiter — Partitioned by IP address
+            // 10 attempts per minute per IP. Hits auth endpoints hard before
+            // Identity even checks the password.
+            // ----------------------------------------------------------------
+            options.AddPolicy(
+                "login",
+                context =>
+                {
+                    var ip = context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+                    return RateLimitPartition.GetFixedWindowLimiter(
+                        partitionKey: $"login:{ip}",
+                        factory: _ => new FixedWindowRateLimiterOptions
+                        {
+                            PermitLimit = 10,
+                            Window = TimeSpan.FromMinutes(1),
+                            QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                            QueueLimit = 0, // reject immediately
+                        }
+                    );
+                }
+            );
+
+            // ----------------------------------------------------------------
+            // General API limiter — keyed by user ID if authenticated,
+            // IP address if anonymous. 100 requests per 10 seconds.
+            // ----------------------------------------------------------------
+            options.AddPolicy(
+                "api",
+                context =>
+                {
+                    var userId = context.User.FindFirstValue(ClaimTypes.NameIdentifier);
+
+                    if (!string.IsNullOrEmpty(userId))
+                    {
+                        // Authenticated — partition by user ID
+                        return RateLimitPartition.GetFixedWindowLimiter(
+                            partitionKey: $"user:{userId}",
+                            factory: _ => new FixedWindowRateLimiterOptions
+                            {
+                                PermitLimit = 100,
+                                Window = TimeSpan.FromSeconds(10),
+                                QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                                QueueLimit = 0,
+                            }
+                        );
+                    }
+
+                    // Anonymous — partition by IP
+                    var ip = context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+                    return RateLimitPartition.GetFixedWindowLimiter(
+                        partitionKey: $"anon:{ip}",
+                        factory: _ => new FixedWindowRateLimiterOptions
+                        {
+                            PermitLimit = 20,
+                            Window = TimeSpan.FromSeconds(10),
+                            QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                            QueueLimit = 0,
+                        }
+                    );
+                }
+            );
+
+            // Return 429 with a Retry-After header instead of the default empty response
+            options.OnRejected = async (context, cancellationToken) =>
+            {
+                context.HttpContext.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+
+                if (context.Lease.TryGetMetadata(MetadataName.RetryAfter, out var retryAfter))
+                    context.HttpContext.Response.Headers.RetryAfter = (
+                        (int)retryAfter.TotalSeconds
+                    ).ToString();
+
+                await context.HttpContext.Response.WriteAsJsonAsync(
+                    new { error = "Too many requests. Please slow down." },
+                    cancellationToken
+                );
+            };
+        });
+
+        return services;
     }
-  },
-  "AllowedHosts": "*",
-  "ConnectionStrings": {
-    "Postgres": "Host=localhost;Port=5432;Database=harmony;Username=harmony;Password=harmony",
-    "Redis": "",
-    "RabbitMQ": "amqp://guest:guest@localhost:5672",
-    "ScyllaDB": ""
-  },
-  "Jwt": {
-    "Key": "",
-    "Issuer": "",
-    "Audience": "",
-    "AccessTokenExpiryMinutes": 15,
-    "RefreshTokenExpiryDays": 7
-  },
-  "MinIO": {
-    "Endpoint": "",
-    "AccessKey": "",
-    "SecretKey": "",
-    "BucketName": "harmony"
-  },
-  "LiveKit": {
-    "ApiKey": "",
-    "ApiSecret": "",
-    "Host": ""
-  },
-  "ScyllaDB": {
-    "ContactPoints": ["127.0.0.1"],
-    "Port": 9042,
-    "Keyspace": "harmony"
-  },
-  "RabbitMQ": {
-    "Host": "localhost",
-    "Port": 5672,
-    "Username": "guest",
-    "Password": "guest",
-    "VirtualHost": "/"
-  }
 }
 </file>
 
@@ -11832,6 +11805,182 @@ public class MessagesController : ControllerBase
     <PackageReference Include="Swashbuckle.AspNetCore" Version="10.1.7" />
   </ItemGroup>
 </Project>
+</file>
+
+<file path="src/Harmony.Infrastructure/RabbitMQ/MessageConsumerHandler.cs">
+using Harmony.Application.Services;
+using Harmony.Domain.Domain.Entities;
+using Harmony.Domain.Interfaces;
+using Harmony.Domain.Interfaces.Repositories;
+using Harmony.Infrastructure.Postgres;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
+
+namespace Harmony.Infrastructure.RabbitMQ;
+
+public class MessageConsumerHandler : IMessageConsumerHandler
+{
+    private readonly IMessageRepository _messageRepository;
+    private readonly HarmonyDbContext _db;
+    private readonly ISnowflakeIdGenerator _snowflake;
+    private readonly ILogger<MessageConsumerHandler> _logger;
+
+    public MessageConsumerHandler(
+        IMessageRepository messageRepository,
+        HarmonyDbContext db,
+        ISnowflakeIdGenerator snowflake,
+        ILogger<MessageConsumerHandler> logger
+    )
+    {
+        _messageRepository = messageRepository;
+        _db = db;
+        _snowflake = snowflake;
+        _logger = logger;
+    }
+
+    public async Task HandleMessageSentAsync(MessageSentEvent evt, CancellationToken ct = default)
+    {
+        _logger.LogDebug(
+            "Handling MessageSent — MessageId: {MessageId}, ChannelId: {ChannelId}",
+            evt.MessageId,
+            evt.ChannelId
+        );
+
+        // Persist to ScyllaDB only — Postgres search index is handled by SearchIndexConsumerHandler
+        var message = new Message
+        {
+            MessageId = evt.MessageId,
+            ChannelId = evt.ChannelId,
+            UserId = evt.UserId,
+            Content = evt.Content,
+            AttachmentIds = evt.AttachmentIds,
+            MentionIds = evt.MentionIds,
+            ReplyToId = evt.ReplyToId,
+            IsDeleted = false,
+            IsEdited = false,
+            MessageType = evt.MessageType,
+        };
+
+        await _messageRepository.SaveAsync(message, ct);
+
+        // Parse mentions and create notifications
+        if (evt.MentionIds.Count > 0)
+            await CreateMentionNotificationsAsync(evt, ct);
+
+        _logger.LogInformation(
+            "MessageSent handled (Scylla) — MessageId: {MessageId}",
+            evt.MessageId
+        );
+    }
+
+    public async Task HandleMessageDeletedAsync(
+        MessageDeletedEvent evt,
+        CancellationToken ct = default
+    )
+    {
+        _logger.LogDebug("Handling MessageDeleted — MessageId: {MessageId}", evt.MessageId);
+
+        // Idempotency check — skip if already deleted
+        var existing = await _messageRepository.GetByIdAsync(evt.MessageId, ct);
+        if (existing is null || existing.IsDeleted)
+        {
+            _logger.LogDebug(
+                "MessageDeleted skipped — already deleted or not found: {MessageId}",
+                evt.MessageId
+            );
+            return;
+        }
+
+        await _messageRepository.DeleteAsync(evt.MessageId, evt.ChannelId, ct);
+
+        _logger.LogInformation(
+            "MessageDeleted handled (Scylla) — MessageId: {MessageId}",
+            evt.MessageId
+        );
+    }
+
+    public async Task HandleMessageEditedAsync(
+        MessageEditedEvent evt,
+        CancellationToken ct = default
+    )
+    {
+        _logger.LogDebug("Handling MessageEdited — MessageId: {MessageId}", evt.MessageId);
+
+        // Idempotency check — skip if deleted
+        var existing = await _messageRepository.GetByIdAsync(evt.MessageId, ct);
+        if (existing is null || existing.IsDeleted)
+        {
+            _logger.LogDebug(
+                "MessageEdited skipped — deleted or not found: {MessageId}",
+                evt.MessageId
+            );
+            return;
+        }
+
+        await _messageRepository.EditAsync(evt.MessageId, evt.ChannelId, evt.NewContent, ct);
+
+        _logger.LogInformation(
+            "MessageEdited handled (Scylla) — MessageId: {MessageId}",
+            evt.MessageId
+        );
+    }
+
+    private async Task CreateMentionNotificationsAsync(MessageSentEvent evt, CancellationToken ct)
+    {
+        var preferences = await _db
+            .NotificationPreferences.Where(p => evt.MentionIds.Contains(p.UserId))
+            .ToListAsync(ct);
+
+        var preferenceMap = preferences.ToDictionary(p => p.UserId);
+        var notifications = new List<Notification>();
+
+        foreach (var mentionedUserId in evt.MentionIds)
+        {
+            if (preferenceMap.TryGetValue(mentionedUserId, out var pref) && !pref.MentionsEnabled)
+                continue;
+
+            if (mentionedUserId == evt.UserId)
+                continue;
+
+            notifications.Add(
+                new Notification
+                {
+                    Id = _snowflake.NextId(),
+                    UserId = mentionedUserId,
+                    Type = "mention",
+                    ActorId = evt.UserId,
+                    GuildId = evt.GuildId,
+                    ChannelId = evt.ChannelId,
+                    MessageId = evt.MessageId,
+                    IsRead = false,
+                    CreatedAt = evt.SentAt.ToUnixTimeMilliseconds(),
+                }
+            );
+        }
+
+        if (notifications.Count == 0)
+            return;
+
+        var existingIds = await _db
+            .Notifications.Where(n => notifications.Select(x => x.Id).Contains(n.Id))
+            .Select(n => n.Id)
+            .ToListAsync(ct);
+
+        var toInsert = notifications.Where(n => !existingIds.Contains(n.Id)).ToList();
+
+        if (toInsert.Count > 0)
+        {
+            _db.Notifications.AddRange(toInsert);
+            await _db.SaveChangesAsync(ct);
+        }
+
+        _logger.LogDebug(
+            "Created {Count} mention notifications for MessageId: {MessageId}",
+            toInsert.Count,
+            evt.MessageId
+        );
+    }
+}
 </file>
 
 <file path="src/Harmony.Infrastructure/RabbitMQ/RabbitMQConnection.cs">
@@ -12280,7 +12429,30 @@ public class SendMessageFlowTests : ApiTestBase
         response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
     }
 
+    [Fact]
+    public async Task EditMessage_WithSpoofedChannelIdInRoute_ShouldReturn403Forbidden()
+    {
+        // Arrange: Create a valid message in the correct channel
+        var sendResponse = await Client.PostAsJsonAsync(
+            $"/api/guilds/{_guildId}/channels/{_channelId}/messages",
+            new { content = "genuine message" }
+        );
+        var message = await sendResponse.Content.ReadFromJsonAsync<SendMessageResponse>();
+        await WaitForMessageInScyllaAsync(message!.MessageId);
+
+        // Act: Attempt to edit that message, passing the spoofed channel ID in the URL route
+        var response = await Client.PatchAsJsonAsync(
+            $"/api/guilds/{_guildId}/channels/{_otherChannelId}/messages/{message.MessageId}",
+            new { content = "exploit edit" }
+        );
+
+        // Assert: The API must reject the write and return 403 Forbidden
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+    }
+
     // --- Helpers ---
+
+    private long _otherChannelId; // Add this private field at the top of SendMessageFlowTests class
 
     private async Task SeedGuildAndChannelAsync()
     {
@@ -12302,7 +12474,7 @@ public class SendMessageFlowTests : ApiTestBase
         Client.DefaultRequestHeaders.Authorization =
             new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _token);
 
-        // Create guild
+        // Create guild - Restored to correct endpoint
         var guildResponse = await Client.PostAsJsonAsync(
             "/api/guilds",
             new { name = "Test Guild" }
@@ -12312,15 +12484,23 @@ public class SendMessageFlowTests : ApiTestBase
         var guild = await guildResponse.Content.ReadFromJsonAsync<GuildIdResponse>();
         _guildId = guild!.Id;
 
-        // Create channel
-        var channelResponse = await Client.PostAsJsonAsync(
+        // Create primary channel
+        var channelResponse1 = await Client.PostAsJsonAsync(
             $"/api/guilds/{_guildId}/channels",
             new { name = "general", type = "text" }
         );
+        channelResponse1.EnsureSuccessStatusCode();
+        var channel1 = await channelResponse1.Content.ReadFromJsonAsync<ChannelIdResponse>();
+        _channelId = channel1!.Id;
 
-        channelResponse.EnsureSuccessStatusCode();
-        var channel = await channelResponse.Content.ReadFromJsonAsync<ChannelIdResponse>();
-        _channelId = channel!.Id;
+        // Create second spoof-target channel
+        var channelResponse2 = await Client.PostAsJsonAsync(
+            $"/api/guilds/{_guildId}/channels",
+            new { name = "random", type = "text" }
+        );
+        channelResponse2.EnsureSuccessStatusCode();
+        var channel2 = await channelResponse2.Content.ReadFromJsonAsync<ChannelIdResponse>();
+        _otherChannelId = channel2!.Id;
     }
 
     private async Task WaitForMessageInScyllaAsync(long messageId)
@@ -13017,6 +13197,8 @@ docker/docker-compose.override.yml
 publish/
 
 *.lscache
+
+repomix-output.xml
 </file>
 
 <file path=".github/workflows/ci.yml">
@@ -13084,6 +13266,338 @@ jobs:
 
       - name: Run tests
         run: dotnet test --no-build --configuration Release
+</file>
+
+<file path="src/Harmony.API/appsettings.json">
+{
+  "Logging": {
+    "LogLevel": {
+      "Default": "Information",
+      "Microsoft.AspNetCore": "Warning"
+    }
+  },
+  "AllowedHosts": "*",
+  "ConnectionStrings": {
+    "Postgres": "Host=localhost;Port=5432;Database=harmony;Username=harmony;Password=harmony",
+    "Redis": "",
+    "RabbitMQ": "amqp://guest:guest@localhost:5672",
+    "ScyllaDB": ""
+  },
+  "Jwt": {
+    "Key": "",
+    "Issuer": "",
+    "Audience": "",
+    "AccessTokenExpiryMinutes": 15,
+    "RefreshTokenExpiryDays": 7
+  },
+  "MinIO": {
+    "Endpoint": "",
+    "AccessKey": "",
+    "SecretKey": "",
+    "BucketName": "harmony"
+  },
+  "LiveKit": {
+    "ApiKey": "",
+    "ApiSecret": "",
+    "Host": ""
+  },
+  "ScyllaDB": {
+    "ContactPoints": ["127.0.0.1"],
+    "Port": 9042,
+    "Keyspace": "harmony"
+  },
+  "RabbitMQ": {
+    "Host": "localhost",
+    "Port": 5672,
+    "Username": "guest",
+    "Password": "guest",
+    "VirtualHost": "/"
+  }
+}
+</file>
+
+<file path="tests/Harmony.IntegrationTests/Infrastructure/ScyllaTestBase.cs">
+using Cassandra;
+
+namespace Harmony.IntegrationTests.Infrastructure;
+
+public abstract class ScyllaTestBase : IAsyncLifetime
+{
+    private ICluster _cluster = null!;
+
+    protected ISession Session { get; private set; } = null!;
+
+    protected abstract IEnumerable<string> TablesToTruncate { get; }
+
+    public virtual async Task InitializeAsync()
+    {
+        _cluster = Cluster
+            .Builder()
+            .AddContactPoint("127.0.0.1")
+            .WithPort(9042)
+            .WithLoadBalancingPolicy(Policies.DefaultLoadBalancingPolicy)
+            .WithReconnectionPolicy(new ExponentialReconnectionPolicy(1000, 60000))
+            .WithRetryPolicy(new LoggingRetryPolicy(new DefaultRetryPolicy()))
+            .WithQueryOptions(
+                new QueryOptions()
+                    .SetConsistencyLevel(ConsistencyLevel.LocalQuorum)
+                    .SetPrepareOnAllHosts(true)
+                    .SetReprepareOnUp(true)
+            )
+            .WithExecutionProfiles(options =>
+                options
+                    .WithProfile(
+                        "default",
+                        profile =>
+                            profile
+                                .WithLoadBalancingPolicy(Policies.DefaultLoadBalancingPolicy)
+                                .WithConsistencyLevel(ConsistencyLevel.LocalQuorum)
+                                .WithRetryPolicy(new LoggingRetryPolicy(new DefaultRetryPolicy()))
+                    )
+                    .WithProfile(
+                        "write",
+                        profile =>
+                            profile
+                                .WithLoadBalancingPolicy(Policies.DefaultLoadBalancingPolicy)
+                                .WithConsistencyLevel(ConsistencyLevel.LocalQuorum)
+                                .WithRetryPolicy(new LoggingRetryPolicy(new DefaultRetryPolicy()))
+                    )
+                    .WithProfile(
+                        "read",
+                        profile =>
+                            profile
+                                .WithLoadBalancingPolicy(Policies.DefaultLoadBalancingPolicy)
+                                .WithConsistencyLevel(ConsistencyLevel.LocalQuorum)
+                                .WithRetryPolicy(new LoggingRetryPolicy(new DefaultRetryPolicy()))
+                                .WithSpeculativeExecutionPolicy(
+                                    new ConstantSpeculativeExecutionPolicy(200, 1)
+                                )
+                    )
+                    .WithProfile(
+                        "read-states",
+                        profile =>
+                            profile
+                                .WithLoadBalancingPolicy(Policies.DefaultLoadBalancingPolicy)
+                                .WithConsistencyLevel(ConsistencyLevel.LocalOne)
+                                .WithRetryPolicy(new LoggingRetryPolicy(new DefaultRetryPolicy()))
+                                .WithSpeculativeExecutionPolicy(
+                                    new ConstantSpeculativeExecutionPolicy(100, 1)
+                                )
+                    )
+            )
+            .Build();
+
+        using var bootstrapSession = _cluster.Connect();
+        bootstrapSession.Execute(
+            "CREATE KEYSPACE IF NOT EXISTS harmony_test "
+                + "WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1}"
+        );
+
+        Session = _cluster.Connect("harmony_test");
+
+        await CreateTablesAsync();
+        await TruncateTablesAsync();
+    }
+
+    public virtual async Task DisposeAsync()
+    {
+        await TruncateTablesAsync();
+        Session.Dispose();
+        _cluster.Dispose();
+    }
+
+    private async Task CreateTablesAsync()
+    {
+        await Session.ExecuteAsync(
+            new SimpleStatement(
+                @"CREATE TABLE IF NOT EXISTS messages_by_channel (
+                    channel_id bigint, message_id bigint, user_id bigint,
+                    content text, attachment_ids list<bigint>, mention_ids list<bigint>,
+                    reply_to_id bigint, is_deleted boolean, is_edited boolean,
+                    edited_at timestamp, message_type varchar,
+                    PRIMARY KEY (channel_id, message_id)
+                ) WITH CLUSTERING ORDER BY (message_id DESC)"
+            )
+        );
+
+        await Session.ExecuteAsync(
+            new SimpleStatement(
+                @"CREATE TABLE IF NOT EXISTS messages_by_id (
+                    message_id bigint PRIMARY KEY, channel_id bigint, user_id bigint,
+                    content text, attachment_ids list<bigint>, reply_to_id bigint,
+                    is_deleted boolean, is_edited boolean, edited_at timestamp)"
+            )
+        );
+
+        await Session.ExecuteAsync(
+            new SimpleStatement(
+                @"CREATE TABLE IF NOT EXISTS read_states (
+                    user_id bigint, channel_id bigint, last_read_message_id bigint,
+                    PRIMARY KEY (user_id, channel_id))"
+            )
+        );
+
+        await Session.ExecuteAsync(
+            new SimpleStatement(
+                @"CREATE TABLE IF NOT EXISTS pinned_messages (
+                    channel_id bigint, pinned_at bigint, message_id bigint, pinned_by bigint,
+                    PRIMARY KEY (channel_id, pinned_at)
+                ) WITH CLUSTERING ORDER BY (pinned_at DESC)"
+            )
+        );
+    }
+
+    protected async Task TruncateTablesAsync()
+    {
+        foreach (var table in TablesToTruncate)
+        {
+            await Session.ExecuteAsync(new SimpleStatement($"TRUNCATE {table}"));
+        }
+    }
+}
+</file>
+
+<file path="tests/Harmony.IntegrationTests/Harmony.IntegrationTests.csproj">
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" Version="6.0.4" />
+    <PackageReference Include="FluentAssertions" Version="8.9.0" />
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.8" />
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.7" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="Moq" Version="4.20.72" />
+    <PackageReference Include="NetArchTest.Rules" Version="1.3.2" />
+    <PackageReference Include="Respawn" Version="7.0.0" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Harmony.API\Harmony.API.csproj" />
+    <ProjectReference Include="..\..\src\Harmony.Application\Harmony.Application.csproj" />
+    <ProjectReference Include="..\..\src\Harmony.Domain\Harmony.Domain.csproj" />
+  </ItemGroup>
+</Project>
+</file>
+
+<file path="src/Harmony.API/Handlers/GlobalExceptionHandler.cs">
+using System.Security.Authentication;
+using Cassandra;
+using Harmony.Application.Exceptions;
+using Microsoft.AspNetCore.Diagnostics;
+using Microsoft.AspNetCore.Mvc;
+using Polly.CircuitBreaker;
+
+namespace Harmony.API.Handlers;
+
+public class GlobalExceptionHandler : IExceptionHandler
+{
+    private readonly ILogger<GlobalExceptionHandler> _logger;
+
+    public GlobalExceptionHandler(ILogger<GlobalExceptionHandler> logger)
+    {
+        _logger = logger;
+    }
+
+    public async ValueTask<bool> TryHandleAsync(
+        HttpContext httpContext,
+        Exception exception,
+        CancellationToken cancellationToken
+    )
+    {
+        if (exception is NoHostAvailableException noHostEx)
+        {
+            _logger.LogError("ScyllaDB connection failed. Listing raw host errors:");
+            if (noHostEx.Errors != null && noHostEx.Errors.Count > 0)
+            {
+                foreach (var entry in noHostEx.Errors)
+                {
+                    var host = entry.Key?.ToString() ?? "Unknown Host";
+                    var error =
+                        entry.Value != null
+                            ? entry.Value.ToString()
+                            : "No exception recorded (host is marked DOWN)";
+                    _logger.LogError("-> Host: {Host} | Error: {Error}", host, error);
+                }
+            }
+            else
+            {
+                _logger.LogError(
+                    "noHostEx.Errors is empty or null. The driver has marked all hosts down and skipped trying them."
+                );
+            }
+        }
+
+        _logger.LogError(
+            exception,
+            "An unhandled exception occurred: {Message}",
+            exception.Message
+        );
+
+        var (statusCode, title) = exception switch
+        {
+            KeyNotFoundException => (StatusCodes.Status404NotFound, "Resource Not Found"),
+            System.Security.Authentication.AuthenticationException => (
+                StatusCodes.Status401Unauthorized,
+                "Unauthorized"
+            ),
+            UnauthorizedAccessException => (StatusCodes.Status403Forbidden, "Forbidden Access"),
+            ArgumentException => (StatusCodes.Status400BadRequest, "Bad Request"),
+
+            // Cassandra DB Driver Exceptions [1]
+            NoHostAvailableException => (
+                StatusCodes.Status503ServiceUnavailable,
+                "Database Service Unavailable"
+            ),
+            OperationTimedOutException => (
+                StatusCodes.Status503ServiceUnavailable,
+                "Database Query Timed Out"
+            ),
+
+            // New Resiliency Exceptions
+            ServiceUnavailableException => (
+                StatusCodes.Status503ServiceUnavailable,
+                "Service Unavailable"
+            ),
+            BrokenCircuitException => (
+                StatusCodes.Status503ServiceUnavailable,
+                "Service Unavailable (Circuit Open)"
+            ),
+
+            InvalidOperationException ex when ex.Message.Contains("already") => (
+                StatusCodes.Status409Conflict,
+                "Conflict"
+            ),
+            InvalidOperationException => (StatusCodes.Status400BadRequest, "Bad Request"),
+            _ => (StatusCodes.Status500InternalServerError, "Server Error"),
+        };
+
+        var problemDetails = new ProblemDetails
+        {
+            Status = statusCode,
+            Title = title,
+            Detail = exception.Message,
+            Instance = httpContext.Request.Path,
+        };
+
+        httpContext.Response.StatusCode = statusCode;
+        await httpContext.Response.WriteAsJsonAsync(problemDetails, cancellationToken);
+
+        return true;
+    }
+}
 </file>
 
 <file path="src/Harmony.Infrastructure/RabbitMQ/Consumers/ScyllaMessageConsumer.cs">
@@ -13280,6 +13794,7 @@ public class ScyllaMessageConsumer : BackgroundService
 <file path="src/Harmony.Infrastructure/RabbitMQ/Consumers/SearchIndexConsumer.cs">
 using System.Text;
 using System.Text.Json;
+using Harmony.Application.Exceptions; // Required for ServiceUnavailableException
 using Harmony.Domain.Interfaces;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -13298,7 +13813,8 @@ public class SearchIndexConsumer : BackgroundService
     private readonly ILogger<SearchIndexConsumer> _logger;
     private readonly AsyncRetryPolicy _retryPolicy;
     private IChannel? _channel;
-    private string? _consumerTag; // <- Store the consumer tag here
+    private string? _consumerTag;
+    private CancellationToken _stoppingToken; // Capture stopping token globally
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -13316,7 +13832,7 @@ public class SearchIndexConsumer : BackgroundService
         _logger = logger;
 
         _retryPolicy = Policy
-            .Handle<Exception>(ex => !(ex is JsonException))
+            .Handle<Exception>(ex => !(ex is JsonException) && !(ex is ServiceUnavailableException)) // Do not retry transient lags inside the Polly policy
             .WaitAndRetryAsync(
                 retryCount: 3,
                 sleepDurationProvider: attempt => TimeSpan.FromSeconds(Math.Pow(2, attempt)),
@@ -13334,6 +13850,7 @@ public class SearchIndexConsumer : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        _stoppingToken = stoppingToken; // Capture token
         _channel = await _connection.CreateChannelAsync();
 
         await _channel.BasicQosAsync(prefetchSize: 0, prefetchCount: 1, global: false);
@@ -13341,7 +13858,6 @@ public class SearchIndexConsumer : BackgroundService
         var consumer = new AsyncEventingBasicConsumer(_channel);
         consumer.ReceivedAsync += OnMessageReceivedAsync;
 
-        // Capture the consumer tag returned by BasicConsumeAsync
         _consumerTag = await _channel.BasicConsumeAsync(
             queue: Topology.SearchIndexQueue,
             autoAck: false,
@@ -13382,7 +13898,7 @@ public class SearchIndexConsumer : BackgroundService
                             JsonOptions
                         );
                         if (sentEvt is not null)
-                            await handler.HandleMessageSentAsync(sentEvt);
+                            await handler.HandleMessageSentAsync(sentEvt, _stoppingToken);
                         break;
 
                     case Topology.MessageDeletedKey:
@@ -13391,7 +13907,7 @@ public class SearchIndexConsumer : BackgroundService
                             JsonOptions
                         );
                         if (deletedEvt is not null)
-                            await handler.HandleMessageDeletedAsync(deletedEvt);
+                            await handler.HandleMessageDeletedAsync(deletedEvt, _stoppingToken);
                         break;
 
                     case Topology.MessageEditedKey:
@@ -13400,7 +13916,7 @@ public class SearchIndexConsumer : BackgroundService
                             JsonOptions
                         );
                         if (editedEvt is not null)
-                            await handler.HandleMessageEditedAsync(editedEvt);
+                            await handler.HandleMessageEditedAsync(editedEvt, _stoppingToken);
                         break;
 
                     default:
@@ -13413,6 +13929,20 @@ public class SearchIndexConsumer : BackgroundService
             });
 
             await _channel!.BasicAckAsync(ea.DeliveryTag, multiple: false);
+        }
+        catch (ServiceUnavailableException ex)
+        {
+            _logger.LogWarning(
+                "Transient out-of-order write lag detected in FTS indexer: {Message}. Throttling and requeuing event to main queue.",
+                ex.Message
+            );
+
+            // Throttle for 2 seconds before putting the message back to allow
+            // the delayed 'MessageSentEvent' to be processed on the indexer
+            await Task.Delay(2000, _stoppingToken);
+
+            // Requeue the message so it can be retried on the main queue
+            await _channel!.BasicNackAsync(ea.DeliveryTag, multiple: false, requeue: true);
         }
         catch (Exception ex)
         {
@@ -13432,19 +13962,22 @@ public class SearchIndexConsumer : BackgroundService
         {
             try
             {
-                // 1. Cancel the active consumer first using its tag
                 if (!string.IsNullOrEmpty(_consumerTag))
                 {
-                    await _channel.BasicCancelAsync(_consumerTag,cancellationToken: cancellationToken);
+                    await _channel.BasicCancelAsync(
+                        _consumerTag,
+                        cancellationToken: cancellationToken
+                    );
                 }
 
-                // 2. Gracefully close the channel
                 await _channel.CloseAsync(cancellationToken);
             }
             catch (Exception ex)
             {
-                // Log and absorb any unpreventable client library teardown exceptions
-                _logger.LogWarning(ex, "Exception occurred while closing RabbitMQ channel during shutdown.");
+                _logger.LogWarning(
+                    ex,
+                    "Exception occurred while closing RabbitMQ channel during shutdown."
+                );
             }
             finally
             {
@@ -13454,7 +13987,7 @@ public class SearchIndexConsumer : BackgroundService
                 }
                 catch
                 {
-                    // Ignore double-disposal / shutdown errors
+                    // Ignore double disposal
                 }
             }
         }
@@ -13464,143 +13997,289 @@ public class SearchIndexConsumer : BackgroundService
 }
 </file>
 
-<file path="tests/Harmony.IntegrationTests/Infrastructure/ScyllaTestBase.cs">
+<file path="src/Harmony.Infrastructure/Scylla/Repositories/MessageRepository.cs">
 using Cassandra;
+using Harmony.Domain.Domain.Entities;
+using Harmony.Domain.Interfaces.Repositories;
+using Microsoft.Extensions.Logging;
 
-namespace Harmony.IntegrationTests.Infrastructure;
+namespace Harmony.Infrastructure.Scylla.Repositories;
 
-public abstract class ScyllaTestBase : IAsyncLifetime
+public class MessageRepository : IMessageRepository
 {
-    private ICluster _cluster = null!;
+    private readonly ISession _session;
+    private readonly MessageStatements _statements;
+    private readonly ILogger<MessageRepository> _logger;
 
-    protected ISession Session { get; private set; } = null!;
-
-    protected abstract IEnumerable<string> TablesToTruncate { get; }
-
-    public virtual async Task InitializeAsync()
+    public MessageRepository(
+        IScyllaSessionFactory factory,
+        MessageStatements statements,
+        ILogger<MessageRepository> logger
+    )
     {
-        _cluster = Cluster
-            .Builder()
-            .AddContactPoint("127.0.0.1")
-            .WithPort(9042)
-            .WithLoadBalancingPolicy(Policies.DefaultLoadBalancingPolicy)
-            .WithReconnectionPolicy(new ExponentialReconnectionPolicy(1000, 60000))
-            .WithRetryPolicy(new LoggingRetryPolicy(new DefaultRetryPolicy()))
-            .WithQueryOptions(
-                new QueryOptions()
-                    .SetConsistencyLevel(ConsistencyLevel.LocalQuorum)
-                    .SetPrepareOnAllHosts(true)
-                    .SetReprepareOnUp(true)
-            )
-            .WithExecutionProfiles(options =>
-                options
-                    .WithProfile(
-                        "default",
-                        profile =>
-                            profile
-                                .WithLoadBalancingPolicy(Policies.DefaultLoadBalancingPolicy)
-                                .WithConsistencyLevel(ConsistencyLevel.LocalQuorum)
-                                .WithRetryPolicy(new LoggingRetryPolicy(new DefaultRetryPolicy()))
-                    )
-                    .WithProfile(
-                        "write",
-                        profile =>
-                            profile
-                                .WithLoadBalancingPolicy(Policies.DefaultLoadBalancingPolicy)
-                                .WithConsistencyLevel(ConsistencyLevel.LocalQuorum)
-                                .WithRetryPolicy(new LoggingRetryPolicy(new DefaultRetryPolicy()))
-                    )
-                    .WithProfile(
-                        "read",
-                        profile =>
-                            profile
-                                .WithLoadBalancingPolicy(Policies.DefaultLoadBalancingPolicy)
-                                .WithConsistencyLevel(ConsistencyLevel.LocalQuorum)
-                                .WithRetryPolicy(new LoggingRetryPolicy(new DefaultRetryPolicy()))
-                                .WithSpeculativeExecutionPolicy(
-                                    new ConstantSpeculativeExecutionPolicy(200, 1)
-                                )
-                    )
-                    .WithProfile(
-                        "read-states",
-                        profile =>
-                            profile
-                                .WithLoadBalancingPolicy(Policies.DefaultLoadBalancingPolicy)
-                                .WithConsistencyLevel(ConsistencyLevel.LocalOne)
-                                .WithRetryPolicy(new LoggingRetryPolicy(new DefaultRetryPolicy()))
-                                .WithSpeculativeExecutionPolicy(
-                                    new ConstantSpeculativeExecutionPolicy(100, 1)
-                                )
-                    )
-            )
-            .Build();
-
-        using var bootstrapSession = _cluster.Connect();
-        bootstrapSession.Execute(
-            "CREATE KEYSPACE IF NOT EXISTS harmony_test "
-                + "WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1}"
-        );
-
-        Session = _cluster.Connect("harmony_test");
-
-        await CreateTablesAsync();
-        await TruncateTablesAsync();
+        _session = factory.Session;
+        _statements = statements;
+        _logger = logger;
     }
 
-    public virtual async Task DisposeAsync()
+    public async Task<IEnumerable<Message>> GetChannelMessagesAsync(
+        long channelId,
+        int limit = 50,
+        long? beforeMessageId = null,
+        CancellationToken ct = default
+    )
     {
-        await TruncateTablesAsync();
-        Session.Dispose();
-        _cluster.Dispose();
-    }
+        RowSet rows;
 
-    private async Task CreateTablesAsync()
-    {
-        await Session.ExecuteAsync(
-            new SimpleStatement(
-                @"CREATE TABLE IF NOT EXISTS messages_by_channel (
-                    channel_id bigint, message_id bigint, user_id bigint,
-                    content text, attachment_ids list<bigint>, mention_ids list<bigint>,
-                    reply_to_id bigint, is_deleted boolean, is_edited boolean,
-                    edited_at timestamp, message_type varchar,
-                    PRIMARY KEY (channel_id, message_id)
-                ) WITH CLUSTERING ORDER BY (message_id DESC)"
-            )
-        );
-
-        await Session.ExecuteAsync(
-            new SimpleStatement(
-                @"CREATE TABLE IF NOT EXISTS messages_by_id (
-                    message_id bigint PRIMARY KEY, channel_id bigint, user_id bigint,
-                    content text, attachment_ids list<bigint>, reply_to_id bigint,
-                    is_deleted boolean, is_edited boolean, edited_at timestamp)"
-            )
-        );
-
-        await Session.ExecuteAsync(
-            new SimpleStatement(
-                @"CREATE TABLE IF NOT EXISTS read_states (
-                    user_id bigint, channel_id bigint, last_read_message_id bigint,
-                    PRIMARY KEY (user_id, channel_id))"
-            )
-        );
-
-        await Session.ExecuteAsync(
-            new SimpleStatement(
-                @"CREATE TABLE IF NOT EXISTS pinned_messages (
-                    channel_id bigint, pinned_at bigint, message_id bigint, pinned_by bigint,
-                    PRIMARY KEY (channel_id, pinned_at)
-                ) WITH CLUSTERING ORDER BY (pinned_at DESC)"
-            )
-        );
-    }
-
-    protected async Task TruncateTablesAsync()
-    {
-        foreach (var table in TablesToTruncate)
+        if (beforeMessageId.HasValue)
         {
-            await Session.ExecuteAsync(new SimpleStatement($"TRUNCATE {table}"));
+            var bound = _statements.SelectByChannelBefore.Bind(
+                channelId,
+                beforeMessageId.Value,
+                limit
+            );
+            bound.SetIdempotence(true);
+            rows = await _session.ExecuteAsync(bound, "read");
         }
+        else
+        {
+            var bound = _statements.SelectByChannel.Bind(channelId, limit);
+            bound.SetIdempotence(true);
+            rows = await _session.ExecuteAsync(bound, "read");
+        }
+
+        return rows.Select(MapMessage);
+    }
+
+    public async Task<Message?> GetByIdAsync(long messageId, CancellationToken ct = default)
+    {
+        var bound = _statements.SelectById.Bind(messageId);
+        bound.SetIdempotence(true);
+        var rows = await _session.ExecuteAsync(bound, "read");
+        var row = rows.FirstOrDefault();
+        return row is null ? null : MapMessageById(row);
+    }
+
+    public async Task SaveAsync(Message message, CancellationToken ct = default)
+    {
+        var byChannel = _session.ExecuteAsync(
+            _statements.InsertByChannel.Bind(
+                message.ChannelId,
+                message.MessageId,
+                message.UserId,
+                message.Content,
+                message.AttachmentIds,
+                message.MentionIds,
+                message.ReplyToId,
+                false,
+                false,
+                null,
+                message.MessageType
+            ),
+            "write"
+        );
+
+        var byId = _session.ExecuteAsync(
+            _statements.InsertById.Bind(
+                message.MessageId,
+                message.ChannelId,
+                message.UserId,
+                message.Content,
+                message.AttachmentIds,
+                message.ReplyToId,
+                false,
+                false,
+                null
+            ),
+            "write"
+        );
+
+        await Task.WhenAll(byChannel, byId);
+
+        _logger.LogDebug(
+            "Saved message {MessageId} to channel {ChannelId}",
+            message.MessageId,
+            message.ChannelId
+        );
+    }
+
+    public async Task DeleteAsync(long messageId, long channelId, CancellationToken ct = default)
+    {
+        var byChannel = _session.ExecuteAsync(
+            _statements.SoftDeleteByChannel.Bind(channelId, messageId),
+            "write"
+        );
+        var byId = _session.ExecuteAsync(_statements.SoftDeleteById.Bind(messageId), "write");
+        await Task.WhenAll(byChannel, byId);
+    }
+
+    public async Task EditAsync(
+        long messageId,
+        long channelId,
+        string newContent,
+        CancellationToken ct = default
+    )
+    {
+        var now = DateTime.UtcNow;
+        var byChannel = _session.ExecuteAsync(
+            _statements.EditByChannel.Bind(newContent, now, channelId, messageId),
+            "write"
+        );
+        var byId = _session.ExecuteAsync(
+            _statements.EditById.Bind(newContent, now, messageId),
+            "write"
+        );
+        await Task.WhenAll(byChannel, byId);
+    }
+
+    public async Task PinAsync(
+        long channelId,
+        long messageId,
+        long pinnedBy,
+        CancellationToken ct = default
+    )
+    {
+        var bound = _statements.InsertPinned.Bind(channelId, messageId, messageId, pinnedBy);
+        await _session.ExecuteAsync(bound, "write");
+    }
+
+    public async Task UnpinAsync(long channelId, long pinnedAt, CancellationToken ct = default)
+    {
+        var bound = _statements.DeletePinned.Bind(channelId, pinnedAt);
+        await _session.ExecuteAsync(bound, "write");
+    }
+
+    public async Task<IEnumerable<PinnedMessage>> GetPinnedAsync(
+        long channelId,
+        CancellationToken ct = default
+    )
+    {
+        var bound = _statements.SelectPinned.Bind(channelId);
+        bound.SetIdempotence(true);
+        var rows = await _session.ExecuteAsync(bound, "read");
+        return rows.Select(MapPinnedMessage);
+    }
+
+    // --- Mappers ---
+
+    private static Message MapMessage(Row row) =>
+        new()
+        {
+            ChannelId = row.GetValue<long>("channel_id"),
+            MessageId = row.GetValue<long>("message_id"),
+            UserId = row.GetValue<long>("user_id"),
+            Content = row.GetValue<string>("content") ?? string.Empty,
+            AttachmentIds = row.GetValue<List<long>>("attachment_ids") ?? [],
+            MentionIds = row.GetValue<List<long>>("mention_ids") ?? [],
+            ReplyToId = row.GetValue<long?>("reply_to_id"),
+            IsDeleted = row.GetValue<bool>("is_deleted"),
+            IsEdited = row.GetValue<bool>("is_edited"),
+            EditedAt = row.GetValue<DateTime?>("edited_at"),
+            MessageType = row.GetValue<string>("message_type") ?? "text",
+        };
+
+    private static Message MapMessageById(Row row) =>
+        new()
+        {
+            MessageId = row.GetValue<long>("message_id"),
+            ChannelId = row.GetValue<long>("channel_id"),
+            UserId = row.GetValue<long>("user_id"),
+            Content = row.GetValue<string>("content") ?? string.Empty,
+            AttachmentIds = row.GetValue<List<long>>("attachment_ids") ?? [],
+            ReplyToId = row.GetValue<long?>("reply_to_id"),
+            IsDeleted = row.GetValue<bool>("is_deleted"),
+            IsEdited = row.GetValue<bool>("is_edited"),
+            EditedAt = row.GetValue<DateTime?>("edited_at"),
+        };
+
+    private static PinnedMessage MapPinnedMessage(Row row) =>
+        new()
+        {
+            ChannelId = row.GetValue<long>("channel_id"),
+            PinnedAt = row.GetValue<long>("pinned_at"),
+            MessageId = row.GetValue<long>("message_id"),
+            PinnedBy = row.GetValue<long>("pinned_by"),
+        };
+}
+</file>
+
+<file path="src/Harmony.Infrastructure/Scylla/Repositories/ReadStateRepository.cs">
+using Cassandra;
+using Harmony.Domain.Interfaces.Repositories;
+using Microsoft.Extensions.Logging;
+
+namespace Harmony.Infrastructure.Scylla.Repositories;
+
+public class ReadStateRepository : IReadStateRepository
+{
+    private readonly ISession _session;
+    private readonly ReadStateStatements _statements;
+    private readonly ILogger<ReadStateRepository> _logger;
+
+    public ReadStateRepository(
+        IScyllaSessionFactory factory,
+        ReadStateStatements statements,
+        ILogger<ReadStateRepository> logger
+    )
+    {
+        _session = factory.Session;
+        _statements = statements;
+        _logger = logger;
+    }
+
+    public async Task MarkAsReadAsync(
+        long userId,
+        long channelId,
+        long lastReadMessageId,
+        CancellationToken ct = default
+    )
+    {
+        var bound = _statements.Upsert.Bind(userId, channelId, lastReadMessageId);
+        bound.SetIdempotence(true); // Constant value assignment is safe to retry/speculate
+        await _session.ExecuteAsync(bound, "read-states");
+
+        _logger.LogDebug(
+            "Marked channel {ChannelId} as read for user {UserId} up to message {MessageId}",
+            channelId,
+            userId,
+            lastReadMessageId
+        );
+    }
+
+    public async Task<long?> GetLastReadMessageIdAsync(
+        long userId,
+        long channelId,
+        CancellationToken ct = default
+    )
+    {
+        var bound = _statements.SelectOne.Bind(userId, channelId);
+        bound.SetIdempotence(true);
+        var rows = await _session.ExecuteAsync(bound, "read-states");
+        var row = rows.FirstOrDefault();
+        return row?.GetValue<long?>("last_read_message_id");
+    }
+
+    public async Task<IReadOnlyDictionary<long, long>> GetAllForUserAsync(
+        long userId,
+        IEnumerable<long> channelIds,
+        CancellationToken ct = default
+    )
+    {
+        var tasks = channelIds.Select(async channelId =>
+        {
+            var bound = _statements.SelectOne.Bind(userId, channelId);
+            bound.SetIdempotence(true);
+            var rows = await _session.ExecuteAsync(bound, "read-states");
+            var row = rows.FirstOrDefault();
+            var lastRead = row?.GetValue<long?>("last_read_message_id");
+            return (channelId, lastRead);
+        });
+
+        var results = await Task.WhenAll(tasks);
+
+        return results
+            .Where(r => r.lastRead.HasValue)
+            .ToDictionary(r => r.channelId, r => r.lastRead!.Value);
     }
 }
 </file>
@@ -13936,40 +14615,6 @@ public class MessageConsumerHandlerTests : ScyllaAndPostgresTestBase
 }
 </file>
 
-<file path="tests/Harmony.IntegrationTests/Harmony.IntegrationTests.csproj">
-<Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
-    <ImplicitUsings>enable</ImplicitUsings>
-    <Nullable>enable</Nullable>
-    <IsPackable>false</IsPackable>
-  </PropertyGroup>
-
-  <ItemGroup>
-    <PackageReference Include="coverlet.collector" Version="6.0.4" />
-    <PackageReference Include="FluentAssertions" Version="8.9.0" />
-    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.8" />
-    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.7" />
-    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
-    <PackageReference Include="Moq" Version="4.20.72" />
-    <PackageReference Include="Respawn" Version="7.0.0" />
-    <PackageReference Include="xunit" Version="2.9.3" />
-    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <Using Include="Xunit" />
-  </ItemGroup>
-
-
-  <ItemGroup>
-    <ProjectReference Include="..\..\src\Harmony.API\Harmony.API.csproj" />
-    <ProjectReference Include="..\..\src\Harmony.Application\Harmony.Application.csproj" />
-    <ProjectReference Include="..\..\src\Harmony.Domain\Harmony.Domain.csproj" />
-  </ItemGroup>
-</Project>
-</file>
-
 <file path="src/Harmony.API/Controllers/AuthController.cs">
 using Harmony.Application.DTOs.Requests;
 using Harmony.Domain.Interfaces.Services;
@@ -14072,401 +14717,6 @@ public class AuthController : ControllerBase
                 SameSite = SameSiteMode.Strict,
             }
         );
-    }
-}
-</file>
-
-<file path="src/Harmony.API/Handlers/GlobalExceptionHandler.cs">
-using System.Security.Authentication;
-using Cassandra;
-using Harmony.Application.Exceptions;
-using Microsoft.AspNetCore.Diagnostics;
-using Microsoft.AspNetCore.Mvc;
-using Polly.CircuitBreaker;
-
-namespace Harmony.API.Handlers;
-
-public class GlobalExceptionHandler : IExceptionHandler
-{
-    private readonly ILogger<GlobalExceptionHandler> _logger;
-
-    public GlobalExceptionHandler(ILogger<GlobalExceptionHandler> logger)
-    {
-        _logger = logger;
-    }
-
-    public async ValueTask<bool> TryHandleAsync(
-        HttpContext httpContext,
-        Exception exception,
-        CancellationToken cancellationToken
-    )
-    {
-        if (exception is NoHostAvailableException noHostEx)
-        {
-            _logger.LogError("ScyllaDB connection failed. Listing raw host errors:");
-            if (noHostEx.Errors != null && noHostEx.Errors.Count > 0)
-            {
-                foreach (var entry in noHostEx.Errors)
-                {
-                    var host = entry.Key?.ToString() ?? "Unknown Host";
-                    var error =
-                        entry.Value != null
-                            ? entry.Value.ToString()
-                            : "No exception recorded (host is marked DOWN)";
-                    _logger.LogError("-> Host: {Host} | Error: {Error}", host, error);
-                }
-            }
-            else
-            {
-                _logger.LogError(
-                    "noHostEx.Errors is empty or null. The driver has marked all hosts down and skipped trying them."
-                );
-            }
-        }
-
-        _logger.LogError(
-            exception,
-            "An unhandled exception occurred: {Message}",
-            exception.Message
-        );
-
-        var (statusCode, title) = exception switch
-        {
-            KeyNotFoundException => (StatusCodes.Status404NotFound, "Resource Not Found"),
-            System.Security.Authentication.AuthenticationException => (
-                StatusCodes.Status401Unauthorized,
-                "Unauthorized"
-            ),
-            UnauthorizedAccessException => (StatusCodes.Status403Forbidden, "Forbidden Access"),
-            ArgumentException => (StatusCodes.Status400BadRequest, "Bad Request"),
-
-            // Cassandra DB Driver Exceptions [1]
-            NoHostAvailableException => (
-                StatusCodes.Status503ServiceUnavailable,
-                "Database Service Unavailable"
-            ),
-            OperationTimedOutException => (
-                StatusCodes.Status503ServiceUnavailable,
-                "Database Query Timed Out"
-            ),
-
-            // New Resiliency Exceptions
-            ServiceUnavailableException => (
-                StatusCodes.Status503ServiceUnavailable,
-                "Service Unavailable"
-            ),
-            BrokenCircuitException => (
-                StatusCodes.Status503ServiceUnavailable,
-                "Service Unavailable (Circuit Open)"
-            ),
-
-            InvalidOperationException ex when ex.Message.Contains("already") => (
-                StatusCodes.Status409Conflict,
-                "Conflict"
-            ),
-            InvalidOperationException => (StatusCodes.Status400BadRequest, "Bad Request"),
-            _ => (StatusCodes.Status500InternalServerError, "Server Error"),
-        };
-
-        var problemDetails = new ProblemDetails
-        {
-            Status = statusCode,
-            Title = title,
-            Detail = exception.Message,
-            Instance = httpContext.Request.Path,
-        };
-
-        httpContext.Response.StatusCode = statusCode;
-        await httpContext.Response.WriteAsJsonAsync(problemDetails, cancellationToken);
-
-        return true;
-    }
-}
-</file>
-
-<file path="src/Harmony.Infrastructure/Scylla/Repositories/MessageRepository.cs">
-using Cassandra;
-using Harmony.Domain.Domain.Entities;
-using Harmony.Domain.Interfaces.Repositories;
-using Microsoft.Extensions.Logging;
-
-namespace Harmony.Infrastructure.Scylla.Repositories;
-
-public class MessageRepository : IMessageRepository
-{
-    private readonly ISession _session;
-    private readonly MessageStatements _statements;
-    private readonly ILogger<MessageRepository> _logger;
-
-    public MessageRepository(
-        IScyllaSessionFactory factory,
-        MessageStatements statements,
-        ILogger<MessageRepository> logger
-    )
-    {
-        _session = factory.Session;
-        _statements = statements;
-        _logger = logger;
-    }
-
-    public async Task<IEnumerable<Message>> GetChannelMessagesAsync(
-        long channelId,
-        int limit = 50,
-        long? beforeMessageId = null,
-        CancellationToken ct = default
-    )
-    {
-        RowSet rows;
-
-        if (beforeMessageId.HasValue)
-        {
-            var bound = _statements.SelectByChannelBefore.Bind(
-                channelId,
-                beforeMessageId.Value,
-                limit
-            );
-            bound.SetIdempotence(true);
-            rows = await _session.ExecuteAsync(bound, "read");
-        }
-        else
-        {
-            var bound = _statements.SelectByChannel.Bind(channelId, limit);
-            bound.SetIdempotence(true);
-            rows = await _session.ExecuteAsync(bound, "read");
-        }
-
-        return rows.Select(MapMessage);
-    }
-
-    public async Task<Message?> GetByIdAsync(long messageId, CancellationToken ct = default)
-    {
-        var bound = _statements.SelectById.Bind(messageId);
-        bound.SetIdempotence(true);
-        var rows = await _session.ExecuteAsync(bound, "read");
-        var row = rows.FirstOrDefault();
-        return row is null ? null : MapMessageById(row);
-    }
-
-    public async Task SaveAsync(Message message, CancellationToken ct = default)
-    {
-        var byChannel = _session.ExecuteAsync(
-            _statements.InsertByChannel.Bind(
-                message.ChannelId,
-                message.MessageId,
-                message.UserId,
-                message.Content,
-                message.AttachmentIds,
-                message.MentionIds,
-                message.ReplyToId,
-                false,
-                false,
-                null,
-                message.MessageType
-            ),
-            "write"
-        );
-
-        var byId = _session.ExecuteAsync(
-            _statements.InsertById.Bind(
-                message.MessageId,
-                message.ChannelId,
-                message.UserId,
-                message.Content,
-                message.AttachmentIds,
-                message.ReplyToId,
-                false,
-                false,
-                null
-            ),
-            "write"
-        );
-
-        await Task.WhenAll(byChannel, byId);
-
-        _logger.LogDebug(
-            "Saved message {MessageId} to channel {ChannelId}",
-            message.MessageId,
-            message.ChannelId
-        );
-    }
-
-    public async Task DeleteAsync(long messageId, long channelId, CancellationToken ct = default)
-    {
-        var byChannel = _session.ExecuteAsync(
-            _statements.SoftDeleteByChannel.Bind(channelId, messageId),
-            "write"
-        );
-        var byId = _session.ExecuteAsync(_statements.SoftDeleteById.Bind(messageId), "write");
-        await Task.WhenAll(byChannel, byId);
-    }
-
-    public async Task EditAsync(
-        long messageId,
-        long channelId,
-        string newContent,
-        CancellationToken ct = default
-    )
-    {
-        var now = DateTime.UtcNow;
-        var byChannel = _session.ExecuteAsync(
-            _statements.EditByChannel.Bind(newContent, now, channelId, messageId),
-            "write"
-        );
-        var byId = _session.ExecuteAsync(
-            _statements.EditById.Bind(newContent, now, messageId),
-            "write"
-        );
-        await Task.WhenAll(byChannel, byId);
-    }
-
-    public async Task PinAsync(
-        long channelId,
-        long messageId,
-        long pinnedBy,
-        CancellationToken ct = default
-    )
-    {
-        var bound = _statements.InsertPinned.Bind(channelId, messageId, messageId, pinnedBy);
-        await _session.ExecuteAsync(bound, "write");
-    }
-
-    public async Task UnpinAsync(long channelId, long pinnedAt, CancellationToken ct = default)
-    {
-        var bound = _statements.DeletePinned.Bind(channelId, pinnedAt);
-        await _session.ExecuteAsync(bound, "write");
-    }
-
-    public async Task<IEnumerable<PinnedMessage>> GetPinnedAsync(
-        long channelId,
-        CancellationToken ct = default
-    )
-    {
-        var bound = _statements.SelectPinned.Bind(channelId);
-        bound.SetIdempotence(true);
-        var rows = await _session.ExecuteAsync(bound, "read");
-        return rows.Select(MapPinnedMessage);
-    }
-
-    // --- Mappers ---
-
-    private static Message MapMessage(Row row) =>
-        new()
-        {
-            ChannelId = row.GetValue<long>("channel_id"),
-            MessageId = row.GetValue<long>("message_id"),
-            UserId = row.GetValue<long>("user_id"),
-            Content = row.GetValue<string>("content") ?? string.Empty,
-            AttachmentIds = row.GetValue<List<long>>("attachment_ids") ?? [],
-            MentionIds = row.GetValue<List<long>>("mention_ids") ?? [],
-            ReplyToId = row.GetValue<long?>("reply_to_id"),
-            IsDeleted = row.GetValue<bool>("is_deleted"),
-            IsEdited = row.GetValue<bool>("is_edited"),
-            EditedAt = row.GetValue<DateTime?>("edited_at"),
-            MessageType = row.GetValue<string>("message_type") ?? "text",
-        };
-
-    private static Message MapMessageById(Row row) =>
-        new()
-        {
-            MessageId = row.GetValue<long>("message_id"),
-            ChannelId = row.GetValue<long>("channel_id"),
-            UserId = row.GetValue<long>("user_id"),
-            Content = row.GetValue<string>("content") ?? string.Empty,
-            AttachmentIds = row.GetValue<List<long>>("attachment_ids") ?? [],
-            ReplyToId = row.GetValue<long?>("reply_to_id"),
-            IsDeleted = row.GetValue<bool>("is_deleted"),
-            IsEdited = row.GetValue<bool>("is_edited"),
-            EditedAt = row.GetValue<DateTime?>("edited_at"),
-        };
-
-    private static PinnedMessage MapPinnedMessage(Row row) =>
-        new()
-        {
-            ChannelId = row.GetValue<long>("channel_id"),
-            PinnedAt = row.GetValue<long>("pinned_at"),
-            MessageId = row.GetValue<long>("message_id"),
-            PinnedBy = row.GetValue<long>("pinned_by"),
-        };
-}
-</file>
-
-<file path="src/Harmony.Infrastructure/Scylla/Repositories/ReadStateRepository.cs">
-using Cassandra;
-using Harmony.Domain.Interfaces.Repositories;
-using Microsoft.Extensions.Logging;
-
-namespace Harmony.Infrastructure.Scylla.Repositories;
-
-public class ReadStateRepository : IReadStateRepository
-{
-    private readonly ISession _session;
-    private readonly ReadStateStatements _statements;
-    private readonly ILogger<ReadStateRepository> _logger;
-
-    public ReadStateRepository(
-        IScyllaSessionFactory factory,
-        ReadStateStatements statements,
-        ILogger<ReadStateRepository> logger
-    )
-    {
-        _session = factory.Session;
-        _statements = statements;
-        _logger = logger;
-    }
-
-    public async Task MarkAsReadAsync(
-        long userId,
-        long channelId,
-        long lastReadMessageId,
-        CancellationToken ct = default
-    )
-    {
-        var bound = _statements.Upsert.Bind(userId, channelId, lastReadMessageId);
-        bound.SetIdempotence(true); // Constant value assignment is safe to retry/speculate
-        await _session.ExecuteAsync(bound, "read-states");
-
-        _logger.LogDebug(
-            "Marked channel {ChannelId} as read for user {UserId} up to message {MessageId}",
-            channelId,
-            userId,
-            lastReadMessageId
-        );
-    }
-
-    public async Task<long?> GetLastReadMessageIdAsync(
-        long userId,
-        long channelId,
-        CancellationToken ct = default
-    )
-    {
-        var bound = _statements.SelectOne.Bind(userId, channelId);
-        bound.SetIdempotence(true);
-        var rows = await _session.ExecuteAsync(bound, "read-states");
-        var row = rows.FirstOrDefault();
-        return row?.GetValue<long?>("last_read_message_id");
-    }
-
-    public async Task<IReadOnlyDictionary<long, long>> GetAllForUserAsync(
-        long userId,
-        IEnumerable<long> channelIds,
-        CancellationToken ct = default
-    )
-    {
-        var tasks = channelIds.Select(async channelId =>
-        {
-            var bound = _statements.SelectOne.Bind(userId, channelId);
-            bound.SetIdempotence(true);
-            var rows = await _session.ExecuteAsync(bound, "read-states");
-            var row = rows.FirstOrDefault();
-            var lastRead = row?.GetValue<long?>("last_read_message_id");
-            return (channelId, lastRead);
-        });
-
-        var results = await Task.WhenAll(tasks);
-
-        return results
-            .Where(r => r.lastRead.HasValue)
-            .ToDictionary(r => r.channelId, r => r.lastRead!.Value);
     }
 }
 </file>
