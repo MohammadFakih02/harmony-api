@@ -38,19 +38,14 @@ public class TokenPruningService : BackgroundService
                 {
                     var db = scope.ServiceProvider.GetRequiredService<HarmonyDbContext>();
 
-                    // Clean up revoked tokens after 30 days. This gives ample time to support
-                    // forensic theft-detection audits on rotated token families.
+                    // Clean up revoked tokens after 30 days.
                     var revokedCutoff = DateTimeOffset.UtcNow.AddDays(-30);
 
-                    // Execute a high-performance direct bulk deletion on Postgres.
-                    // This removes:
-                    // 1. Any token that has passed its expiration time.
-                    // 2. Any token that was revoked more than 30 days ago.
+                    // Explicitly name cancellationToken to prevent EF Core from mapping it as a query parameter
                     var deletedCount = await db.Database.ExecuteSqlRawAsync(
                         "DELETE FROM \"RefreshTokens\" WHERE \"expires_at\" < {0} OR (\"revoked_at\" IS NOT NULL AND \"revoked_at\" < {1})",
-                        DateTimeOffset.UtcNow,
-                        revokedCutoff,
-                        stoppingToken
+                        [DateTimeOffset.UtcNow, revokedCutoff],
+                        cancellationToken: stoppingToken
                     );
 
                     _logger.LogInformation(

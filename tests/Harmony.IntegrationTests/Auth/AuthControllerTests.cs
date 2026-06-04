@@ -313,6 +313,27 @@ public class AuthControllerTests : ApiTestBase
             ); // family revoked
     }
 
+    [Fact]
+    public async Task Refresh_WithConcurrentRequests_ShouldAllowOnlyOneToSucceed()
+    {
+        // Arrange: Register and log in once to obtain the active refresh token cookie
+        await RegisterUserAsync("concurrentuser", "concurrent@example.com", "Password123!");
+
+        // Act: Fire two concurrent refresh requests simultaneously
+        var task1 = Client.PostAsJsonAsync("/api/auth/refresh", new { });
+        var task2 = Client.PostAsJsonAsync("/api/auth/refresh", new { });
+
+        await Task.WhenAll(task1, task2);
+
+        var res1 = await task1;
+        var res2 = await task2;
+
+        // Assert: One request must successfully rotate, and the other must fail with 401 Unauthorized
+        var statusCodes = new[] { res1.StatusCode, res2.StatusCode };
+        statusCodes.Should().ContainSingle(s => s == HttpStatusCode.OK);
+        statusCodes.Should().ContainSingle(s => s == HttpStatusCode.Unauthorized);
+    }
+
     // --- Helpers ---
 
     private async Task<AuthResponse> RegisterUserAsync(
