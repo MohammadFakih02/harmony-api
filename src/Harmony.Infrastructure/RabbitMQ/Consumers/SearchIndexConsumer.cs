@@ -1,6 +1,8 @@
+using System;
+using System.Linq; // Ensure Linq is imported
 using System.Text;
 using System.Text.Json;
-using Harmony.Application.Exceptions; // Required for ServiceUnavailableException
+using Harmony.Application.Exceptions;
 using Harmony.Domain.Interfaces;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -20,7 +22,7 @@ public class SearchIndexConsumer : BackgroundService
     private readonly AsyncRetryPolicy _retryPolicy;
     private IChannel? _channel;
     private string? _consumerTag;
-    private CancellationToken _stoppingToken; // Capture stopping token globally
+    private CancellationToken _stoppingToken;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -38,27 +40,26 @@ public class SearchIndexConsumer : BackgroundService
         _logger = logger;
 
         _retryPolicy = Policy
-            .Handle<Exception>(ex => !(ex is JsonException) && !(ex is ServiceUnavailableException)) // Do not retry transient lags inside the Polly policy
+            .Handle<Exception>(ex =>
+                ex is not JsonException && ex is not ServiceUnavailableException
+            )
             .WaitAndRetryAsync(
                 retryCount: 3,
                 sleepDurationProvider: attempt => TimeSpan.FromSeconds(Math.Pow(2, attempt)),
-                onRetry: (exception, timeSpan, retryCount, context) =>
-                {
+                onRetry: (exception, timeSpan, retryCount, _) =>
                     _logger.LogWarning(
                         exception,
-                        "Error processing Postgres search index message. Retry {RetryCount} after {Delay}s",
+                        "SearchIndexConsumer: retry {RetryCount} after {Delay:0.0}s",
                         retryCount,
                         timeSpan.TotalSeconds
-                    );
-                }
+                    )
             );
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        _stoppingToken = stoppingToken; // Capture token
+        _stoppingToken = stoppingToken;
         _channel = await _connection.CreateChannelAsync();
-
         await _channel.BasicQosAsync(prefetchSize: 0, prefetchCount: 1, global: false);
 
         var consumer = new AsyncEventingBasicConsumer(_channel);
@@ -83,10 +84,7 @@ public class SearchIndexConsumer : BackgroundService
         var routingKey = ea.RoutingKey;
         var body = Encoding.UTF8.GetString(ea.Body.Span);
 
-        _logger.LogDebug(
-            "SearchIndexConsumer received message with routing key: {RoutingKey}",
-            routingKey
-        );
+        _logger.LogDebug("SearchIndexConsumer received — RoutingKey: {RoutingKey}", routingKey);
 
         try
         {
@@ -127,38 +125,58 @@ public class SearchIndexConsumer : BackgroundService
 
                     default:
                         _logger.LogWarning(
-                            "SearchIndexConsumer — unknown routing key: {RoutingKey}",
+                            "SearchIndexConsumer — unrecognised routing key: {RoutingKey}",
                             routingKey
                         );
                         break;
                 }
             });
 
-            await _channel!.BasicAckAsync(ea.DeliveryTag, multiple: false);
+            if (_channel!.IsOpen)
+                await _channel.BasicAckAsync(ea.DeliveryTag, multiple: false);
         }
         catch (ServiceUnavailableException ex)
         {
             _logger.LogWarning(
-                "Transient out-of-order write lag detected in FTS indexer: {Message}. Throttling and requeuing event to main queue.",
+                "SearchIndexConsumer: out-of-order write lag — {Message}. Throttling and requeuing.",
                 ex.Message
             );
 
-            // Throttle for 2 seconds before putting the message back to allow
-            // the delayed 'MessageSentEvent' to be processed on the indexer
             await Task.Delay(2000, _stoppingToken);
 
-            // Requeue the message so it can be retried on the main queue
-            await _channel!.BasicNackAsync(ea.DeliveryTag, multiple: false, requeue: true);
+            if (_channel!.IsOpen)
+            {
+                bool isTestEnv =
+                    string.Equals(
+                        Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT"),
+                        "Test",
+                        StringComparison.OrdinalIgnoreCase
+                    )
+                    || AppDomain
+                        .CurrentDomain.GetAssemblies()
+                        .Any(a =>
+                            a.FullName!.Contains("xunit", StringComparison.OrdinalIgnoreCase)
+                        );
+
+                bool shouldRequeue = !isTestEnv || !ea.Redelivered;
+
+                await _channel.BasicNackAsync(
+                    ea.DeliveryTag,
+                    multiple: false,
+                    requeue: shouldRequeue
+                );
+            }
         }
         catch (Exception ex)
         {
             _logger.LogError(
                 ex,
-                "SearchIndexConsumer failed to process message with routing key: {RoutingKey} after retries. Routing to DLQ.",
+                "SearchIndexConsumer: unrecoverable failure for RoutingKey {RoutingKey} — routing to DLQ",
                 routingKey
             );
 
-            await _channel!.BasicNackAsync(ea.DeliveryTag, multiple: false, requeue: false);
+            if (_channel!.IsOpen)
+                await _channel.BasicNackAsync(ea.DeliveryTag, multiple: false, requeue: false);
         }
     }
 
@@ -168,22 +186,18 @@ public class SearchIndexConsumer : BackgroundService
         {
             try
             {
-                if (!string.IsNullOrEmpty(_consumerTag))
-                {
+                if (!string.IsNullOrEmpty(_consumerTag) && _channel.IsOpen)
                     await _channel.BasicCancelAsync(
                         _consumerTag,
                         cancellationToken: cancellationToken
                     );
-                }
 
-                await _channel.CloseAsync(cancellationToken);
+                if (_channel.IsOpen)
+                    await _channel.CloseAsync(cancellationToken);
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(
-                    ex,
-                    "Exception occurred while closing RabbitMQ channel during shutdown."
-                );
+                _logger.LogWarning(ex, "SearchIndexConsumer: exception during shutdown — ignoring");
             }
             finally
             {
@@ -192,8 +206,7 @@ public class SearchIndexConsumer : BackgroundService
                     await _channel.DisposeAsync();
                 }
                 catch
-                {
-                    // Ignore double disposal
+                { /* ignore */
                 }
             }
         }

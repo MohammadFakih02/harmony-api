@@ -6,8 +6,9 @@ namespace Harmony.Infrastructure.RabbitMQ;
 
 public class RabbitMQConnection : IAsyncDisposable
 {
-    private readonly IConnection _connection;
+    private readonly Lazy<Task<IConnection>> _lazyConnection;
     private readonly ILogger<RabbitMQConnection> _logger;
+    private readonly ConnectionFactory _factory;
 
     public RabbitMQConnection(IConfiguration configuration, ILogger<RabbitMQConnection> logger)
     {
@@ -16,27 +17,35 @@ public class RabbitMQConnection : IAsyncDisposable
         var connectionString =
             configuration.GetConnectionString("RabbitMQ") ?? "amqp://guest:guest@localhost:5672";
 
-        var factory = new ConnectionFactory
+        _factory = new ConnectionFactory
         {
             Uri = new Uri(connectionString),
             AutomaticRecoveryEnabled = true,
             NetworkRecoveryInterval = TimeSpan.FromSeconds(10),
         };
 
-        _logger.LogInformation("Connecting to RabbitMQ at {Uri}", connectionString);
-
-        _connection = factory.CreateConnectionAsync().GetAwaiter().GetResult();
-
-        _logger.LogInformation("RabbitMQ connection established");
-
-        DeclareTopologyAsync().GetAwaiter().GetResult();
+        _lazyConnection = new Lazy<Task<IConnection>>(async () =>
+        {
+            _logger.LogInformation(
+                "Connecting to RabbitMQ asynchronously at {Uri}...",
+                connectionString
+            );
+            var conn = await _factory.CreateConnectionAsync();
+            _logger.LogInformation("RabbitMQ connection established.");
+            await DeclareTopologyAsync(conn);
+            return conn;
+        });
     }
 
-    public async Task<IChannel> CreateChannelAsync() => await _connection.CreateChannelAsync();
-
-    private async Task DeclareTopologyAsync()
+    public async Task<IChannel> CreateChannelAsync()
     {
-        using var channel = await _connection.CreateChannelAsync();
+        var connection = await _lazyConnection.Value;
+        return await connection.CreateChannelAsync();
+    }
+
+    private async Task DeclareTopologyAsync(IConnection connection)
+    {
+        using var channel = await connection.CreateChannelAsync();
 
         // Dead letter exchange — declared first
         await channel.ExchangeDeclareAsync(
@@ -155,11 +164,15 @@ public class RabbitMQConnection : IAsyncDisposable
             routingKey: Topology.NotificationKey
         );
 
-        _logger.LogInformation("RabbitMQ topology declared");
+        _logger.LogInformation("RabbitMQ topology declared.");
     }
 
     public async ValueTask DisposeAsync()
     {
-        await _connection.DisposeAsync();
+        if (_lazyConnection.IsValueCreated)
+        {
+            var connection = await _lazyConnection.Value;
+            await connection.DisposeAsync();
+        }
     }
 }

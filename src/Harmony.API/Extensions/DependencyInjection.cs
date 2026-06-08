@@ -1,4 +1,5 @@
-using System.Text;
+using System;
+using System.Linq; // Ensure Linq is imported
 using Harmony.Application.Services;
 using Harmony.Domain.Interfaces;
 using Harmony.Domain.Interfaces.Repositories;
@@ -24,7 +25,7 @@ public static class DependencyInjection
         IConfiguration configuration
     )
     {
-        // Databases - Added EnableRetryOnFailure
+        // PostgreSQL
         services.AddDbContext<HarmonyDbContext>(options =>
             options.UseNpgsql(
                 configuration.GetConnectionString("Postgres"),
@@ -37,15 +38,50 @@ public static class DependencyInjection
             )
         );
 
-        // ScyllaDB setup
+        // ScyllaDB
         services.AddSingleton<IScyllaSessionFactory, ScyllaSessionFactory>();
         services.AddSingleton<MessageStatements>();
         services.AddSingleton<ReadStateStatements>();
         services.AddHostedService<KeyspaceInitializer>();
 
-        // RabbitMQ setup
+        // RabbitMQ
         services.AddSingleton<RabbitMQConnection>();
-        services.AddSingleton<IMessagePublisher, RabbitMQPublisher>(); // Singleton matching channel-reuser
+        services.AddSingleton<IMessagePublisher, RabbitMQPublisher>();
+
+        // SignalR + Redis backplane
+        var redisConnectionString = configuration.GetConnectionString("Redis");
+
+        var env =
+            configuration["ASPNETCORE_ENVIRONMENT"]
+            ?? Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT")
+            ?? "Production";
+
+        bool isTest =
+            env.Equals("Test", StringComparison.OrdinalIgnoreCase)
+            || AppDomain
+                .CurrentDomain.GetAssemblies()
+                .Any(a => a.FullName!.Contains("xunit", StringComparison.OrdinalIgnoreCase));
+
+        var signalRBuilder = services.AddSignalR(options =>
+        {
+            options.EnableDetailedErrors =
+                env.Equals("Development", StringComparison.OrdinalIgnoreCase) || isTest;
+            options.KeepAliveInterval = TimeSpan.FromSeconds(15);
+            options.ClientTimeoutInterval = TimeSpan.FromSeconds(30);
+        });
+
+        if (!string.IsNullOrWhiteSpace(redisConnectionString) && !isTest)
+        {
+            signalRBuilder.AddStackExchangeRedis(
+                redisConnectionString,
+                options =>
+                {
+                    options.Configuration.ChannelPrefix = StackExchange.Redis.RedisChannel.Literal(
+                        "harmony"
+                    );
+                }
+            );
+        }
 
         // Repositories
         services.AddScoped<IGuildRepository, GuildRepository>();
@@ -55,21 +91,19 @@ public static class DependencyInjection
         services.AddScoped<IReadStateRepository, ReadStateRepository>();
         services.AddScoped<IRefreshTokenRepository, RefreshTokenRepository>();
 
-        // Infrastructure Services
+        // Application & infrastructure services
         services.AddScoped<IIdentityService, IdentityService>();
-
-        // Core / Domain Services
         services.AddScoped<IJwtService, JwtService>();
         services.AddScoped<IAuthService, AuthService>();
         services.AddScoped<IMessageService, MessageService>();
 
-        // RabbitMQ Consumers / Handlers
+        // RabbitMQ consumers and handlers
         services.AddScoped<IMessageConsumerHandler, MessageConsumerHandler>();
         services.AddScoped<SearchIndexConsumerHandler>();
         services.AddHostedService<ScyllaMessageConsumer>();
         services.AddHostedService<SearchIndexConsumer>();
 
-        // Postgres Background Workers
+        // Background workers
         services.AddHostedService<TokenPruningService>();
 
         return services;

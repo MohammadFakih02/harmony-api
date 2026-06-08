@@ -1,5 +1,8 @@
 using System.Text;
 using System.Text.Json;
+using Harmony.Application.DTOs.Responses;
+using Harmony.Application.Hubs;
+using Harmony.Application.Interfaces.Services;
 using Harmony.Domain.Interfaces;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -11,14 +14,25 @@ using RabbitMQ.Client.Events;
 
 namespace Harmony.Infrastructure.RabbitMQ.Consumers;
 
+/// <summary>
+/// Background consumer that processes messages from the ScyllaDB write queue.
+///
+/// Broadcast rule: persist first via IMessageConsumerHandler, then broadcast
+/// via IHubBroadcaster. Never broadcast before persistence is confirmed.
+///
+/// IHubBroadcaster is injected as a singleton — it holds the real
+/// IHubContext{ChatHub, IChatClient} in the API layer. Infrastructure
+/// never references ChatHub or any SignalR type directly.
+/// </summary>
 public class ScyllaMessageConsumer : BackgroundService
 {
     private readonly RabbitMQConnection _connection;
     private readonly IServiceScopeFactory _scopeFactory;
+    private readonly IHubBroadcaster _hubBroadcaster;
     private readonly ILogger<ScyllaMessageConsumer> _logger;
     private readonly AsyncRetryPolicy _retryPolicy;
     private IChannel? _channel;
-    private string? _consumerTag; // <- Store the consumer tag here
+    private string? _consumerTag;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -28,40 +42,38 @@ public class ScyllaMessageConsumer : BackgroundService
     public ScyllaMessageConsumer(
         RabbitMQConnection connection,
         IServiceScopeFactory scopeFactory,
+        IHubBroadcaster hubBroadcaster,
         ILogger<ScyllaMessageConsumer> logger
     )
     {
         _connection = connection;
         _scopeFactory = scopeFactory;
+        _hubBroadcaster = hubBroadcaster;
         _logger = logger;
 
         _retryPolicy = Policy
-            .Handle<Exception>(ex => !(ex is JsonException))
+            .Handle<Exception>(ex => ex is not JsonException)
             .WaitAndRetryAsync(
                 retryCount: 3,
                 sleepDurationProvider: attempt => TimeSpan.FromSeconds(Math.Pow(2, attempt)),
-                onRetry: (exception, timeSpan, retryCount, context) =>
-                {
+                onRetry: (exception, timeSpan, retryCount, _) =>
                     _logger.LogWarning(
                         exception,
-                        "Error processing Scylla message. Retry {RetryCount} after {Delay}s",
+                        "ScyllaConsumer: retry {RetryCount} after {Delay:0.0}s",
                         retryCount,
                         timeSpan.TotalSeconds
-                    );
-                }
+                    )
             );
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         _channel = await _connection.CreateChannelAsync();
-
         await _channel.BasicQosAsync(prefetchSize: 0, prefetchCount: 1, global: false);
 
         var consumer = new AsyncEventingBasicConsumer(_channel);
         consumer.ReceivedAsync += OnMessageReceivedAsync;
 
-        // Capture the consumer tag returned by BasicConsumeAsync
         _consumerTag = await _channel.BasicConsumeAsync(
             queue: Topology.ScyllaMessageQueue,
             autoAck: false,
@@ -81,10 +93,7 @@ public class ScyllaMessageConsumer : BackgroundService
         var routingKey = ea.RoutingKey;
         var body = Encoding.UTF8.GetString(ea.Body.Span);
 
-        _logger.LogDebug(
-            "ScyllaConsumer received message with routing key: {RoutingKey}",
-            routingKey
-        );
+        _logger.LogDebug("ScyllaConsumer received — RoutingKey: {RoutingKey}", routingKey);
 
         try
         {
@@ -96,35 +105,17 @@ public class ScyllaMessageConsumer : BackgroundService
                 switch (routingKey)
                 {
                     case Topology.MessageSentKey:
-                        var sentEvt = JsonSerializer.Deserialize<MessageSentEvent>(
-                            body,
-                            JsonOptions
-                        );
-                        if (sentEvt is not null)
-                            await handler.HandleMessageSentAsync(sentEvt);
+                        await HandleMessageSentAsync(handler, body);
                         break;
-
                     case Topology.MessageDeletedKey:
-                        var deletedEvt = JsonSerializer.Deserialize<MessageDeletedEvent>(
-                            body,
-                            JsonOptions
-                        );
-                        if (deletedEvt is not null)
-                            await handler.HandleMessageDeletedAsync(deletedEvt);
+                        await HandleMessageDeletedAsync(handler, body);
                         break;
-
                     case Topology.MessageEditedKey:
-                        var editedEvt = JsonSerializer.Deserialize<MessageEditedEvent>(
-                            body,
-                            JsonOptions
-                        );
-                        if (editedEvt is not null)
-                            await handler.HandleMessageEditedAsync(editedEvt);
+                        await HandleMessageEditedAsync(handler, body);
                         break;
-
                     default:
                         _logger.LogWarning(
-                            "ScyllaConsumer — unknown routing key: {RoutingKey}",
+                            "ScyllaConsumer — unrecognised routing key: {RoutingKey}",
                             routingKey
                         );
                         break;
@@ -137,7 +128,7 @@ public class ScyllaMessageConsumer : BackgroundService
         {
             _logger.LogError(
                 ex,
-                "ScyllaConsumer failed to process message with routing key: {RoutingKey} after retries. Routing to DLQ.",
+                "ScyllaConsumer: unrecoverable failure for RoutingKey {RoutingKey} — routing to DLQ",
                 routingKey
             );
 
@@ -145,13 +136,104 @@ public class ScyllaMessageConsumer : BackgroundService
         }
     }
 
+    // -------------------------------------------------------------------------
+    // Per-event handlers — persist first, broadcast second
+    // -------------------------------------------------------------------------
+
+    private async Task HandleMessageSentAsync(IMessageConsumerHandler handler, string body)
+    {
+        var evt = JsonSerializer.Deserialize<MessageSentEvent>(body, JsonOptions);
+        if (evt is null)
+            return;
+
+        // 1. Persist to ScyllaDB + create mention notifications
+        await handler.HandleMessageSentAsync(evt);
+
+        // 2. Broadcast authoritative message to channel subscribers
+        await _hubBroadcaster.BroadcastMessageReceivedAsync(
+            new MessageResponse(
+                MessageId: evt.MessageId,
+                ChannelId: evt.ChannelId,
+                GuildId: evt.GuildId,
+                UserId: evt.UserId,
+                Content: evt.Content,
+                MessageType: evt.MessageType,
+                IsDeleted: false,
+                IsEdited: false,
+                ReplyToId: evt.ReplyToId,
+                MentionIds: evt.MentionIds,
+                AttachmentIds: evt.AttachmentIds,
+                SentAt: evt.SentAt.ToUnixTimeMilliseconds(),
+                EditedAt: null
+            )
+        );
+
+        _logger.LogInformation(
+            "ScyllaConsumer: MessageSent persisted and broadcast — MessageId: {MessageId}, ChannelId: {ChannelId}",
+            evt.MessageId,
+            evt.ChannelId
+        );
+    }
+
+    private async Task HandleMessageDeletedAsync(IMessageConsumerHandler handler, string body)
+    {
+        var evt = JsonSerializer.Deserialize<MessageDeletedEvent>(body, JsonOptions);
+        if (evt is null)
+            return;
+
+        await handler.HandleMessageDeletedAsync(evt);
+
+        await _hubBroadcaster.BroadcastMessageDeletedAsync(
+            new MessageDeletedPayload(
+                MessageId: evt.MessageId,
+                ChannelId: evt.ChannelId,
+                GuildId: evt.GuildId,
+                DeletedByUserId: evt.DeletedByUserId,
+                DeletedAt: evt.DeletedAt.ToUnixTimeMilliseconds()
+            )
+        );
+
+        _logger.LogInformation(
+            "ScyllaConsumer: MessageDeleted persisted and broadcast — MessageId: {MessageId}",
+            evt.MessageId
+        );
+    }
+
+    private async Task HandleMessageEditedAsync(IMessageConsumerHandler handler, string body)
+    {
+        var evt = JsonSerializer.Deserialize<MessageEditedEvent>(body, JsonOptions);
+        if (evt is null)
+            return;
+
+        await handler.HandleMessageEditedAsync(evt);
+
+        await _hubBroadcaster.BroadcastMessageEditedAsync(
+            new MessageEditedPayload(
+                MessageId: evt.MessageId,
+                ChannelId: evt.ChannelId,
+                GuildId: evt.GuildId,
+                EditedByUserId: evt.EditedByUserId,
+                NewContent: evt.NewContent,
+                EditedAt: evt.EditedAt.ToUnixTimeMilliseconds()
+            )
+        );
+
+        _logger.LogInformation(
+            "ScyllaConsumer: MessageEdited persisted and broadcast — MessageId: {MessageId}",
+            evt.MessageId
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // Graceful shutdown
+    // -------------------------------------------------------------------------
+
     public override async Task StopAsync(CancellationToken cancellationToken)
     {
         if (_channel is not null)
         {
             try
             {
-                // 1. Cancel the active consumer first using its tag
                 if (!string.IsNullOrEmpty(_consumerTag))
                 {
                     await _channel.BasicCancelAsync(
@@ -160,15 +242,15 @@ public class ScyllaMessageConsumer : BackgroundService
                     );
                 }
 
-                // 2. Gracefully close the channel
                 await _channel.CloseAsync(cancellationToken);
+            }
+            catch (ObjectDisposedException)
+            {
+                // Quietly ignore if RabbitMQ connection pool was already disposed by the host
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(
-                    ex,
-                    "Exception occurred while closing RabbitMQ channel during shutdown."
-                );
+                _logger.LogWarning(ex, "ScyllaConsumer: exception during shutdown — ignoring");
             }
             finally
             {
@@ -177,8 +259,7 @@ public class ScyllaMessageConsumer : BackgroundService
                     await _channel.DisposeAsync();
                 }
                 catch
-                {
-                    // Ignore double-disposal / shutdown errors
+                { /* ignore */
                 }
             }
         }
