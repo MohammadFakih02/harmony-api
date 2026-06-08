@@ -1,65 +1,60 @@
 using System.Text;
 using Harmony.API.Extensions;
 using Harmony.API.Handlers;
+using Harmony.API.Hubs;
+using Harmony.Application.Interfaces.Services;
 using Harmony.Application.Services;
 using Harmony.Domain.Domain.Entities;
 using Harmony.Infrastructure.Extensions;
 using Harmony.Infrastructure.RabbitMQ;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
-using Microsoft.AspNetCore.HttpOverrides; // Add this namespace
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.IdentityModel.Tokens;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// -----------------------------------------------------------------------
 // Snowflake ID generator
+// -----------------------------------------------------------------------
 var workerId = builder.Configuration.GetValue<long>("Snowflake:WorkerId", 0);
 var datacenterId = builder.Configuration.GetValue<long>("Snowflake:DatacenterId", 0);
-builder.Services.AddSingleton<ISnowflakeIdGenerator>(_ => new SnowflakeIdGenerator(
-    workerId,
-    datacenterId
-));
+builder.Services.AddSingleton<ISnowflakeIdGenerator>(_ =>
+    new SnowflakeIdGenerator(workerId, datacenterId));
 
-// Configure Forwarded Headers for reverse proxies
+// -----------------------------------------------------------------------
+// Forwarded headers
+// -----------------------------------------------------------------------
 builder.Services.Configure<ForwardedHeadersOptions>(options =>
 {
     options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
-
-    // Mitigate IP spoofing rate-limit bypasses in production
     if (builder.Environment.IsDevelopment() || builder.Environment.IsEnvironment("Test"))
     {
         options.KnownIPNetworks.Clear();
         options.KnownProxies.Clear();
     }
-    else
-    {
-        // In production, explicitly restrict forwarding to trusted edge proxy IP/subnets
-        // options.KnownProxies.Add(IPAddress.Parse("YOUR_LOAD_BALANCER_INTERNAL_IP"));
-    }
 });
 
+// -----------------------------------------------------------------------
 // CORS
+// -----------------------------------------------------------------------
 builder.Services.AddCors(options =>
 {
-    options.AddPolicy(
-        "HarmonyClient",
-        policy =>
-        {
-            policy
-                .WithOrigins("http://localhost:4200")
-                .AllowAnyHeader()
-                .AllowAnyMethod()
-                .AllowCredentials(); // required for httpOnly cookies
-        }
-    );
+    options.AddPolicy("HarmonyClient", policy =>
+        policy
+            .WithOrigins("http://localhost:4200")
+            .AllowAnyHeader()
+            .AllowAnyMethod()
+            .AllowCredentials());
 });
 
-// Data protection (required by Identity for token providers)
+// -----------------------------------------------------------------------
+// Data protection + Identity
+// -----------------------------------------------------------------------
 builder.Services.AddDataProtection();
 
-// Identity
-builder
-    .Services.AddIdentityCore<User>(options =>
+builder.Services
+    .AddIdentityCore<User>(options =>
     {
         options.Password.RequireDigit = true;
         options.Password.RequiredLength = 8;
@@ -70,9 +65,11 @@ builder
     .AddEntityFrameworkStores<Harmony.Infrastructure.Postgres.HarmonyDbContext>()
     .AddDefaultTokenProviders();
 
-// JWT authentication
-builder
-    .Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+// -----------------------------------------------------------------------
+// JWT — query-string token extraction for WebSocket / SignalR
+// -----------------------------------------------------------------------
+builder.Services
+    .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {
         options.TokenValidationParameters = new TokenValidationParameters
@@ -84,8 +81,7 @@ builder
             ValidIssuer = builder.Configuration["Jwt:Issuer"],
             ValidAudience = builder.Configuration["Jwt:Audience"],
             IssuerSigningKey = new SymmetricSecurityKey(
-                Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Key"]!)
-            ),
+                Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Key"]!)),
             ClockSkew = TimeSpan.Zero,
         };
 
@@ -104,43 +100,51 @@ builder
 
 builder.Services.AddAuthorization();
 
+// -----------------------------------------------------------------------
 // Rate limiting
+// -----------------------------------------------------------------------
 builder.Services.AddHarmonyRateLimiting();
 
-// Infrastructure, Repositories, Consumers and Core Services registration
+// -----------------------------------------------------------------------
+// Infrastructure (Postgres, Scylla, RabbitMQ, SignalR backplane, repos,
+// services, consumers)
+// -----------------------------------------------------------------------
 builder.Services.AddInfrastructureServices(builder.Configuration);
 
-// Centralized Global Exception Handling
+// -----------------------------------------------------------------------
+// HubBroadcaster — registered here (API layer) because HubBroadcaster
+// holds IHubContext{ChatHub, IChatClient} which requires ChatHub to be known.
+// Infrastructure depends on IHubBroadcaster (the abstraction in Application).
+// Must be singleton so ScyllaMessageConsumer (singleton) can inject it.
+// -----------------------------------------------------------------------
+builder.Services.AddSingleton<IHubBroadcaster, HubBroadcaster>();
+
+// -----------------------------------------------------------------------
+// Global exception handling + OpenAPI
+// -----------------------------------------------------------------------
 builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
 builder.Services.AddProblemDetails();
-
-// Controllers + OpenAPI
 builder.Services.AddControllers();
 builder.Services.AddOpenApi();
 
-// -----------------------------------------------------------------------
-
+// =======================================================================
 var app = builder.Build();
+// =======================================================================
 
 if (app.Environment.IsDevelopment())
     app.MapOpenApi();
 
-// Force RabbitMQ connection and topology declaration on startup
 app.Services.GetRequiredService<RabbitMQConnection>();
 
-// Forwarded headers MUST be evaluated before routing, rate limiting, and CORS
 app.UseForwardedHeaders();
-
 app.UseHttpsRedirection();
 app.UseCors("HarmonyClient");
-
-app.UseRateLimiter(); // before auth so login rate limit hits before Identity runs
-
-app.UseExceptionHandler(); // Register Global Exception Handler middleware
-
+app.UseRateLimiter();
+app.UseExceptionHandler();
 app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapControllers();
+app.MapHub<ChatHub>("/hubs/chat");
 
 app.Run();
