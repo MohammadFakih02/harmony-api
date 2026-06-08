@@ -25,6 +25,9 @@ public abstract class ScyllaTestBase : IAsyncLifetime
                         .Builder()
                         .AddContactPoint("127.0.0.1")
                         .WithPort(9042)
+                        .WithAddressTranslator(
+                            new Harmony.Infrastructure.Scylla.LocalhostAddressTranslator()
+                        ) // Force localhost routing
                         .WithLoadBalancingPolicy(Policies.DefaultLoadBalancingPolicy)
                         .WithReconnectionPolicy(new ExponentialReconnectionPolicy(1000, 60000))
                         .WithQueryOptions(

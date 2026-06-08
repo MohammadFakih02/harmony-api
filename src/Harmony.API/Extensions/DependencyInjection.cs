@@ -70,29 +70,30 @@ public static class DependencyInjection
         // retrying in the background. Without it a Redis blip kills the entire pod.
         // -----------------------------------------------------------------------
         var redisConnectionString = configuration.GetConnectionString("Redis");
+        var env = Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT") ?? "Production";
+        bool isTest = env.Equals("Test", StringComparison.OrdinalIgnoreCase);
 
         var signalRBuilder = services.AddSignalR(options =>
         {
-            options.EnableDetailedErrors =
-                Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT") == "Development"
-                || Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT") == "Test";
-
+            options.EnableDetailedErrors = env == "Development" || env == "Test";
             options.KeepAliveInterval = TimeSpan.FromSeconds(15);
             options.ClientTimeoutInterval = TimeSpan.FromSeconds(30);
         });
 
-        // Only wire the backplane when a Redis connection string is provided.
-        // In tests, HarmonyWebApplicationFactory sets this to null/empty so
-        // the in-process backplane is used — no Redis instance required.
-        if (!string.IsNullOrWhiteSpace(redisConnectionString))
+        // Only wire the backplane when a Redis connection string is provided and we are not in the Test environment.
+        if (!string.IsNullOrWhiteSpace(redisConnectionString) && !isTest)
         {
-            signalRBuilder.AddStackExchangeRedis(redisConnectionString, options =>
-            {
-                // Channel prefix isolates this app's messages from anything else
-                // sharing the same Redis instance (staging, other services, etc.)
-                options.Configuration.ChannelPrefix =
-                    StackExchange.Redis.RedisChannel.Literal("harmony");
-            });
+            signalRBuilder.AddStackExchangeRedis(
+                redisConnectionString,
+                options =>
+                {
+                    // Channel prefix isolates this app's messages from anything else
+                    // sharing the same Redis instance (staging, other services, etc.)
+                    options.Configuration.ChannelPrefix = StackExchange.Redis.RedisChannel.Literal(
+                        "harmony"
+                    );
+                }
+            );
         }
 
         // -----------------------------------------------------------------------
