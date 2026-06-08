@@ -1,3 +1,5 @@
+using System;
+using System.Linq; // Ensure Linq is imported
 using System.Text;
 using System.Text.Json;
 using Harmony.Application.Exceptions;
@@ -130,7 +132,6 @@ public class SearchIndexConsumer : BackgroundService
                 }
             });
 
-            // Guard: only ack if channel is still open (host may be shutting down)
             if (_channel!.IsOpen)
                 await _channel.BasicAckAsync(ea.DeliveryTag, multiple: false);
         }
@@ -145,9 +146,18 @@ public class SearchIndexConsumer : BackgroundService
 
             if (_channel!.IsOpen)
             {
-                // In Test environment, prevent infinite requeue loops for orphaned messages
                 bool isTestEnv =
-                    Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT") == "Test";
+                    string.Equals(
+                        Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT"),
+                        "Test",
+                        StringComparison.OrdinalIgnoreCase
+                    )
+                    || AppDomain
+                        .CurrentDomain.GetAssemblies()
+                        .Any(a =>
+                            a.FullName!.Contains("xunit", StringComparison.OrdinalIgnoreCase)
+                        );
+
                 bool shouldRequeue = !isTestEnv || !ea.Redelivered;
 
                 await _channel.BasicNackAsync(

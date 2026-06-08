@@ -1,4 +1,5 @@
 using System;
+using System.Linq; // Ensure Linq is imported
 using System.Net;
 using Cassandra;
 using Microsoft.Extensions.Configuration;
@@ -24,10 +25,18 @@ public class ScyllaSessionFactory : IScyllaSessionFactory, IDisposable
 
         var port = configuration.GetValue<int>("ScyllaDB:Port", 9042);
 
-        var env = configuration["ASPNETCORE_ENVIRONMENT"] ?? "Production";
+        // Robust environment resolution
+        var env =
+            configuration["ASPNETCORE_ENVIRONMENT"]
+            ?? Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT")
+            ?? "Production";
+
         var isLocal =
             env.Equals("Development", StringComparison.OrdinalIgnoreCase)
-            || env.Equals("Test", StringComparison.OrdinalIgnoreCase);
+            || env.Equals("Test", StringComparison.OrdinalIgnoreCase)
+            || AppDomain
+                .CurrentDomain.GetAssemblies()
+                .Any(a => a.FullName!.Contains("xunit", StringComparison.OrdinalIgnoreCase));
 
         var clusterBuilder = Cluster
             .Builder()
@@ -97,7 +106,6 @@ public class ScyllaSessionFactory : IScyllaSessionFactory, IDisposable
 
         _cluster = clusterBuilder.Build();
 
-        // Lazy session context prevents database connectivity blocks during DI construction
         _lazySession = new Lazy<ISession>(() =>
         {
             _logger.LogInformation(

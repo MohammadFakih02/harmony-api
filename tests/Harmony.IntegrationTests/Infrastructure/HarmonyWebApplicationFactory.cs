@@ -22,6 +22,7 @@ public class HarmonyWebApplicationFactory : WebApplicationFactory<Program>
                             "Warning",
                         ["Logging:LogLevel:Harmony"] = "Warning",
 
+                        ["ASPNETCORE_ENVIRONMENT"] = "Test", // Explicit environment variable mapping
                         ["ConnectionStrings:Postgres"] =
                             "Host=localhost;Port=5432;Database=harmony_test;Username=admin;Password=secret",
                         ["ConnectionStrings:Redis"] = "",

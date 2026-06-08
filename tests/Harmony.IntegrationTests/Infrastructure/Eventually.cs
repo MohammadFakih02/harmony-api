@@ -17,7 +17,10 @@ public static class Eventually
                 return result;
             await Task.Delay(intervalMs);
         }
-        return result;
+
+        throw new TimeoutException(
+            $"Eventually.GetAsync timed out after {retries * intervalMs}ms."
+        );
     }
 
     public static async Task<IEnumerable<T>> HasAnyAsync<T>(

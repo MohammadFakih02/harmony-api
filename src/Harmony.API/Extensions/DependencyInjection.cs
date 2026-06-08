@@ -1,3 +1,5 @@
+using System;
+using System.Linq; // Ensure Linq is imported
 using Harmony.Application.Services;
 using Harmony.Domain.Interfaces;
 using Harmony.Domain.Interfaces.Repositories;
@@ -23,9 +25,7 @@ public static class DependencyInjection
         IConfiguration configuration
     )
     {
-        // -----------------------------------------------------------------------
         // PostgreSQL
-        // -----------------------------------------------------------------------
         services.AddDbContext<HarmonyDbContext>(options =>
             options.UseNpgsql(
                 configuration.GetConnectionString("Postgres"),
@@ -38,57 +38,44 @@ public static class DependencyInjection
             )
         );
 
-        // -----------------------------------------------------------------------
         // ScyllaDB
-        // -----------------------------------------------------------------------
         services.AddSingleton<IScyllaSessionFactory, ScyllaSessionFactory>();
         services.AddSingleton<MessageStatements>();
         services.AddSingleton<ReadStateStatements>();
         services.AddHostedService<KeyspaceInitializer>();
 
-        // -----------------------------------------------------------------------
         // RabbitMQ
-        // -----------------------------------------------------------------------
         services.AddSingleton<RabbitMQConnection>();
         services.AddSingleton<IMessagePublisher, RabbitMQPublisher>();
 
-        // -----------------------------------------------------------------------
         // SignalR + Redis backplane
-        //
-        // The Redis backplane distributes hub group membership and broadcasts
-        // across all API instances. Every instance publishes to Redis; every
-        // instance receives from Redis and forwards to its local WebSocket clients.
-        //
-        // Without this, JoinChannel on instance A and a broadcast from instance B
-        // would never reach the client — a hard failure in any multi-pod deploy.
-        //
-        // Connection string key: ConnectionStrings:Redis
-        // Expected format: "localhost:6379,password=secret,ssl=false,abortConnect=false"
-        //
-        // The "abortConnect=false" flag is critical — it prevents StackExchange.Redis
-        // from throwing on startup if Redis is momentarily unavailable, instead
-        // retrying in the background. Without it a Redis blip kills the entire pod.
-        // -----------------------------------------------------------------------
         var redisConnectionString = configuration.GetConnectionString("Redis");
-        var env = Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT") ?? "Production";
-        bool isTest = env.Equals("Test", StringComparison.OrdinalIgnoreCase);
+
+        var env =
+            configuration["ASPNETCORE_ENVIRONMENT"]
+            ?? Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT")
+            ?? "Production";
+
+        bool isTest =
+            env.Equals("Test", StringComparison.OrdinalIgnoreCase)
+            || AppDomain
+                .CurrentDomain.GetAssemblies()
+                .Any(a => a.FullName!.Contains("xunit", StringComparison.OrdinalIgnoreCase));
 
         var signalRBuilder = services.AddSignalR(options =>
         {
-            options.EnableDetailedErrors = env == "Development" || env == "Test";
+            options.EnableDetailedErrors =
+                env.Equals("Development", StringComparison.OrdinalIgnoreCase) || isTest;
             options.KeepAliveInterval = TimeSpan.FromSeconds(15);
             options.ClientTimeoutInterval = TimeSpan.FromSeconds(30);
         });
 
-        // Only wire the backplane when a Redis connection string is provided and we are not in the Test environment.
         if (!string.IsNullOrWhiteSpace(redisConnectionString) && !isTest)
         {
             signalRBuilder.AddStackExchangeRedis(
                 redisConnectionString,
                 options =>
                 {
-                    // Channel prefix isolates this app's messages from anything else
-                    // sharing the same Redis instance (staging, other services, etc.)
                     options.Configuration.ChannelPrefix = StackExchange.Redis.RedisChannel.Literal(
                         "harmony"
                     );
@@ -96,9 +83,7 @@ public static class DependencyInjection
             );
         }
 
-        // -----------------------------------------------------------------------
         // Repositories
-        // -----------------------------------------------------------------------
         services.AddScoped<IGuildRepository, GuildRepository>();
         services.AddScoped<IChannelRepository, ChannelRepository>();
         services.AddScoped<IUserRepository, UserRepository>();
@@ -106,25 +91,19 @@ public static class DependencyInjection
         services.AddScoped<IReadStateRepository, ReadStateRepository>();
         services.AddScoped<IRefreshTokenRepository, RefreshTokenRepository>();
 
-        // -----------------------------------------------------------------------
         // Application & infrastructure services
-        // -----------------------------------------------------------------------
         services.AddScoped<IIdentityService, IdentityService>();
         services.AddScoped<IJwtService, JwtService>();
         services.AddScoped<IAuthService, AuthService>();
         services.AddScoped<IMessageService, MessageService>();
 
-        // -----------------------------------------------------------------------
         // RabbitMQ consumers and handlers
-        // -----------------------------------------------------------------------
         services.AddScoped<IMessageConsumerHandler, MessageConsumerHandler>();
         services.AddScoped<SearchIndexConsumerHandler>();
         services.AddHostedService<ScyllaMessageConsumer>();
         services.AddHostedService<SearchIndexConsumer>();
 
-        // -----------------------------------------------------------------------
         // Background workers
-        // -----------------------------------------------------------------------
         services.AddHostedService<TokenPruningService>();
 
         return services;
