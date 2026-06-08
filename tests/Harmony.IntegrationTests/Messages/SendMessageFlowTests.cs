@@ -8,8 +8,11 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace Harmony.IntegrationTests.Messages;
 
-public class SendMessageFlowTests : ApiTestBase
+public class SendMessageFlowTests : ApiTestBase, IClassFixture<HarmonyWebApplicationFactory>
 {
+    public SendMessageFlowTests(HarmonyWebApplicationFactory factory)
+        : base(factory) { }
+
     private string _token = string.Empty;
     private long _guildId;
     private long _channelId;

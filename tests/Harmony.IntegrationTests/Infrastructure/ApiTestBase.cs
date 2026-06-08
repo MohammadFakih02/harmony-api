@@ -1,5 +1,6 @@
 using System.Data.Common;
 using Harmony.Infrastructure.Postgres;
+using Harmony.Infrastructure.RabbitMQ; // Added for Topology names
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -12,11 +13,15 @@ public abstract class ApiTestBase : IAsyncLifetime
 {
     protected readonly HarmonyWebApplicationFactory Factory;
     protected readonly HttpClient Client;
+
+    private static readonly object Lock = new();
+    private static bool _dbInitialized;
     private static Respawner? _respawner;
 
-    protected ApiTestBase()
+    // Modified constructor to accept the class-bounded factory instance from xUnit
+    protected ApiTestBase(HarmonyWebApplicationFactory factory)
     {
-        Factory = new HarmonyWebApplicationFactory();
+        Factory = factory;
         Client = Factory.CreateClient(
             new WebApplicationFactoryClientOptions { HandleCookies = true }
         );
@@ -24,13 +29,34 @@ public abstract class ApiTestBase : IAsyncLifetime
 
     public virtual async Task InitializeAsync()
     {
+        // 1. Purge durable queues before each test to prevent cross-test message pollution
+        await PurgeQueuesAsync();
+
+        // 2. Reset database state cleanly
         await ResetDatabaseAsync();
     }
 
-    public virtual async Task DisposeAsync()
+    public virtual Task DisposeAsync()
     {
         Client.Dispose();
-        await Factory.DisposeAsync();
+        return Task.CompletedTask; // xUnit manages the Factory lifetime at the class boundary
+    }
+
+    private async Task PurgeQueuesAsync()
+    {
+        try
+        {
+            var rabbitConnection = Factory.Services.GetRequiredService<RabbitMQConnection>();
+            await using var channel = await rabbitConnection.CreateChannelAsync();
+
+            await channel.QueuePurgeAsync(Topology.ScyllaMessageQueue);
+            await channel.QueuePurgeAsync(Topology.SearchIndexQueue);
+            await channel.QueuePurgeAsync(Topology.NotificationQueue);
+        }
+        catch
+        {
+            // Fail silently if queues are not yet declared or connection is offline
+        }
     }
 
     private async Task ResetDatabaseAsync()
@@ -38,8 +64,17 @@ public abstract class ApiTestBase : IAsyncLifetime
         using var scope = Factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<HarmonyDbContext>();
 
-        // 1. Ensure schema exists
-        await db.Database.EnsureCreatedAsync();
+        if (!_dbInitialized)
+        {
+            lock (Lock)
+            {
+                if (!_dbInitialized)
+                {
+                    db.Database.EnsureCreated();
+                    _dbInitialized = true;
+                }
+            }
+        }
 
         var connection = db.Database.GetDbConnection();
         if (connection.State != System.Data.ConnectionState.Open)
@@ -47,7 +82,6 @@ public abstract class ApiTestBase : IAsyncLifetime
             await connection.OpenAsync();
         }
 
-        // 2. Initialize Respawner if not already done
         if (_respawner == null)
         {
             var options = new RespawnerOptions
@@ -59,7 +93,6 @@ public abstract class ApiTestBase : IAsyncLifetime
             _respawner = await Respawner.CreateAsync(connection, options);
         }
 
-        // 3. Reset the database to a clean state
         await _respawner.ResetAsync(connection);
     }
 }
