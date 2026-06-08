@@ -5,8 +5,11 @@ using Harmony.IntegrationTests.Infrastructure;
 
 namespace Harmony.IntegrationTests.Auth;
 
-public class AuthControllerTests : ApiTestBase
+public class AuthControllerTests : ApiTestBase, IClassFixture<HarmonyWebApplicationFactory>
 {
+    public AuthControllerTests(HarmonyWebApplicationFactory factory)
+        : base(factory) { }
+
     // --- Register ---
 
     [Fact]

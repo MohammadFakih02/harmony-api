@@ -8,6 +8,8 @@ namespace Harmony.IntegrationTests.Infrastructure;
 
 public abstract class ScyllaAndPostgresTestBase : ScyllaTestBase
 {
+    private static readonly object PostgresLock = new();
+    private static bool _postgresInitialized;
     private static Respawner? _respawner;
     protected HarmonyDbContext Db { get; private set; } = null!;
 
@@ -25,7 +27,19 @@ public abstract class ScyllaAndPostgresTestBase : ScyllaTestBase
             .Options;
 
         Db = new HarmonyDbContext(options);
-        await Db.Database.EnsureCreatedAsync();
+
+        // Only run PostgreSQL schema creation check once for the entire test run
+        if (!_postgresInitialized)
+        {
+            lock (PostgresLock)
+            {
+                if (!_postgresInitialized)
+                {
+                    Db.Database.EnsureCreated();
+                    _postgresInitialized = true;
+                }
+            }
+        }
 
         var connection = Db.Database.GetDbConnection();
         if (connection.State != System.Data.ConnectionState.Open)

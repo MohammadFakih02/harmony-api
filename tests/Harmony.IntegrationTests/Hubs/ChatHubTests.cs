@@ -18,8 +18,11 @@ namespace Harmony.IntegrationTests.Hubs;
 /// The in-process backplane is used (Redis connection string is empty in test config),
 /// so all connections share the same process and group routing works without Redis.
 /// </summary>
-public class ChatHubTests : ApiTestBase
+public class ChatHubTests : ApiTestBase, IClassFixture<HarmonyWebApplicationFactory>
 {
+    public ChatHubTests(HarmonyWebApplicationFactory factory)
+        : base(factory) { }
+
     // -------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------
@@ -55,7 +58,12 @@ public class ChatHubTests : ApiTestBase
     {
         var response = await Client.PostAsJsonAsync(
             "/api/auth/register",
-            new { username, email, password }
+            new
+            {
+                username,
+                email,
+                password,
+            }
         );
         response.EnsureSuccessStatusCode();
         var body = await response.Content.ReadFromJsonAsync<AuthResponse>();
@@ -98,13 +106,17 @@ public class ChatHubTests : ApiTestBase
         var connection = new HubConnectionBuilder()
             .WithUrl(
                 new Uri(Factory.Server.BaseAddress, "hubs/chat"),
-                options => { options.HttpMessageHandlerFactory = _ => Factory.Server.CreateHandler(); }
+                options =>
+                {
+                    options.HttpMessageHandlerFactory = _ => Factory.Server.CreateHandler();
+                }
             )
             .Build();
 
         var act = async () => await connection.StartAsync();
 
-        await act.Should().ThrowAsync<HttpRequestException>()
+        await act.Should()
+            .ThrowAsync<HttpRequestException>()
             .Where(ex => ex.StatusCode == HttpStatusCode.Unauthorized);
     }
 
@@ -115,7 +127,8 @@ public class ChatHubTests : ApiTestBase
 
         var act = async () => await connection.StartAsync();
 
-        await act.Should().ThrowAsync<HttpRequestException>()
+        await act.Should()
+            .ThrowAsync<HttpRequestException>()
             .Where(ex => ex.StatusCode == HttpStatusCode.Unauthorized);
     }
 
@@ -275,7 +288,8 @@ public class ChatHubTests : ApiTestBase
             var act = async () =>
                 await connection.InvokeAsync("SendMessage", channelId, guildId, "");
 
-            await act.Should().ThrowAsync<HubException>()
+            await act.Should()
+                .ThrowAsync<HubException>()
                 .WithMessage("*between 1 and 2000 characters*");
         }
         finally
@@ -304,7 +318,8 @@ public class ChatHubTests : ApiTestBase
                     new string('x', 2001)
                 );
 
-            await act.Should().ThrowAsync<HubException>()
+            await act.Should()
+                .ThrowAsync<HubException>()
                 .WithMessage("*between 1 and 2000 characters*");
         }
         finally
@@ -342,6 +357,7 @@ public class ChatHubTests : ApiTestBase
     // -------------------------------------------------------------------------
 
     private record AuthResponse(string AccessToken);
+
     private record IdResponse(long Id);
 
     private record SendMessageResponseDto(

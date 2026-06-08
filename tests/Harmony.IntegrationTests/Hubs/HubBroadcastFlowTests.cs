@@ -20,8 +20,11 @@ namespace Harmony.IntegrationTests.Hubs;
 /// Timing: The pipeline is async (RabbitMQ → consumer → hub), so we use
 /// Eventually helpers with a generous timeout to wait for the broadcast.
 /// </summary>
-public class HubBroadcastFlowTests : ApiTestBase
+public class HubBroadcastFlowTests : ApiTestBase, IClassFixture<HarmonyWebApplicationFactory>
 {
+    public HubBroadcastFlowTests(HarmonyWebApplicationFactory factory)
+        : base(factory) { }
+
     // -------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------
@@ -41,7 +44,12 @@ public class HubBroadcastFlowTests : ApiTestBase
     {
         var response = await Client.PostAsJsonAsync(
             "/api/auth/register",
-            new { username, email, password = "Password123!" }
+            new
+            {
+                username,
+                email,
+                password = "Password123!",
+            }
         );
         response.EnsureSuccessStatusCode();
         var body = await response.Content.ReadFromJsonAsync<AuthResponse>();
@@ -53,7 +61,10 @@ public class HubBroadcastFlowTests : ApiTestBase
         Client.DefaultRequestHeaders.Authorization =
             new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
 
-        var guildResp = await Client.PostAsJsonAsync("/api/guilds", new { name = "Broadcast Guild" });
+        var guildResp = await Client.PostAsJsonAsync(
+            "/api/guilds",
+            new { name = "Broadcast Guild" }
+        );
         guildResp.EnsureSuccessStatusCode();
         var guild = await guildResp.Content.ReadFromJsonAsync<IdResponse>();
 
@@ -104,13 +115,15 @@ public class HubBroadcastFlowTests : ApiTestBase
                 intervalMs: 100
             );
 
-            received.Should().ContainSingle(m =>
-                m.Content == "hello broadcast" &&
-                m.ChannelId == channelId &&
-                m.GuildId == guildId &&
-                m.IsDeleted == false &&
-                m.MessageId > 0
-            );
+            received
+                .Should()
+                .ContainSingle(m =>
+                    m.Content == "hello broadcast"
+                    && m.ChannelId == channelId
+                    && m.GuildId == guildId
+                    && m.IsDeleted == false
+                    && m.MessageId > 0
+                );
         }
         finally
         {
@@ -130,7 +143,10 @@ public class HubBroadcastFlowTests : ApiTestBase
         var receiverToken = await RegisterAndGetTokenAsync("receiver1", "receiver1@test.com");
         Client.DefaultRequestHeaders.Authorization =
             new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", receiverToken);
-        await Client.PostAsJsonAsync($"/api/guilds/join/{await GetInviteCodeAsync(senderToken, guildId)}", new { });
+        await Client.PostAsJsonAsync(
+            $"/api/guilds/join/{await GetInviteCodeAsync(senderToken, guildId)}",
+            new { }
+        );
 
         var senderConn = BuildConnection(senderToken);
         var receiverConn = BuildConnection(receiverToken);
@@ -193,7 +209,10 @@ public class HubBroadcastFlowTests : ApiTestBase
         var unsubscribedReceived = new List<MessageResponse>();
 
         subscribedConn.On<MessageResponse>("MessageReceived", msg => subscribedReceived.Add(msg));
-        unsubscribedConn.On<MessageResponse>("MessageReceived", msg => unsubscribedReceived.Add(msg));
+        unsubscribedConn.On<MessageResponse>(
+            "MessageReceived",
+            msg => unsubscribedReceived.Add(msg)
+        );
 
         await subscribedConn.StartAsync();
         await unsubscribedConn.StartAsync();
@@ -277,8 +296,12 @@ public class HubBroadcastFlowTests : ApiTestBase
             // Wait a reasonable time and assert the second message was NOT received
             await Task.Delay(1000);
 
-            received.Count.Should().Be(countBeforeSecondMessage,
-                because: "connection left the channel group before the second message was sent");
+            received
+                .Count.Should()
+                .Be(
+                    countBeforeSecondMessage,
+                    because: "connection left the channel group before the second message was sent"
+                );
         }
         finally
         {
@@ -302,6 +325,8 @@ public class HubBroadcastFlowTests : ApiTestBase
     }
 
     private record AuthResponse(string AccessToken);
+
     private record IdResponse(long Id);
+
     private record GuildResponse(long Id, string Name, string? InviteCode);
 }

@@ -19,8 +19,10 @@ var builder = WebApplication.CreateBuilder(args);
 // -----------------------------------------------------------------------
 var workerId = builder.Configuration.GetValue<long>("Snowflake:WorkerId", 0);
 var datacenterId = builder.Configuration.GetValue<long>("Snowflake:DatacenterId", 0);
-builder.Services.AddSingleton<ISnowflakeIdGenerator>(_ =>
-    new SnowflakeIdGenerator(workerId, datacenterId));
+builder.Services.AddSingleton<ISnowflakeIdGenerator>(_ => new SnowflakeIdGenerator(
+    workerId,
+    datacenterId
+));
 
 // -----------------------------------------------------------------------
 // Forwarded headers
@@ -40,12 +42,15 @@ builder.Services.Configure<ForwardedHeadersOptions>(options =>
 // -----------------------------------------------------------------------
 builder.Services.AddCors(options =>
 {
-    options.AddPolicy("HarmonyClient", policy =>
-        policy
-            .WithOrigins("http://localhost:4200")
-            .AllowAnyHeader()
-            .AllowAnyMethod()
-            .AllowCredentials());
+    options.AddPolicy(
+        "HarmonyClient",
+        policy =>
+            policy
+                .WithOrigins("http://localhost:4200")
+                .AllowAnyHeader()
+                .AllowAnyMethod()
+                .AllowCredentials()
+    );
 });
 
 // -----------------------------------------------------------------------
@@ -53,8 +58,8 @@ builder.Services.AddCors(options =>
 // -----------------------------------------------------------------------
 builder.Services.AddDataProtection();
 
-builder.Services
-    .AddIdentityCore<User>(options =>
+builder
+    .Services.AddIdentityCore<User>(options =>
     {
         options.Password.RequireDigit = true;
         options.Password.RequiredLength = 8;
@@ -68,8 +73,8 @@ builder.Services
 // -----------------------------------------------------------------------
 // JWT — query-string token extraction for WebSocket / SignalR
 // -----------------------------------------------------------------------
-builder.Services
-    .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+builder
+    .Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {
         options.TokenValidationParameters = new TokenValidationParameters
@@ -81,7 +86,8 @@ builder.Services
             ValidIssuer = builder.Configuration["Jwt:Issuer"],
             ValidAudience = builder.Configuration["Jwt:Audience"],
             IssuerSigningKey = new SymmetricSecurityKey(
-                Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Key"]!)),
+                Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Key"]!)
+            ),
             ClockSkew = TimeSpan.Zero,
         };
 
@@ -103,7 +109,10 @@ builder.Services.AddAuthorization();
 // -----------------------------------------------------------------------
 // Rate limiting
 // -----------------------------------------------------------------------
-builder.Services.AddHarmonyRateLimiting();
+if (!builder.Environment.IsEnvironment("Test"))
+{
+    builder.Services.AddHarmonyRateLimiting();
+}
 
 // -----------------------------------------------------------------------
 // Infrastructure (Postgres, Scylla, RabbitMQ, SignalR backplane, repos,
@@ -129,17 +138,27 @@ builder.Services.AddOpenApi();
 
 // =======================================================================
 var app = builder.Build();
+
 // =======================================================================
 
 if (app.Environment.IsDevelopment())
     app.MapOpenApi();
 
-app.Services.GetRequiredService<RabbitMQConnection>();
+// Trigger RabbitMQ connection and topology declaration asynchronously without blocking
+var rabbitConnection = app.Services.GetRequiredService<RabbitMQConnection>();
+await using (var startupChannel = await rabbitConnection.CreateChannelAsync())
+{
+    // Simply opening and disposing a channel triggers the lazy asynchronous connection
+    // and topology declaration cleanly without blocking the startup thread pool.
+}
 
 app.UseForwardedHeaders();
 app.UseHttpsRedirection();
 app.UseCors("HarmonyClient");
-app.UseRateLimiter();
+if (!app.Environment.IsEnvironment("Test"))
+{
+    app.UseRateLimiter();
+}
 app.UseExceptionHandler();
 app.UseAuthentication();
 app.UseAuthorization();
