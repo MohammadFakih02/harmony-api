@@ -13,7 +13,9 @@ jobs:
         image: scylladb/scylla:5.4
         ports:
           - 9042:9042
+        # Mount Scylla's data directory in RAM
         options: >-
+          --mount type=tmpfs,destination=/var/lib/scylla
           --health-cmd "cqlsh -e 'describe cluster'"
           --health-interval 10s
           --health-timeout 5s
@@ -27,25 +29,13 @@ jobs:
           POSTGRES_DB: harmony_test
           POSTGRES_USER: admin
           POSTGRES_PASSWORD: secret
+        # Mount Postgres's data directory in RAM and correct health-cmd params
         options: >-
-          --health-cmd "pg_isready -U harmony"
+          --mount type=tmpfs,destination=/var/lib/postgresql/data
+          --health-cmd "pg_isready -U admin -d harmony_test"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
-
-      rabbitmq:
-        image: rabbitmq:3-management
-        ports:
-          - 5672:5672
-        env:
-          RABBITMQ_DEFAULT_USER: admin
-          RABBITMQ_DEFAULT_PASS: secret
-        options: >-
-          --health-cmd "rabbitmq-diagnostics ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 10
-
     steps:
       - uses: actions/checkout@v4
 

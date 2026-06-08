@@ -38,14 +38,19 @@ public class SearchIndexConsumer : BackgroundService
         _logger = logger;
 
         _retryPolicy = Policy
-            .Handle<Exception>(ex => ex is not JsonException && ex is not ServiceUnavailableException)
+            .Handle<Exception>(ex =>
+                ex is not JsonException && ex is not ServiceUnavailableException
+            )
             .WaitAndRetryAsync(
                 retryCount: 3,
                 sleepDurationProvider: attempt => TimeSpan.FromSeconds(Math.Pow(2, attempt)),
                 onRetry: (exception, timeSpan, retryCount, _) =>
-                    _logger.LogWarning(exception,
+                    _logger.LogWarning(
+                        exception,
                         "SearchIndexConsumer: retry {RetryCount} after {Delay:0.0}s",
-                        retryCount, timeSpan.TotalSeconds)
+                        retryCount,
+                        timeSpan.TotalSeconds
+                    )
             );
     }
 
@@ -84,31 +89,43 @@ public class SearchIndexConsumer : BackgroundService
             await _retryPolicy.ExecuteAsync(async () =>
             {
                 using var scope = _scopeFactory.CreateScope();
-                var handler = scope.ServiceProvider.GetRequiredService<SearchIndexConsumerHandler>();
+                var handler =
+                    scope.ServiceProvider.GetRequiredService<SearchIndexConsumerHandler>();
 
                 switch (routingKey)
                 {
                     case Topology.MessageSentKey:
-                        var sentEvt = JsonSerializer.Deserialize<MessageSentEvent>(body, JsonOptions);
+                        var sentEvt = JsonSerializer.Deserialize<MessageSentEvent>(
+                            body,
+                            JsonOptions
+                        );
                         if (sentEvt is not null)
                             await handler.HandleMessageSentAsync(sentEvt, _stoppingToken);
                         break;
 
                     case Topology.MessageDeletedKey:
-                        var deletedEvt = JsonSerializer.Deserialize<MessageDeletedEvent>(body, JsonOptions);
+                        var deletedEvt = JsonSerializer.Deserialize<MessageDeletedEvent>(
+                            body,
+                            JsonOptions
+                        );
                         if (deletedEvt is not null)
                             await handler.HandleMessageDeletedAsync(deletedEvt, _stoppingToken);
                         break;
 
                     case Topology.MessageEditedKey:
-                        var editedEvt = JsonSerializer.Deserialize<MessageEditedEvent>(body, JsonOptions);
+                        var editedEvt = JsonSerializer.Deserialize<MessageEditedEvent>(
+                            body,
+                            JsonOptions
+                        );
                         if (editedEvt is not null)
                             await handler.HandleMessageEditedAsync(editedEvt, _stoppingToken);
                         break;
 
                     default:
                         _logger.LogWarning(
-                            "SearchIndexConsumer — unrecognised routing key: {RoutingKey}", routingKey);
+                            "SearchIndexConsumer — unrecognised routing key: {RoutingKey}",
+                            routingKey
+                        );
                         break;
                 }
             });
@@ -121,18 +138,32 @@ public class SearchIndexConsumer : BackgroundService
         {
             _logger.LogWarning(
                 "SearchIndexConsumer: out-of-order write lag — {Message}. Throttling and requeuing.",
-                ex.Message);
+                ex.Message
+            );
 
             await Task.Delay(2000, _stoppingToken);
 
             if (_channel!.IsOpen)
-                await _channel.BasicNackAsync(ea.DeliveryTag, multiple: false, requeue: true);
+            {
+                // In Test environment, prevent infinite requeue loops for orphaned messages
+                bool isTestEnv =
+                    Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT") == "Test";
+                bool shouldRequeue = !isTestEnv || !ea.Redelivered;
+
+                await _channel.BasicNackAsync(
+                    ea.DeliveryTag,
+                    multiple: false,
+                    requeue: shouldRequeue
+                );
+            }
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex,
+            _logger.LogError(
+                ex,
                 "SearchIndexConsumer: unrecoverable failure for RoutingKey {RoutingKey} — routing to DLQ",
-                routingKey);
+                routingKey
+            );
 
             if (_channel!.IsOpen)
                 await _channel.BasicNackAsync(ea.DeliveryTag, multiple: false, requeue: false);
@@ -146,7 +177,10 @@ public class SearchIndexConsumer : BackgroundService
             try
             {
                 if (!string.IsNullOrEmpty(_consumerTag) && _channel.IsOpen)
-                    await _channel.BasicCancelAsync(_consumerTag, cancellationToken: cancellationToken);
+                    await _channel.BasicCancelAsync(
+                        _consumerTag,
+                        cancellationToken: cancellationToken
+                    );
 
                 if (_channel.IsOpen)
                     await _channel.CloseAsync(cancellationToken);
@@ -157,7 +191,13 @@ public class SearchIndexConsumer : BackgroundService
             }
             finally
             {
-                try { await _channel.DisposeAsync(); } catch { /* ignore */ }
+                try
+                {
+                    await _channel.DisposeAsync();
+                }
+                catch
+                { /* ignore */
+                }
             }
         }
 
