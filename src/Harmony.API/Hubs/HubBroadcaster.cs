@@ -23,27 +23,40 @@ public class HubBroadcaster : IHubBroadcaster
         _hubContext = hubContext;
     }
 
-    public Task BroadcastMessageReceivedAsync(MessageResponse message, CancellationToken ct = default) =>
-        _hubContext
-            .Clients
-            .Group(ChatHub.ChannelGroup(message.ChannelId))
-            .MessageReceived(message);
+    public Task BroadcastMessageReceivedAsync(
+        MessageResponse message,
+        CancellationToken ct = default
+    ) =>
+        _hubContext.Clients.Group(ChatHub.ChannelGroup(message.ChannelId)).MessageReceived(message);
 
-    public Task BroadcastMessageDeletedAsync(MessageDeletedPayload payload, CancellationToken ct = default) =>
-        _hubContext
-            .Clients
-            .Group(ChatHub.ChannelGroup(payload.ChannelId))
-            .MessageDeleted(payload);
+    public Task BroadcastMessageDeletedAsync(
+        MessageDeletedPayload payload,
+        CancellationToken ct = default
+    ) => _hubContext.Clients.Group(ChatHub.ChannelGroup(payload.ChannelId)).MessageDeleted(payload);
 
-    public Task BroadcastMessageEditedAsync(MessageEditedPayload payload, CancellationToken ct = default) =>
-        _hubContext
-            .Clients
-            .Group(ChatHub.ChannelGroup(payload.ChannelId))
-            .MessageEdited(payload);
+    public Task BroadcastMessageEditedAsync(
+        MessageEditedPayload payload,
+        CancellationToken ct = default
+    ) => _hubContext.Clients.Group(ChatHub.ChannelGroup(payload.ChannelId)).MessageEdited(payload);
 
-    public Task BroadcastChannelUpdatedAsync(ChannelResponse channel, long guildId, CancellationToken ct = default) =>
+    public Task BroadcastChannelUpdatedAsync(
+        ChannelResponse channel,
+        long guildId,
+        CancellationToken ct = default
+    ) => _hubContext.Clients.Group(ChatHub.GuildGroup(guildId)).ChannelUpdated(channel);
+
+    public Task BroadcastChannelDeletedAsync(
+        long channelId,
+        long guildId,
+        CancellationToken ct = default
+    ) =>
         _hubContext
-            .Clients
-            .Group(ChatHub.GuildGroup(guildId))
-            .ChannelUpdated(channel);
+            .Clients.Group(ChatHub.GuildGroup(guildId))
+            .ChannelDeleted(
+                new ChannelDeletedPayload(
+                    ChannelId: channelId,
+                    GuildId: guildId,
+                    DeletedAt: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+                )
+            );
 }

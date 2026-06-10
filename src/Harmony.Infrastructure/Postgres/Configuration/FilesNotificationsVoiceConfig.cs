@@ -16,19 +16,25 @@ public class FileAttachmentConfiguration : IEntityTypeConfiguration<FileAttachme
         builder.Property(f => f.ChannelId).HasColumnName("channel_id");
         builder.Property(f => f.MinioKey).HasColumnName("minio_key").IsRequired();
         builder.Property(f => f.Filename).HasColumnName("filename").IsRequired();
-        builder.Property(f => f.ContentType).HasColumnName("content_type").HasMaxLength(128).IsRequired();
+        builder
+            .Property(f => f.ContentType)
+            .HasColumnName("content_type")
+            .HasMaxLength(128)
+            .IsRequired();
         builder.Property(f => f.SizeBytes).HasColumnName("size_bytes");
         builder.Property(f => f.Width).HasColumnName("width");
         builder.Property(f => f.Height).HasColumnName("height");
         builder.Property(f => f.IsConfirmed).HasColumnName("is_confirmed");
         builder.Property(f => f.CreatedAt).HasColumnName("created_at");
 
-        builder.HasOne(f => f.Uploader)
+        builder
+            .HasOne(f => f.Uploader)
             .WithMany()
             .HasForeignKey(f => f.UploaderId)
             .OnDelete(DeleteBehavior.Restrict);
 
-        builder.HasOne(f => f.Channel)
+        builder
+            .HasOne(f => f.Channel)
             .WithMany(c => c.FileAttachments)
             .HasForeignKey(f => f.ChannelId)
             .OnDelete(DeleteBehavior.Cascade);
@@ -54,12 +60,14 @@ public class NotificationConfiguration : IEntityTypeConfiguration<Notification>
         builder.Property(n => n.IsRead).HasColumnName("is_read");
         builder.Property(n => n.CreatedAt).HasColumnName("created_at");
 
-        builder.HasOne(n => n.User)
+        builder
+            .HasOne(n => n.User)
             .WithMany(u => u.Notifications)
             .HasForeignKey(n => n.UserId)
             .OnDelete(DeleteBehavior.Cascade);
 
-        builder.HasOne(n => n.Actor)
+        builder
+            .HasOne(n => n.Actor)
             .WithMany()
             .HasForeignKey(n => n.ActorId)
             .OnDelete(DeleteBehavior.Restrict);
@@ -76,13 +84,23 @@ public class NotificationPreferenceConfiguration : IEntityTypeConfiguration<Noti
         builder.ToTable("NotificationPreferences");
         builder.HasKey(p => p.UserId);
         builder.Property(p => p.UserId).HasColumnName("user_id");
-        builder.Property(p => p.MentionsEnabled).HasColumnName("mentions_enabled").HasDefaultValue(true);
-        builder.Property(p => p.RepliesEnabled).HasColumnName("replies_enabled").HasDefaultValue(true);
-        builder.Property(p => p.FriendRequests).HasColumnName("friend_requests").HasDefaultValue(true);
+        builder
+            .Property(p => p.MentionsEnabled)
+            .HasColumnName("mentions_enabled")
+            .HasDefaultValue(true);
+        builder
+            .Property(p => p.RepliesEnabled)
+            .HasColumnName("replies_enabled")
+            .HasDefaultValue(true);
+        builder
+            .Property(p => p.FriendRequests)
+            .HasColumnName("friend_requests")
+            .HasDefaultValue(true);
         builder.Property(p => p.GuildInvites).HasColumnName("guild_invites").HasDefaultValue(true);
         builder.Property(p => p.PushEnabled).HasColumnName("push_enabled").HasDefaultValue(true);
 
-        builder.HasOne(p => p.User)
+        builder
+            .HasOne(p => p.User)
             .WithOne(u => u.NotificationPreference)
             .HasForeignKey<NotificationPreference>(p => p.UserId)
             .OnDelete(DeleteBehavior.Cascade);
@@ -102,7 +120,8 @@ public class UserPushSubscriptionConfiguration : IEntityTypeConfiguration<UserPu
         builder.Property(p => p.AuthKey).HasColumnName("auth_key").IsRequired();
         builder.Property(p => p.CreatedAt).HasColumnName("created_at");
 
-        builder.HasOne(p => p.User)
+        builder
+            .HasOne(p => p.User)
             .WithMany(u => u.PushSubscriptions)
             .HasForeignKey(p => p.UserId)
             .OnDelete(DeleteBehavior.Cascade);
@@ -126,17 +145,20 @@ public class GuildInviteConfiguration : IEntityTypeConfiguration<GuildInvite>
         builder.Property(i => i.ExpiresAt).HasColumnName("expires_at");
         builder.Property(i => i.CreatedAt).HasColumnName("created_at");
 
-        builder.HasOne(i => i.Guild)
+        builder
+            .HasOne(i => i.Guild)
             .WithMany(g => g.Invites)
             .HasForeignKey(i => i.GuildId)
             .OnDelete(DeleteBehavior.Cascade);
 
-        builder.HasOne(i => i.Channel)
+        builder
+            .HasOne(i => i.Channel)
             .WithMany(c => c.Invites)
             .HasForeignKey(i => i.ChannelId)
             .OnDelete(DeleteBehavior.Restrict);
 
-        builder.HasOne(i => i.Creator)
+        builder
+            .HasOne(i => i.Creator)
             .WithMany()
             .HasForeignKey(i => i.CreatorId)
             .OnDelete(DeleteBehavior.Restrict);
@@ -162,17 +184,20 @@ public class VoiceStateConfiguration : IEntityTypeConfiguration<VoiceState>
         builder.Property(v => v.IsVideoOn).HasColumnName("is_video_on");
         builder.Property(v => v.JoinedAt).HasColumnName("joined_at");
 
-        builder.HasOne(v => v.User)
+        builder
+            .HasOne(v => v.User)
             .WithOne(u => u.VoiceState)
             .HasForeignKey<VoiceState>(v => v.UserId)
             .OnDelete(DeleteBehavior.Cascade);
 
-        builder.HasOne(v => v.Guild)
+        builder
+            .HasOne(v => v.Guild)
             .WithMany(g => g.VoiceStates)
             .HasForeignKey(v => v.GuildId)
             .OnDelete(DeleteBehavior.Cascade);
 
-        builder.HasOne(v => v.Channel)
+        builder
+            .HasOne(v => v.Channel)
             .WithMany(c => c.VoiceStates)
             .HasForeignKey(v => v.ChannelId)
             .OnDelete(DeleteBehavior.Restrict);
@@ -191,18 +216,24 @@ public class AuditLogConfiguration : IEntityTypeConfiguration<AuditLog>
         builder.Property(a => a.Id).HasColumnName("id").ValueGeneratedNever();
         builder.Property(a => a.GuildId).HasColumnName("guild_id");
         builder.Property(a => a.ActorId).HasColumnName("actor_id");
-        builder.Property(a => a.ActionType).HasColumnName("action_type").HasMaxLength(64).IsRequired();
+        builder
+            .Property(a => a.ActionType)
+            .HasColumnName("action_type")
+            .HasMaxLength(64)
+            .IsRequired();
         builder.Property(a => a.TargetId).HasColumnName("target_id");
         builder.Property(a => a.Changes).HasColumnName("changes").HasColumnType("jsonb");
         builder.Property(a => a.Reason).HasColumnName("reason");
         builder.Property(a => a.CreatedAt).HasColumnName("created_at");
 
-        builder.HasOne(a => a.Guild)
+        builder
+            .HasOne(a => a.Guild)
             .WithMany(g => g.AuditLogs)
             .HasForeignKey(a => a.GuildId)
             .OnDelete(DeleteBehavior.Cascade);
 
-        builder.HasOne(a => a.Actor)
+        builder
+            .HasOne(a => a.Actor)
             .WithMany()
             .HasForeignKey(a => a.ActorId)
             .OnDelete(DeleteBehavior.Restrict);
@@ -224,15 +255,6 @@ public class MessageSearchConfiguration : IEntityTypeConfiguration<MessageSearch
         builder.Property(m => m.Content).HasColumnName("content").IsRequired();
         builder.Property(m => m.CreatedAt).HasColumnName("created_at");
 
-        // content_search tsvector column is not mapped as a CLR property.
-        // It is maintained by a PostgreSQL trigger added in the migration's Up() method.
-
-        builder.HasOne(m => m.Channel)
-            .WithMany(c => c.MessageSearchEntries)
-            .HasForeignKey(m => m.ChannelId)
-            .OnDelete(DeleteBehavior.Cascade);
-
         builder.HasIndex(m => new { m.ChannelId, m.CreatedAt });
-        // GIN index on content_search is added manually in the migration.
     }
 }

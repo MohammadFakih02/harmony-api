@@ -19,5 +19,6 @@ public static class Topology
     public const string MessageSentKey = "message.sent";
     public const string MessageDeletedKey = "message.deleted";
     public const string MessageEditedKey = "message.edited";
+    public const string ChannelDeletedKey = "channel.deleted"; // Added!
     public const string NotificationKey = "notification.deliver";
 }

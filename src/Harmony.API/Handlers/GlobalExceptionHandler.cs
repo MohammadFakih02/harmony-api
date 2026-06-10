@@ -45,11 +45,25 @@ public class GlobalExceptionHandler : IExceptionHandler
             }
         }
 
-        _logger.LogError(
-            exception,
-            "An unhandled exception occurred: {Message}",
-            exception.Message
-        );
+        // Dynamically adjust log level based on exception type to prevent log pollution
+        if (
+            exception is KeyNotFoundException
+            || exception is System.Security.Authentication.AuthenticationException
+            || exception is UnauthorizedAccessException
+            || exception is ArgumentException
+            || exception is InvalidOperationException
+        )
+        {
+            _logger.LogWarning("User validation exception occurred: {Message}", exception.Message);
+        }
+        else
+        {
+            _logger.LogError(
+                exception,
+                "An unhandled system exception occurred: {Message}",
+                exception.Message
+            );
+        }
 
         var (statusCode, title) = exception switch
         {
@@ -61,7 +75,7 @@ public class GlobalExceptionHandler : IExceptionHandler
             UnauthorizedAccessException => (StatusCodes.Status403Forbidden, "Forbidden Access"),
             ArgumentException => (StatusCodes.Status400BadRequest, "Bad Request"),
 
-            // Cassandra DB Driver Exceptions [1]
+            // Cassandra DB Driver Exceptions
             NoHostAvailableException => (
                 StatusCodes.Status503ServiceUnavailable,
                 "Database Service Unavailable"

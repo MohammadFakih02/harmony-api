@@ -1,3 +1,6 @@
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading.Tasks;
 using Harmony.Domain.Domain.Entities;
 using Harmony.Domain.Interfaces.Repositories;
 using Microsoft.EntityFrameworkCore;
@@ -28,6 +31,39 @@ public class ChannelRepository : IChannelRepository
     {
         _db.Channels.Remove(channel);
         return Task.CompletedTask;
+    }
+
+    public async Task ReorderAsync(IEnumerable<(long ChannelId, int Position)> updates)
+    {
+        var strategy = _db.Database.CreateExecutionStrategy();
+        await strategy.ExecuteAsync(async () =>
+        {
+            await using var transaction = await _db.Database.BeginTransactionAsync();
+            try
+            {
+                var updateMap = updates.ToDictionary(u => u.ChannelId, u => u.Position);
+
+                var channels = await _db
+                    .Channels.Where(c => updateMap.Keys.Contains(c.Id))
+                    .ToListAsync();
+
+                foreach (var channel in channels)
+                {
+                    if (updateMap.TryGetValue(channel.Id, out var newPosition))
+                    {
+                        channel.Position = newPosition;
+                    }
+                }
+
+                await _db.SaveChangesAsync();
+                await transaction.CommitAsync();
+            }
+            catch
+            {
+                await transaction.RollbackAsync();
+                throw;
+            }
+        });
     }
 
     public async Task SaveChangesAsync() => await _db.SaveChangesAsync();

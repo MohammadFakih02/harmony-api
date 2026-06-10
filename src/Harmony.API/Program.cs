@@ -153,10 +153,10 @@ await using (var startupChannel = await rabbitConnection.CreateChannelAsync())
 }
 
 app.UseForwardedHeaders();
-app.UseHttpsRedirection();
 app.UseCors("HarmonyClient");
 if (!app.Environment.IsEnvironment("Test"))
 {
+    app.UseHttpsRedirection();
     app.UseRateLimiter();
 }
 app.UseExceptionHandler();

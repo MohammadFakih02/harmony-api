@@ -3,6 +3,7 @@ using System;
 using Harmony.Infrastructure.Postgres;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Harmony.Infrastructure.Postgres.Migrations
 {
     [DbContext(typeof(HarmonyDbContext))]
-    partial class HarmonyDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260609123208_DecoupleSearchIndex")]
+    partial class DecoupleSearchIndex
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -1193,6 +1196,17 @@ namespace Harmony.Infrastructure.Postgres.Migrations
                     b.Navigation("User");
                 });
 
+            modelBuilder.Entity("Harmony.Domain.Domain.Entities.MessageSearch", b =>
+                {
+                    b.HasOne("Harmony.Domain.Domain.Entities.Channel", "Channel")
+                        .WithMany("MessageSearchEntries")
+                        .HasForeignKey("ChannelId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Channel");
+                });
+
             modelBuilder.Entity("Harmony.Domain.Domain.Entities.Notification", b =>
                 {
                     b.HasOne("Harmony.Domain.Domain.Entities.User", "Actor")
@@ -1392,6 +1406,8 @@ namespace Harmony.Infrastructure.Postgres.Migrations
                     b.Navigation("FileAttachments");
 
                     b.Navigation("Invites");
+
+                    b.Navigation("MessageSearchEntries");
 
                     b.Navigation("PermissionOverrides");
 
