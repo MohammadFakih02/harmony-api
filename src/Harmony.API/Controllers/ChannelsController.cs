@@ -1,9 +1,14 @@
+using System.Collections.Generic;
+using System.Linq;
 using System.Security.Claims;
+using System.Threading.Tasks;
 using Harmony.Application.DTOs.Requests;
 using Harmony.Application.DTOs.Responses;
-using Harmony.Domain.Domain.Entities;
-using Harmony.Domain.Interfaces.Repositories;
+using Harmony.Application.Interfaces.Services; // For IHubBroadcaster
 using Harmony.Application.Services;
+using Harmony.Domain.Domain.Entities;
+using Harmony.Domain.Interfaces; // For IMessagePublisher
+using Harmony.Domain.Interfaces.Repositories;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
@@ -19,16 +24,22 @@ public class ChannelsController : ControllerBase
     private readonly IChannelRepository _channels;
     private readonly IGuildRepository _guilds;
     private readonly ISnowflakeIdGenerator _snowflake;
+    private readonly IMessagePublisher _publisher;
+    private readonly IHubBroadcaster _broadcaster;
 
     public ChannelsController(
         IChannelRepository channels,
         IGuildRepository guilds,
-        ISnowflakeIdGenerator snowflake
+        ISnowflakeIdGenerator snowflake,
+        IMessagePublisher publisher,
+        IHubBroadcaster broadcaster
     )
     {
         _channels = channels;
         _guilds = guilds;
         _snowflake = snowflake;
+        _publisher = publisher;
+        _broadcaster = broadcaster;
     }
 
     // POST /api/guilds/{guildId}/channels
@@ -39,8 +50,6 @@ public class ChannelsController : ControllerBase
         if (guild is null)
             return NotFound();
 
-        // For now: only guild owner can create channels.
-        // Will be replaced by permission resolution in feature/permission-resolution-service.
         if (guild.OwnerId != GetUserId())
             return Forbid();
 
@@ -69,36 +78,12 @@ public class ChannelsController : ControllerBase
         await _channels.AddAsync(channel);
         await _channels.SaveChangesAsync();
 
-        return CreatedAtAction(
-            nameof(GetById),
-            new { guildId, channelId = channel.Id },
-            ToResponse(channel)
-        );
-    }
+        var response = ToResponse(channel);
 
-    // GET /api/guilds/{guildId}/channels
-    [HttpGet]
-    public async Task<IActionResult> GetAll(long guildId)
-    {
-        if (!await _guilds.IsMemberAsync(guildId, GetUserId()))
-            return Forbid();
+        // REAL-TIME BROADCAST: Notify connected clients in the Guild Group
+        await _broadcaster.BroadcastChannelUpdatedAsync(response, guildId);
 
-        var channels = await _channels.GetByGuildIdAsync(guildId);
-        return Ok(channels.Select(ToResponse));
-    }
-
-    // GET /api/guilds/{guildId}/channels/{channelId}
-    [HttpGet("{channelId:long}")]
-    public async Task<IActionResult> GetById(long guildId, long channelId)
-    {
-        if (!await _guilds.IsMemberAsync(guildId, GetUserId()))
-            return Forbid();
-
-        var channel = await _channels.GetByIdAsync(channelId);
-        if (channel is null || channel.GuildId != guildId)
-            return NotFound();
-
-        return Ok(ToResponse(channel));
+        return CreatedAtAction(nameof(GetById), new { guildId, channelId = channel.Id }, response);
     }
 
     // PATCH /api/guilds/{guildId}/channels/{channelId}
@@ -137,7 +122,12 @@ public class ChannelsController : ControllerBase
 
         await _channels.SaveChangesAsync();
 
-        return Ok(ToResponse(channel));
+        var response = ToResponse(channel);
+
+        // REAL-TIME BROADCAST: Notify connected clients of channel metadata updates
+        await _broadcaster.BroadcastChannelUpdatedAsync(response, guildId);
+
+        return Ok(response);
     }
 
     // DELETE /api/guilds/{guildId}/channels/{channelId}
@@ -158,6 +148,16 @@ public class ChannelsController : ControllerBase
         await _channels.DeleteAsync(channel);
         await _channels.SaveChangesAsync();
 
+        // 1. ASYNC DECOUPLED CLEANUP: Publish the deletion event to RabbitMQ.
+        //    Consumers purge ScyllaDB partitions and the Postgres search index.
+        await _publisher.PublishChannelDeletedAsync(
+            new ChannelDeletedEvent(channelId, guildId, DateTimeOffset.UtcNow)
+        );
+
+        // 2. REAL-TIME BROADCAST: Tell clients to REMOVE this channel from the sidebar.
+        //    Distinct from ChannelUpdated — clients must navigate away if viewing it.
+        await _broadcaster.BroadcastChannelDeletedAsync(channelId, guildId);
+
         return NoContent();
     }
 
@@ -175,18 +175,44 @@ public class ChannelsController : ControllerBase
         if (guild.OwnerId != GetUserId())
             return Forbid();
 
-        var channels = await _channels.GetByGuildIdAsync(guildId);
-        var channelMap = channels.ToDictionary(c => c.Id);
+        // DECOUPLED TRANSACTION: Map requests to basic C# Value Tuples
+        var updates = request.Select(r => (r.ChannelId, r.Position));
+        await _channels.ReorderAsync(updates);
 
-        foreach (var item in request)
+        var channels = await _channels.GetByGuildIdAsync(guildId);
+
+        // REAL-TIME BROADCAST: Trigger single sidebar invalidation on channel reordering
+        if (channels.Count > 0)
         {
-            if (channelMap.TryGetValue(item.ChannelId, out var channel))
-                channel.Position = item.Position;
+            await _broadcaster.BroadcastChannelUpdatedAsync(ToResponse(channels[0]), guildId);
         }
 
-        await _channels.SaveChangesAsync();
-
         return Ok(channels.OrderBy(c => c.Position).Select(ToResponse));
+    }
+
+    // GET /api/guilds/{guildId}/channels
+    [HttpGet]
+    public async Task<IActionResult> GetAll(long guildId)
+    {
+        if (!await _guilds.IsMemberAsync(guildId, GetUserId()))
+            return Forbid();
+
+        var channels = await _channels.GetByGuildIdAsync(guildId);
+        return Ok(channels.Select(ToResponse));
+    }
+
+    // GET /api/guilds/{guildId}/channels/{channelId}
+    [HttpGet("{channelId:long}")]
+    public async Task<IActionResult> GetById(long guildId, long channelId)
+    {
+        if (!await _guilds.IsMemberAsync(guildId, GetUserId()))
+            return Forbid();
+
+        var channel = await _channels.GetByIdAsync(channelId);
+        if (channel is null || channel.GuildId != guildId)
+            return NotFound();
+
+        return Ok(ToResponse(channel));
     }
 
     // -------------------------------------------------------------------------

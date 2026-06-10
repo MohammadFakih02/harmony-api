@@ -37,7 +37,8 @@ public class ChatHub : Hub<IChatClient>
     {
         _logger.LogInformation(
             "ChatHub: user {UserId} connected — ConnectionId: {ConnectionId}",
-            GetUserId(), Context.ConnectionId
+            GetUserId(),
+            Context.ConnectionId
         );
         await base.OnConnectedAsync();
     }
@@ -45,13 +46,18 @@ public class ChatHub : Hub<IChatClient>
     public override async Task OnDisconnectedAsync(Exception? exception)
     {
         if (exception is not null)
-            _logger.LogWarning(exception,
+            _logger.LogWarning(
+                exception,
                 "ChatHub: user {UserId} disconnected with error — ConnectionId: {ConnectionId}",
-                GetUserId(), Context.ConnectionId);
+                GetUserId(),
+                Context.ConnectionId
+            );
         else
             _logger.LogInformation(
                 "ChatHub: user {UserId} disconnected cleanly — ConnectionId: {ConnectionId}",
-                GetUserId(), Context.ConnectionId);
+                GetUserId(),
+                Context.ConnectionId
+            );
 
         await base.OnDisconnectedAsync(exception);
     }
@@ -85,38 +91,84 @@ public class ChatHub : Hub<IChatClient>
     }
 
     // -------------------------------------------------------------------------
-    // Client → server actions
+    // Client → server actions (Exception-free Result Pattern)
     // -------------------------------------------------------------------------
 
     /// <summary>
     /// Sends a message through the full async pipeline.
-    /// Returns a provisional acknowledgement — the authoritative MessageReceived
-    /// event arrives via SignalR after the consumer confirms persistence.
+    /// Returns a HubResult envelope indicating success or failure.
     /// </summary>
-    public async Task<SendMessageResponse> SendMessage(long channelId, long guildId, string content)
+    public async Task<HubResult<SendMessageResponse>> SendMessage(
+        long channelId,
+        long guildId,
+        string content
+    )
     {
         if (string.IsNullOrWhiteSpace(content) || content.Length > 2000)
-            throw new HubException("Message content must be between 1 and 2000 characters.");
+        {
+            return new HubResult<SendMessageResponse>(
+                Succeeded: false,
+                Data: null,
+                ErrorMessage: "Message content must be between 1 and 2000 characters."
+            );
+        }
 
         var userId = GetUserId();
 
-        var response = await _messageService.SendMessageAsync(
-            userId, guildId, channelId,
-            new SendMessageRequest(
-                Content: content,
-                MessageType: "text",
-                ReplyToId: null,
-                MentionIds: null,
-                AttachmentIds: null
-            )
-        );
+        try
+        {
+            var response = await _messageService.SendMessageAsync(
+                userId,
+                guildId,
+                channelId,
+                new SendMessageRequest(
+                    Content: content,
+                    MessageType: "text",
+                    ReplyToId: null,
+                    MentionIds: null,
+                    AttachmentIds: null
+                )
+            );
 
-        _logger.LogDebug(
-            "Hub: SendMessage accepted — MessageId: {MessageId}, ChannelId: {ChannelId}",
-            response.MessageId, channelId
-        );
+            _logger.LogDebug(
+                "Hub: SendMessage accepted — MessageId: {MessageId}, ChannelId: {ChannelId}",
+                response.MessageId,
+                channelId
+            );
 
-        return response;
+            return new HubResult<SendMessageResponse>(
+                Succeeded: true,
+                Data: response,
+                ErrorMessage: null
+            );
+        }
+        catch (KeyNotFoundException ex)
+        {
+            _logger.LogWarning("Hub validation warning: {Message}", ex.Message);
+            return new HubResult<SendMessageResponse>(
+                Succeeded: false,
+                Data: null,
+                ErrorMessage: ex.Message
+            );
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            _logger.LogWarning("Hub validation warning: {Message}", ex.Message);
+            return new HubResult<SendMessageResponse>(
+                Succeeded: false,
+                Data: null,
+                ErrorMessage: ex.Message
+            );
+        }
+        catch (ArgumentException ex)
+        {
+            _logger.LogWarning("Hub validation warning: {Message}", ex.Message);
+            return new HubResult<SendMessageResponse>(
+                Succeeded: false,
+                Data: null,
+                ErrorMessage: ex.Message
+            );
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -124,6 +176,7 @@ public class ChatHub : Hub<IChatClient>
     // -------------------------------------------------------------------------
 
     public static string ChannelGroup(long channelId) => $"channel:{channelId}";
+
     public static string GuildGroup(long guildId) => $"guild:{guildId}";
 
     // -------------------------------------------------------------------------
@@ -133,8 +186,7 @@ public class ChatHub : Hub<IChatClient>
     private long GetUserId()
     {
         var claim =
-            Context.User?.FindFirst(ClaimTypes.NameIdentifier)
-            ?? Context.User?.FindFirst("sub");
+            Context.User?.FindFirst(ClaimTypes.NameIdentifier) ?? Context.User?.FindFirst("sub");
 
         if (claim is null || !long.TryParse(claim.Value, out var userId))
             throw new HubException("Authenticated user ID could not be resolved.");

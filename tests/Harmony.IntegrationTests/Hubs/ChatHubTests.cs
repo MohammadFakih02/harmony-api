@@ -240,11 +240,11 @@ public class ChatHubTests : ApiTestBase, IClassFixture<HarmonyWebApplicationFact
     }
 
     // -------------------------------------------------------------------------
-    // SendMessage validation
+    // SendMessage validation (Result Pattern)
     // -------------------------------------------------------------------------
 
     [Fact]
-    public async Task SendMessage_ShouldReturnSendMessageResponse_WithValidInput()
+    public async Task SendMessage_ShouldReturnSuccessfulResult_WithValidInput()
     {
         var token = await RegisterAndGetTokenAsync("hubuser6", "hubuser6@test.com");
         var guildId = await CreateGuildAsync(token);
@@ -254,18 +254,21 @@ public class ChatHubTests : ApiTestBase, IClassFixture<HarmonyWebApplicationFact
         await connection.StartAsync();
         try
         {
-            var response = await connection.InvokeAsync<SendMessageResponseDto>(
+            var result = await connection.InvokeAsync<HubResultDto<SendMessageResponseDto>>(
                 "SendMessage",
                 channelId,
                 guildId,
                 "hello from hub"
             );
 
-            response.Should().NotBeNull();
-            response.MessageId.Should().BeGreaterThan(0);
-            response.Content.Should().Be("hello from hub");
-            response.ChannelId.Should().Be(channelId);
-            response.GuildId.Should().Be(guildId);
+            result.Should().NotBeNull();
+            result.Succeeded.Should().BeTrue("valid input should succeed");
+            result.ErrorMessage.Should().BeNull();
+            result.Data.Should().NotBeNull();
+            result.Data!.MessageId.Should().BeGreaterThan(0);
+            result.Data.Content.Should().Be("hello from hub");
+            result.Data.ChannelId.Should().Be(channelId);
+            result.Data.GuildId.Should().Be(guildId);
         }
         finally
         {
@@ -275,7 +278,7 @@ public class ChatHubTests : ApiTestBase, IClassFixture<HarmonyWebApplicationFact
     }
 
     [Fact]
-    public async Task SendMessage_ShouldThrowHubException_WhenContentIsEmpty()
+    public async Task SendMessage_ShouldReturnFailedResult_WhenContentIsEmpty()
     {
         var token = await RegisterAndGetTokenAsync("hubuser7", "hubuser7@test.com");
         var guildId = await CreateGuildAsync(token);
@@ -285,12 +288,17 @@ public class ChatHubTests : ApiTestBase, IClassFixture<HarmonyWebApplicationFact
         await connection.StartAsync();
         try
         {
-            var act = async () =>
-                await connection.InvokeAsync("SendMessage", channelId, guildId, "");
+            var result = await connection.InvokeAsync<HubResultDto<SendMessageResponseDto>>(
+                "SendMessage",
+                channelId,
+                guildId,
+                ""
+            );
 
-            await act.Should()
-                .ThrowAsync<HubException>()
-                .WithMessage("*between 1 and 2000 characters*");
+            result.Should().NotBeNull();
+            result.Succeeded.Should().BeFalse("empty content should fail");
+            result.Data.Should().BeNull();
+            result.ErrorMessage.Should().Contain("between 1 and 2000 characters");
         }
         finally
         {
@@ -300,7 +308,7 @@ public class ChatHubTests : ApiTestBase, IClassFixture<HarmonyWebApplicationFact
     }
 
     [Fact]
-    public async Task SendMessage_ShouldThrowHubException_WhenContentExceeds2000Chars()
+    public async Task SendMessage_ShouldReturnFailedResult_WhenContentExceeds2000Chars()
     {
         var token = await RegisterAndGetTokenAsync("hubuser8", "hubuser8@test.com");
         var guildId = await CreateGuildAsync(token);
@@ -310,17 +318,17 @@ public class ChatHubTests : ApiTestBase, IClassFixture<HarmonyWebApplicationFact
         await connection.StartAsync();
         try
         {
-            var act = async () =>
-                await connection.InvokeAsync(
-                    "SendMessage",
-                    channelId,
-                    guildId,
-                    new string('x', 2001)
-                );
+            var result = await connection.InvokeAsync<HubResultDto<SendMessageResponseDto>>(
+                "SendMessage",
+                channelId,
+                guildId,
+                new string('x', 2001)
+            );
 
-            await act.Should()
-                .ThrowAsync<HubException>()
-                .WithMessage("*between 1 and 2000 characters*");
+            result.Should().NotBeNull();
+            result.Succeeded.Should().BeFalse("oversized content should fail");
+            result.Data.Should().BeNull();
+            result.ErrorMessage.Should().Contain("between 1 and 2000 characters");
         }
         finally
         {
@@ -330,7 +338,7 @@ public class ChatHubTests : ApiTestBase, IClassFixture<HarmonyWebApplicationFact
     }
 
     [Fact]
-    public async Task SendMessage_ShouldThrowHubException_WhenChannelNotFound()
+    public async Task SendMessage_ShouldReturnFailedResult_WhenChannelNotFound()
     {
         var token = await RegisterAndGetTokenAsync("hubuser9", "hubuser9@test.com");
         var guildId = await CreateGuildAsync(token);
@@ -339,11 +347,17 @@ public class ChatHubTests : ApiTestBase, IClassFixture<HarmonyWebApplicationFact
         await connection.StartAsync();
         try
         {
-            var act = async () =>
-                await connection.InvokeAsync("SendMessage", 999999L, guildId, "hello");
+            var result = await connection.InvokeAsync<HubResultDto<SendMessageResponseDto>>(
+                "SendMessage",
+                999999L,
+                guildId,
+                "hello"
+            );
 
-            // KeyNotFoundException from MessageService surfaces as HubException
-            await act.Should().ThrowAsync<HubException>();
+            result.Should().NotBeNull();
+            result.Succeeded.Should().BeFalse("non-existent channel should fail");
+            result.Data.Should().BeNull();
+            result.ErrorMessage.Should().Contain("not found");
         }
         finally
         {
@@ -355,6 +369,8 @@ public class ChatHubTests : ApiTestBase, IClassFixture<HarmonyWebApplicationFact
     // -------------------------------------------------------------------------
     // DTOs local to this test file
     // -------------------------------------------------------------------------
+
+    private record HubResultDto<T>(bool Succeeded, T? Data, string? ErrorMessage);
 
     private record AuthResponse(string AccessToken);
 

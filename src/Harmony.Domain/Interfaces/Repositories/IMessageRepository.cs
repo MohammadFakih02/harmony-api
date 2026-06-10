@@ -33,4 +33,7 @@ public interface IMessageRepository
     Task PinAsync(long channelId, long messageId, long pinnedBy, CancellationToken ct = default);
     Task UnpinAsync(long channelId, long pinnedAt, CancellationToken ct = default);
     Task<IEnumerable<PinnedMessage>> GetPinnedAsync(long channelId, CancellationToken ct = default);
+
+    /// <summary>Executes a high-performance partition purge in ScyllaDB [14].</summary>
+    Task PurgeChannelPartitionsAsync(long channelId, CancellationToken ct = default);
 }

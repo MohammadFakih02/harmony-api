@@ -1,3 +1,7 @@
+using System;
+using System.Threading;
+using System.Threading.Tasks;
+
 namespace Harmony.Domain.Interfaces;
 
 public interface IMessagePublisher
@@ -5,6 +9,9 @@ public interface IMessagePublisher
     Task PublishMessageSentAsync(MessageSentEvent evt, CancellationToken ct = default);
     Task PublishMessageDeletedAsync(MessageDeletedEvent evt, CancellationToken ct = default);
     Task PublishMessageEditedAsync(MessageEditedEvent evt, CancellationToken ct = default);
+
+    /// <summary>Publishes an asynchronous channel deletion event to RabbitMQ [12].</summary>
+    Task PublishChannelDeletedAsync(ChannelDeletedEvent evt, CancellationToken ct = default);
 }
 
 public record MessageSentEvent(
@@ -36,3 +43,6 @@ public record MessageEditedEvent(
     string NewContent,
     DateTimeOffset EditedAt
 );
+
+/// <summary>Asynchronous envelope representing a deleted channel [12].</summary>
+public record ChannelDeletedEvent(long ChannelId, long GuildId, DateTimeOffset DeletedAt);

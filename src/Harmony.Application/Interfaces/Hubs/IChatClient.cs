@@ -8,10 +8,6 @@ namespace Harmony.Application.Hubs;
 /// Lives in Harmony.Application so both Harmony.API (ChatHub) and
 /// Harmony.Infrastructure (ScyllaMessageConsumer broadcast) can reference it
 /// without creating a circular dependency.
-///
-/// Rules:
-///   - Every method must return Task.
-///   - Method names are the string keys Angular's SignalR client subscribes to.
 /// </summary>
 public interface IChatClient
 {
@@ -35,10 +31,19 @@ public interface IChatClient
     Task MessageEdited(MessageEditedPayload payload);
 
     /// <summary>
-    /// Fired to all connections in a guild group when channel metadata changes
-    /// (create / update / delete / reorder). Clients refresh their channel list on receipt.
+    /// Fired when channel metadata changes (create / update / reorder).
+    /// Clients refresh their channel list on receipt.
+    /// Distinct from ChannelDeleted — clients should update, not remove.
     /// </summary>
     Task ChannelUpdated(ChannelResponse channel);
+
+    /// <summary>
+    /// Fired when a channel is permanently deleted.
+    /// Clients must remove the channel from the sidebar and navigate away
+    /// if the user is currently viewing it.
+    /// Distinct from ChannelUpdated — clients must remove, not update.
+    /// </summary>
+    Task ChannelDeleted(ChannelDeletedPayload payload);
 }
 
 /// <summary>Minimal delete notification — no content, just identity.</summary>
@@ -59,3 +64,9 @@ public record MessageEditedPayload(
     string NewContent,
     long EditedAt
 );
+
+/// <summary>
+/// Channel deletion notification sent to all guild group subscribers.
+/// Carries enough context for the client to navigate away if needed.
+/// </summary>
+public record ChannelDeletedPayload(long ChannelId, long GuildId, long DeletedAt);

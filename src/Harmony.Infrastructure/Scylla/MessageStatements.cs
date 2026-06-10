@@ -16,6 +16,8 @@ public class MessageStatements
     public PreparedStatement InsertPinned { get; }
     public PreparedStatement DeletePinned { get; }
     public PreparedStatement SelectPinned { get; }
+    public PreparedStatement PurgeChannelMessages { get; } // Added!
+    public PreparedStatement PurgeChannelPins { get; } // Added!
 
     public MessageStatements(IScyllaSessionFactory factory)
     {
@@ -97,6 +99,15 @@ public class MessageStatements
             $@"SELECT channel_id, pinned_at, message_id, pinned_by
                FROM {ks}.pinned_messages
                WHERE channel_id = ?"
+        );
+
+        // Compile high-speed partition delete queries on boot [14]
+        PurgeChannelMessages = session.Prepare(
+            $"DELETE FROM {ks}.messages_by_channel WHERE channel_id = ?"
+        );
+
+        PurgeChannelPins = session.Prepare(
+            $"DELETE FROM {ks}.pinned_messages WHERE channel_id = ?"
         );
     }
 }
