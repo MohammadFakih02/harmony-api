@@ -22,7 +22,10 @@ public interface IHubBroadcaster
     /// <summary>
     /// Broadcasts a soft-delete event to all connections subscribed to the channel group.
     /// </summary>
-    Task BroadcastMessageDeletedAsync(MessageDeletedPayload payload, CancellationToken ct = default);
+    Task BroadcastMessageDeletedAsync(
+        MessageDeletedPayload payload,
+        CancellationToken ct = default
+    );
 
     /// <summary>
     /// Broadcasts a message edit event to all connections subscribed to the channel group.
@@ -30,7 +33,18 @@ public interface IHubBroadcaster
     Task BroadcastMessageEditedAsync(MessageEditedPayload payload, CancellationToken ct = default);
 
     /// <summary>
-    /// Broadcasts a channel metadata change to all connections in the guild group.
+    /// Broadcasts a channel metadata change (create / update / reorder) to all
+    /// connections in the guild group. Clients update their channel list.
     /// </summary>
-    Task BroadcastChannelUpdatedAsync(ChannelResponse channel, long guildId, CancellationToken ct = default);
+    Task BroadcastChannelUpdatedAsync(
+        ChannelResponse channel,
+        long guildId,
+        CancellationToken ct = default
+    );
+
+    /// <summary>
+    /// Broadcasts a channel deletion to all connections in the guild group.
+    /// Clients remove the channel from the sidebar and navigate away if viewing it.
+    /// </summary>
+    Task BroadcastChannelDeletedAsync(long channelId, long guildId, CancellationToken ct = default);
 }

@@ -48,7 +48,7 @@ public class MessageRepository : IMessageRepository
             rows = await _session.ExecuteAsync(bound, "read");
         }
 
-        return rows.Select(MapMessage);
+        return rows.Select(MapMessage).ToList();
     }
 
     public async Task<Message?> GetByIdAsync(long messageId, CancellationToken ct = default)
@@ -157,7 +157,28 @@ public class MessageRepository : IMessageRepository
         var bound = _statements.SelectPinned.Bind(channelId);
         bound.SetIdempotence(true);
         var rows = await _session.ExecuteAsync(bound, "read");
-        return rows.Select(MapPinnedMessage);
+        return rows.Select(MapPinnedMessage).ToList();
+    }
+
+    public async Task PurgeChannelPartitionsAsync(long channelId, CancellationToken ct = default)
+    {
+        // Fire both partition deletes concurrently as O(1) writes [14]
+        var deleteMessages = _session.ExecuteAsync(
+            _statements.PurgeChannelMessages.Bind(channelId),
+            "write"
+        );
+
+        var deletePins = _session.ExecuteAsync(
+            _statements.PurgeChannelPins.Bind(channelId),
+            "write"
+        );
+
+        await Task.WhenAll(deleteMessages, deletePins);
+
+        _logger.LogInformation(
+            "ScyllaDB: purged message and pin partitions for ChannelId: {ChannelId}",
+            channelId
+        );
     }
 
     // --- Mappers ---

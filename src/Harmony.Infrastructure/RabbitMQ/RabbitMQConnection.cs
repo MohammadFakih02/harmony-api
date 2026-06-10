@@ -107,6 +107,13 @@ public class RabbitMQConnection : IAsyncDisposable
             routingKey: Topology.MessageEditedKey
         );
 
+        // BIND ScyllaMessageQueue to Channel Deletion Event [12]
+        await channel.QueueBindAsync(
+            queue: Topology.ScyllaMessageQueue,
+            exchange: Topology.MessageExchange,
+            routingKey: Topology.ChannelDeletedKey
+        );
+
         // Search index queue — slow path
         await channel.QueueDeclareAsync(
             queue: Topology.SearchIndexQueue,
@@ -136,6 +143,13 @@ public class RabbitMQConnection : IAsyncDisposable
             queue: Topology.SearchIndexQueue,
             exchange: Topology.MessageExchange,
             routingKey: Topology.MessageEditedKey
+        );
+
+        // BIND SearchIndexQueue to Channel Deletion Event [12]
+        await channel.QueueBindAsync(
+            queue: Topology.SearchIndexQueue,
+            exchange: Topology.MessageExchange,
+            routingKey: Topology.ChannelDeletedKey
         );
 
         // Notification exchange

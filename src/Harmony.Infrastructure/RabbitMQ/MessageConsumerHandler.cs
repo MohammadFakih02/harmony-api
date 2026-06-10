@@ -1,3 +1,7 @@
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using Harmony.Application.Services;
 using Harmony.Domain.Domain.Entities;
 using Harmony.Domain.Interfaces;
@@ -36,7 +40,6 @@ public class MessageConsumerHandler : IMessageConsumerHandler
             evt.ChannelId
         );
 
-        // Persist to ScyllaDB only — Postgres search index is handled by SearchIndexConsumerHandler
         var message = new Message
         {
             MessageId = evt.MessageId,
@@ -53,7 +56,6 @@ public class MessageConsumerHandler : IMessageConsumerHandler
 
         await _messageRepository.SaveAsync(message, ct);
 
-        // Parse mentions and create notifications
         if (evt.MentionIds.Count > 0)
             await CreateMentionNotificationsAsync(evt, ct);
 
@@ -70,7 +72,6 @@ public class MessageConsumerHandler : IMessageConsumerHandler
     {
         _logger.LogDebug("Handling MessageDeleted — MessageId: {MessageId}", evt.MessageId);
 
-        // Idempotency check — skip if already deleted
         var existing = await _messageRepository.GetByIdAsync(evt.MessageId, ct);
         if (existing is null || existing.IsDeleted)
         {
@@ -96,7 +97,6 @@ public class MessageConsumerHandler : IMessageConsumerHandler
     {
         _logger.LogDebug("Handling MessageEdited — MessageId: {MessageId}", evt.MessageId);
 
-        // Idempotency check — skip if deleted
         var existing = await _messageRepository.GetByIdAsync(evt.MessageId, ct);
         if (existing is null || existing.IsDeleted)
         {
@@ -112,6 +112,25 @@ public class MessageConsumerHandler : IMessageConsumerHandler
         _logger.LogInformation(
             "MessageEdited handled (Scylla) — MessageId: {MessageId}",
             evt.MessageId
+        );
+    }
+
+    public async Task HandleChannelDeletedAsync(
+        ChannelDeletedEvent evt,
+        CancellationToken ct = default
+    )
+    {
+        _logger.LogDebug(
+            "Handling ChannelDeleted — Purging ScyllaDB Partitions for ChannelId: {ChannelId}",
+            evt.ChannelId
+        );
+
+        // Execute atomic NoSQL partition tombstone purges [14]
+        await _messageRepository.PurgeChannelPartitionsAsync(evt.ChannelId, ct);
+
+        _logger.LogInformation(
+            "ChannelDeleted handled (Scylla Purges) — ChannelId: {ChannelId}",
+            evt.ChannelId
         );
     }
 

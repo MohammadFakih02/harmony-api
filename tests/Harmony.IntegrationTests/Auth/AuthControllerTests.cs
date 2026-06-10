@@ -317,12 +317,12 @@ public class AuthControllerTests : ApiTestBase, IClassFixture<HarmonyWebApplicat
     }
 
     [Fact]
-    public async Task Refresh_WithConcurrentRequests_ShouldAllowOnlyOneToSucceed()
+    public async Task Refresh_WithConcurrentRequests_ShouldNotForkTheTokenFamily()
     {
-        // Arrange: Register and log in once to obtain the active refresh token cookie
+        // Arrange: Register once to obtain the active refresh token cookie
         await RegisterUserAsync("concurrentuser", "concurrent@example.com", "Password123!");
 
-        // Act: Fire two concurrent refresh requests simultaneously
+        // Act: Fire two concurrent refresh requests sharing the same cookie
         var task1 = Client.PostAsJsonAsync("/api/auth/refresh", new { });
         var task2 = Client.PostAsJsonAsync("/api/auth/refresh", new { });
 
@@ -331,10 +331,29 @@ public class AuthControllerTests : ApiTestBase, IClassFixture<HarmonyWebApplicat
         var res1 = await task1;
         var res2 = await task2;
 
-        // Assert: One request must successfully rotate, and the other must fail with 401 Unauthorized
+        // Secondary sanity — both requests completed with a legal status and at least
+        // one succeeded. This cannot flake: both valid interleavings satisfy it —
+        // {rotate, reject} = {200, 401} and {rotate, grace} = {200, 200}.
         var statusCodes = new[] { res1.StatusCode, res2.StatusCode };
-        statusCodes.Should().ContainSingle(s => s == HttpStatusCode.OK);
-        statusCodes.Should().ContainSingle(s => s == HttpStatusCode.Unauthorized);
+        statusCodes
+            .Should()
+            .OnlyContain(s => s == HttpStatusCode.OK || s == HttpStatusCode.Unauthorized);
+        statusCodes.Should().Contain(HttpStatusCode.OK, "at least one refresh must succeed");
+
+        // Primary invariant — the token family must never fork. Exactly one response
+        // may mint a NEW refresh cookie (the rotater). The loser either rotates-and-fails
+        // (401, no cookie) or lands in the grace window (200 with an empty refresh token,
+        // so the controller writes no cookie). Two new cookies would mean two independent
+        // valid refresh tokens — the security defect this guards against.
+        var rotations =
+            (ResponseSetsRefreshCookie(res1) ? 1 : 0) + (ResponseSetsRefreshCookie(res2) ? 1 : 0);
+
+        rotations
+            .Should()
+            .Be(
+                1,
+                "a concurrent refresh race must rotate exactly once — the token family must never fork"
+            );
     }
 
     // --- Helpers ---
@@ -357,6 +376,36 @@ public class AuthControllerTests : ApiTestBase, IClassFixture<HarmonyWebApplicat
 
         response.EnsureSuccessStatusCode();
         return (await response.Content.ReadFromJsonAsync<AuthResponse>())!;
+    }
+
+    /// <summary>
+    /// True if the response minted a new refresh-token cookie (i.e. it rotated).
+    /// A rotation writes refresh_token=&lt;non-empty&gt;; a 401 writes none; the grace
+    /// path returns an empty refresh token so the controller writes none either.
+    /// Reads the per-response Set-Cookie header directly rather than the shared
+    /// cookie container, so it's safe to call on two racing responses.
+    /// </summary>
+    private static bool ResponseSetsRefreshCookie(HttpResponseMessage response)
+    {
+        if (!response.Headers.TryGetValues("Set-Cookie", out var cookies))
+            return false;
+
+        foreach (var cookie in cookies)
+        {
+            if (!cookie.StartsWith("refresh_token=", StringComparison.Ordinal))
+                continue;
+
+            var afterEquals = cookie["refresh_token=".Length..];
+            var semicolon = afterEquals.IndexOf(';');
+            var value = semicolon >= 0 ? afterEquals[..semicolon] : afterEquals;
+
+            // Non-empty value = a token was minted (rotation).
+            // Empty value would be a deletion — not produced by refresh, but guarded.
+            if (!string.IsNullOrEmpty(value))
+                return true;
+        }
+
+        return false;
     }
 
     private record AuthResponse(string AccessToken);

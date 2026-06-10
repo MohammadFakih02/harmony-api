@@ -106,7 +106,7 @@ public class AuditLog
     public long ActorId { get; set; }
     public string ActionType { get; set; } = null!;
     public long? TargetId { get; set; }
-    public string? Changes { get; set; }             // JSONB stored as string; deserialize when needed
+    public string? Changes { get; set; } // JSONB stored as string; deserialize when needed
     public string? Reason { get; set; }
     public long CreatedAt { get; set; }
 
@@ -122,9 +122,7 @@ public class MessageSearch
     public long? GuildId { get; set; }
     public long UserId { get; set; }
     public string Content { get; set; } = null!;
+
     // content_search tsvector is managed by PostgreSQL trigger — not mapped as a CLR property.
     public long CreatedAt { get; set; }
-
-    // Navigation
-    public Channel Channel { get; set; } = null!;
 }

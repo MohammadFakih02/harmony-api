@@ -11,14 +11,22 @@ using Polly;
 using Polly.Retry;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
+using RabbitMQ.Client.Exceptions;
 
 namespace Harmony.Infrastructure.RabbitMQ.Consumers;
 
 /// <summary>
 /// Background consumer that processes messages from the ScyllaDB write queue.
 ///
-/// Broadcast rule: persist first via IMessageConsumerHandler, then broadcast
-/// via IHubBroadcaster. Never broadcast before persistence is confirmed.
+/// Processing order per message:
+///   1. Deduplication gate  — Redis SET NX (skip immediately if duplicate, still ack)
+///   2. Handler             — persist to ScyllaDB via IMessageConsumerHandler
+///   3. Broadcast           — push to SignalR clients via IHubBroadcaster
+///   4. Ack                 — BasicAck to RabbitMQ
+///
+/// On unrecoverable failure after retries: BasicNack requeue=false → DLQ.
+/// On duplicate detected: return early, outer try still BasicAcks — the message
+/// was already processed successfully on a prior delivery.
 ///
 /// IHubBroadcaster is injected as a singleton — it holds the real
 /// IHubContext{ChatHub, IChatClient} in the API layer. Infrastructure
@@ -29,6 +37,7 @@ public class ScyllaMessageConsumer : BackgroundService
     private readonly RabbitMQConnection _connection;
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly IHubBroadcaster _hubBroadcaster;
+    private readonly IMessageDeduplicator _deduplicator;
     private readonly ILogger<ScyllaMessageConsumer> _logger;
     private readonly AsyncRetryPolicy _retryPolicy;
     private IChannel? _channel;
@@ -43,12 +52,14 @@ public class ScyllaMessageConsumer : BackgroundService
         RabbitMQConnection connection,
         IServiceScopeFactory scopeFactory,
         IHubBroadcaster hubBroadcaster,
+        IMessageDeduplicator deduplicator,
         ILogger<ScyllaMessageConsumer> logger
     )
     {
         _connection = connection;
         _scopeFactory = scopeFactory;
         _hubBroadcaster = hubBroadcaster;
+        _deduplicator = deduplicator;
         _logger = logger;
 
         _retryPolicy = Policy
@@ -113,6 +124,9 @@ public class ScyllaMessageConsumer : BackgroundService
                     case Topology.MessageEditedKey:
                         await HandleMessageEditedAsync(handler, body);
                         break;
+                    case Topology.ChannelDeletedKey:
+                        await HandleChannelDeletedAsync(handler, body);
+                        break;
                     default:
                         _logger.LogWarning(
                             "ScyllaConsumer — unrecognised routing key: {RoutingKey}",
@@ -137,7 +151,7 @@ public class ScyllaMessageConsumer : BackgroundService
     }
 
     // -------------------------------------------------------------------------
-    // Per-event handlers — persist first, broadcast second
+    // Per-event handlers — dedup → persist → broadcast
     // -------------------------------------------------------------------------
 
     private async Task HandleMessageSentAsync(IMessageConsumerHandler handler, string body)
@@ -146,10 +160,20 @@ public class ScyllaMessageConsumer : BackgroundService
         if (evt is null)
             return;
 
-        // 1. Persist to ScyllaDB + create mention notifications
+        // 1. Deduplication gate — skip if already processed
+        if (await _deduplicator.IsDuplicateAsync(IMessageDeduplicator.Sent, evt.MessageId))
+        {
+            _logger.LogInformation(
+                "ScyllaConsumer: duplicate MessageSent skipped — MessageId: {MessageId}",
+                evt.MessageId
+            );
+            return;
+        }
+
+        // 2. Persist to ScyllaDB + create mention notifications
         await handler.HandleMessageSentAsync(evt);
 
-        // 2. Broadcast authoritative message to channel subscribers
+        // 3. Broadcast authoritative message to channel subscribers
         await _hubBroadcaster.BroadcastMessageReceivedAsync(
             new MessageResponse(
                 MessageId: evt.MessageId,
@@ -181,8 +205,20 @@ public class ScyllaMessageConsumer : BackgroundService
         if (evt is null)
             return;
 
+        // 1. Deduplication gate
+        if (await _deduplicator.IsDuplicateAsync(IMessageDeduplicator.Deleted, evt.MessageId))
+        {
+            _logger.LogInformation(
+                "ScyllaConsumer: duplicate MessageDeleted skipped — MessageId: {MessageId}",
+                evt.MessageId
+            );
+            return;
+        }
+
+        // 2. Soft-delete in ScyllaDB
         await handler.HandleMessageDeletedAsync(evt);
 
+        // 3. Notify channel subscribers
         await _hubBroadcaster.BroadcastMessageDeletedAsync(
             new MessageDeletedPayload(
                 MessageId: evt.MessageId,
@@ -205,8 +241,20 @@ public class ScyllaMessageConsumer : BackgroundService
         if (evt is null)
             return;
 
+        // 1. Deduplication gate
+        if (await _deduplicator.IsDuplicateAsync(IMessageDeduplicator.Edited, evt.MessageId))
+        {
+            _logger.LogInformation(
+                "ScyllaConsumer: duplicate MessageEdited skipped — MessageId: {MessageId}",
+                evt.MessageId
+            );
+            return;
+        }
+
+        // 2. Update content in ScyllaDB
         await handler.HandleMessageEditedAsync(evt);
 
+        // 3. Notify channel subscribers
         await _hubBroadcaster.BroadcastMessageEditedAsync(
             new MessageEditedPayload(
                 MessageId: evt.MessageId,
@@ -224,6 +272,23 @@ public class ScyllaMessageConsumer : BackgroundService
         );
     }
 
+    private async Task HandleChannelDeletedAsync(IMessageConsumerHandler handler, string body)
+    {
+        var evt = JsonSerializer.Deserialize<ChannelDeletedEvent>(body, JsonOptions);
+        if (evt is null)
+            return;
+
+        // No deduplication for ChannelDeleted — partition purges are idempotent
+        // in ScyllaDB (deleting an already-empty partition is a no-op), so the
+        // Redis round-trip overhead is not worth it here.
+        await handler.HandleChannelDeletedAsync(evt);
+
+        _logger.LogInformation(
+            "ScyllaConsumer: ChannelDeleted handled and purged — ChannelId: {ChannelId}",
+            evt.ChannelId
+        );
+    }
+
     // -------------------------------------------------------------------------
     // Graceful shutdown
     // -------------------------------------------------------------------------
@@ -234,19 +299,26 @@ public class ScyllaMessageConsumer : BackgroundService
         {
             try
             {
-                if (!string.IsNullOrEmpty(_consumerTag))
+                if (_channel.IsOpen)
                 {
-                    await _channel.BasicCancelAsync(
-                        _consumerTag,
-                        cancellationToken: cancellationToken
-                    );
-                }
+                    if (!string.IsNullOrEmpty(_consumerTag))
+                    {
+                        await _channel.BasicCancelAsync(
+                            _consumerTag,
+                            cancellationToken: cancellationToken
+                        );
+                    }
 
-                await _channel.CloseAsync(cancellationToken);
+                    await _channel.CloseAsync(cancellationToken);
+                }
             }
             catch (ObjectDisposedException)
             {
                 // Quietly ignore if RabbitMQ connection pool was already disposed by the host
+            }
+            catch (AlreadyClosedException)
+            {
+                // Quietly ignore if RabbitMQ channel/connection was already closed during shutdown
             }
             catch (Exception ex)
             {

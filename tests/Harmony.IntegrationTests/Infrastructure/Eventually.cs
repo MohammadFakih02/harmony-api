@@ -31,12 +31,15 @@ public static class Eventually
     {
         for (int i = 0; i < retries; i++)
         {
-            var result = (await action()).ToList();
+            var result = await action();
             if (result.Any())
                 return result;
             await Task.Delay(intervalMs);
         }
-        return [];
+
+        throw new TimeoutException(
+            $"Eventually.HasAnyAsync timed out after {retries * intervalMs}ms — collection never became non-empty."
+        );
     }
 
     public static async Task<IEnumerable<T>> MatchesAsync<T>(
@@ -46,13 +49,17 @@ public static class Eventually
         int intervalMs = 15
     )
     {
+        IEnumerable<T> result = [];
         for (int i = 0; i < retries; i++)
         {
-            var result = (await action()).ToList();
+            result = await action();
             if (predicate(result))
                 return result;
             await Task.Delay(intervalMs);
         }
-        return [];
+
+        throw new TimeoutException(
+            $"Eventually.MatchesAsync timed out after {retries * intervalMs}ms — predicate never satisfied."
+        );
     }
 }

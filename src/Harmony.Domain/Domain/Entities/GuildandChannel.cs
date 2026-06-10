@@ -29,7 +29,7 @@ public class Channel
     public long? GuildId { get; set; }
     public string Name { get; set; } = null!;
     public string? Topic { get; set; }
-    public string Type { get; set; } = null!;      // "text" | "voice" | "category" | "dm"
+    public string Type { get; set; } = null!; // "text" | "voice" | "category" | "dm"
     public int Position { get; set; }
     public long? CategoryId { get; set; }
     public bool IsNsfw { get; set; }
@@ -47,5 +47,6 @@ public class Channel
     public ICollection<FileAttachment> FileAttachments { get; set; } = [];
     public ICollection<GuildInvite> Invites { get; set; } = [];
     public ICollection<VoiceState> VoiceStates { get; set; } = [];
-    public ICollection<MessageSearch> MessageSearchEntries { get; set; } = [];
+    // MessageSearchEntries intentionally removed — FK was dropped in DecoupleSearchIndex migration.
+    // MessagesSearch is now a standalone read model with no relational constraint to Channels.
 }

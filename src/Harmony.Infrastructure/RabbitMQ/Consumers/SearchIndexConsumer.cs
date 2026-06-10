@@ -1,5 +1,5 @@
 using System;
-using System.Linq; // Ensure Linq is imported
+using System.Linq;
 using System.Text;
 using System.Text.Json;
 using Harmony.Application.Exceptions;
@@ -11,6 +11,7 @@ using Polly;
 using Polly.Retry;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
+using RabbitMQ.Client.Exceptions;
 
 namespace Harmony.Infrastructure.RabbitMQ.Consumers;
 
@@ -122,6 +123,17 @@ public class SearchIndexConsumer : BackgroundService
                         if (editedEvt is not null)
                             await handler.HandleMessageEditedAsync(editedEvt, _stoppingToken);
                         break;
+                    case Topology.ChannelDeletedKey: // Added!
+                        var channelDeletedEvt = JsonSerializer.Deserialize<ChannelDeletedEvent>(
+                            body,
+                            JsonOptions
+                        );
+                        if (channelDeletedEvt is not null)
+                            await handler.HandleChannelDeletedAsync(
+                                channelDeletedEvt,
+                                _stoppingToken
+                            );
+                        break;
 
                     default:
                         _logger.LogWarning(
@@ -186,14 +198,26 @@ public class SearchIndexConsumer : BackgroundService
         {
             try
             {
-                if (!string.IsNullOrEmpty(_consumerTag) && _channel.IsOpen)
-                    await _channel.BasicCancelAsync(
-                        _consumerTag,
-                        cancellationToken: cancellationToken
-                    );
-
                 if (_channel.IsOpen)
+                {
+                    if (!string.IsNullOrEmpty(_consumerTag))
+                    {
+                        await _channel.BasicCancelAsync(
+                            _consumerTag,
+                            cancellationToken: cancellationToken
+                        );
+                    }
+
                     await _channel.CloseAsync(cancellationToken);
+                }
+            }
+            catch (ObjectDisposedException)
+            {
+                // Quietly ignore — RabbitMQ connection was already disposed by the host
+            }
+            catch (AlreadyClosedException)
+            {
+                // Quietly ignore if RabbitMQ connection/channel was already closed during shutdown
             }
             catch (Exception ex)
             {

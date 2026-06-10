@@ -60,6 +60,19 @@ public class RabbitMQPublisher : IMessagePublisher, IAsyncDisposable
         );
     }
 
+    public async Task PublishChannelDeletedAsync(
+        ChannelDeletedEvent evt,
+        CancellationToken ct = default
+    )
+    {
+        await PublishAsync(Topology.MessageExchange, Topology.ChannelDeletedKey, evt, ct);
+        _logger.LogDebug(
+            "Published ChannelDeleted — ChannelId: {ChannelId}, GuildId: {GuildId}",
+            evt.ChannelId,
+            evt.GuildId
+        );
+    }
+
     private async Task<IChannel> GetChannelAsync()
     {
         if (_channel is { IsOpen: true })
