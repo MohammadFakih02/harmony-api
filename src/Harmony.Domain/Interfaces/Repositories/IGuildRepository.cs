@@ -14,5 +14,11 @@ public interface IGuildRepository
     Task AddMemberAsync(GuildMember member);
     Task RemoveMemberAsync(GuildMember member);
     Task DeleteAsync(Guild guild);
+
+    /// <summary>
+    /// Returns just the user ids of a guild's members — no User include, no order.
+    /// Hot-path lean variant for the unread fan-out. Backed by IX_GuildMembers_guild_id.
+    /// </summary>
+    Task<List<long>> GetMemberIdsAsync(long guildId);
     Task SaveChangesAsync();
 }

@@ -18,4 +18,10 @@ public interface IChannelRepository
     /// Satisfies Clean Architecture by accepting basic C# tuple types instead of Application DTOs [2].
     /// </summary>
     Task ReorderAsync(IEnumerable<(long ChannelId, int Position)> updates);
+
+    /// <summary>
+    /// Returns text-channel ids across many guilds in one query — for sidebar
+    /// unread load, avoiding an N+1 over the user's guilds.
+    /// </summary>
+    Task<List<long>> GetTextChannelIdsByGuildIdsAsync(IEnumerable<long> guildIds);
 }

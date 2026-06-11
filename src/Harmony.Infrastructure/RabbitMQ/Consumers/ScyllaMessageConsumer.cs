@@ -116,7 +116,7 @@ public class ScyllaMessageConsumer : BackgroundService
                 switch (routingKey)
                 {
                     case Topology.MessageSentKey:
-                        await HandleMessageSentAsync(handler, body);
+                        await HandleMessageSentAsync(scope.ServiceProvider, handler, body);
                         break;
                     case Topology.MessageDeletedKey:
                         await HandleMessageDeletedAsync(handler, body);
@@ -154,13 +154,17 @@ public class ScyllaMessageConsumer : BackgroundService
     // Per-event handlers — dedup → persist → broadcast
     // -------------------------------------------------------------------------
 
-    private async Task HandleMessageSentAsync(IMessageConsumerHandler handler, string body)
+    private async Task HandleMessageSentAsync(
+        IServiceProvider services,
+        IMessageConsumerHandler handler,
+        string body
+    )
     {
         var evt = JsonSerializer.Deserialize<MessageSentEvent>(body, JsonOptions);
         if (evt is null)
             return;
 
-        // 1. Deduplication gate — skip if already processed
+        // 1. Deduplication gate — skip if already processed (protects the increment too)
         if (await _deduplicator.IsDuplicateAsync(IMessageDeduplicator.Sent, evt.MessageId))
         {
             _logger.LogInformation(
@@ -191,6 +195,23 @@ public class ScyllaMessageConsumer : BackgroundService
                 EditedAt: null
             )
         );
+
+        // 4. Unread fan-out — best-effort. MUST be swallowed: the message is already
+        //    persisted and broadcast, so an unread failure must not bubble into the
+        //    retry policy (which would re-broadcast). Resolved per-scope (scoped service).
+        try
+        {
+            var unread = services.GetRequiredService<IUnreadCountService>();
+            await unread.IncrementForChannelAsync(evt.GuildId, evt.ChannelId, evt.UserId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "ScyllaConsumer: unread fan-out failed for MessageId {MessageId} — message already persisted/broadcast, continuing",
+                evt.MessageId
+            );
+        }
 
         _logger.LogInformation(
             "ScyllaConsumer: MessageSent persisted and broadcast — MessageId: {MessageId}, ChannelId: {ChannelId}",
