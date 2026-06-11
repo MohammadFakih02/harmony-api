@@ -59,4 +59,10 @@ public class HubBroadcaster : IHubBroadcaster
                     DeletedAt: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
                 )
             );
+
+    public Task BroadcastUnreadCountAsync(
+        long userId,
+        UnreadCountPayload payload,
+        CancellationToken ct = default
+    ) => _hubContext.Clients.User(userId.ToString()).UnreadCountUpdated(payload);
 }

@@ -126,6 +126,7 @@ public static class DependencyInjection
         services.AddScoped<IJwtService, JwtService>();
         services.AddScoped<IAuthService, AuthService>();
         services.AddScoped<IMessageService, MessageService>();
+        services.AddScoped<IUnreadCountService, RedisUnreadCountService>();
 
         // RabbitMQ consumers and handlers
         services.AddScoped<IMessageConsumerHandler, MessageConsumerHandler>();

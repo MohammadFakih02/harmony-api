@@ -1,0 +1,68 @@
+using System.Security.Claims;
+using Harmony.Application.DTOs.Requests;
+using Harmony.Application.DTOs.Responses;
+using Harmony.Application.Interfaces.Services;
+using Harmony.Domain.Interfaces.Repositories;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
+
+namespace Harmony.API.Controllers;
+
+[ApiController]
+[Authorize]
+[EnableRateLimiting("api")]
+public class ReadStatesController : ControllerBase
+{
+    private readonly IUnreadCountService _unread;
+    private readonly IGuildRepository _guilds;
+    private readonly IChannelRepository _channels;
+
+    public ReadStatesController(
+        IUnreadCountService unread,
+        IGuildRepository guilds,
+        IChannelRepository channels
+    )
+    {
+        _unread = unread;
+        _guilds = guilds;
+        _channels = channels;
+    }
+
+    // POST /api/guilds/{guildId}/channels/{channelId}/read
+    [HttpPost("api/guilds/{guildId:long}/channels/{channelId:long}/read")]
+    public async Task<IActionResult> MarkRead(
+        long guildId,
+        long channelId,
+        [FromBody] MarkReadRequest request
+    )
+    {
+        var userId = GetUserId();
+
+        if (!await _guilds.IsMemberAsync(guildId, userId))
+            return Forbid();
+
+        // Never trust client IDs — confirm the channel belongs to this guild.
+        var channel = await _channels.GetByIdAndGuildIdAsync(channelId, guildId);
+        if (channel is null)
+            return NotFound();
+
+        await _unread.MarkReadAsync(userId, guildId, channelId, request.LastReadMessageId);
+        return NoContent();
+    }
+
+    // GET /api/users/me/unread
+    [HttpGet("api/users/me/unread")]
+    public async Task<IActionResult> GetUnread()
+    {
+        var userId = GetUserId();
+
+        var guilds = await _guilds.GetByUserIdAsync(userId);
+        var channelIds = await _channels.GetTextChannelIdsByGuildIdsAsync(guilds.Select(g => g.Id));
+        var counts = await _unread.GetUnreadForUserAsync(userId, channelIds);
+
+        return Ok(counts.Select(kv => new UnreadCountResponse(kv.Key, kv.Value)));
+    }
+
+    private long GetUserId() => long.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
+}
