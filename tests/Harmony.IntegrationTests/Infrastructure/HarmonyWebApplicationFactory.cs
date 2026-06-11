@@ -25,7 +25,11 @@ public class HarmonyWebApplicationFactory : WebApplicationFactory<Program>
                         ["ASPNETCORE_ENVIRONMENT"] = "Test", // Explicit environment variable mapping
                         ["ConnectionStrings:Postgres"] =
                             "Host=localhost;Port=5432;Database=harmony_test;Username=admin;Password=secret",
-                        ["ConnectionStrings:Redis"] = "",
+                        // Real Redis — exercises dedup + unread-count paths end-to-end.
+                        // The SignalR backplane stays OFF (DependencyInjection guards on
+                        // `&& !isTest`), so this activates the data paths, not the backplane.
+                        ["ConnectionStrings:Redis"] =
+                            "localhost:6379,abortConnect=false,allowAdmin=true",
                         ["ConnectionStrings:RabbitMQ"] = "amqp://admin:secret@localhost:5672",
                         ["Jwt:Key"] = "test-super-secret-key-minimum-32-characters-long",
                         ["Jwt:Issuer"] = "harmony-api",

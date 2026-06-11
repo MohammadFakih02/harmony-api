@@ -47,4 +47,14 @@ public interface IHubBroadcaster
     /// Clients remove the channel from the sidebar and navigate away if viewing it.
     /// </summary>
     Task BroadcastChannelDeletedAsync(long channelId, long guildId, CancellationToken ct = default);
+
+    /// <summary>
+    /// Broadcasts an unread-count update to a single user (all their connections).
+    /// Per-user, not group — unread counts are personal.
+    /// </summary>
+    Task BroadcastUnreadCountAsync(
+        long userId,
+        UnreadCountPayload payload,
+        CancellationToken ct = default
+    );
 }

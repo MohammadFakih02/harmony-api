@@ -44,6 +44,14 @@ public interface IChatClient
     /// Distinct from ChannelUpdated — clients must remove, not update.
     /// </summary>
     Task ChannelDeleted(ChannelDeletedPayload payload);
+
+    /// <summary>
+    /// Fired when a user's unread count for a channel changes (new message they
+    /// didn't send, or a mark-as-read reset to zero). Sent per-user via
+    /// Clients.User — reaches all of that user's connections for multi-device sync.
+    /// Carries the absolute count, not a delta, so the client is self-correcting.
+    /// </summary>
+    Task UnreadCountUpdated(UnreadCountPayload payload);
 }
 
 /// <summary>Minimal delete notification — no content, just identity.</summary>
@@ -70,3 +78,6 @@ public record MessageEditedPayload(
 /// Carries enough context for the client to navigate away if needed.
 /// </summary>
 public record ChannelDeletedPayload(long ChannelId, long GuildId, long DeletedAt);
+
+/// <summary>Absolute unread count for one user in one channel.</summary>
+public record UnreadCountPayload(long ChannelId, long GuildId, int UnreadCount);

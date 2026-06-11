@@ -32,7 +32,11 @@ public abstract class ApiTestBase : IAsyncLifetime
         // 1. Purge durable queues before each test to prevent cross-test message pollution
         await PurgeQueuesAsync();
 
-        // 2. Reset database state cleanly
+        // 2. Flush Redis so unread:* / dedup:* keys never leak across tests.
+        //    Safe because the suite is non-parallel (DisableTestParallelization).
+        await FlushRedisAsync();
+
+        // 3. Reset database state cleanly
         await ResetDatabaseAsync();
     }
 
@@ -94,5 +98,29 @@ public abstract class ApiTestBase : IAsyncLifetime
         }
 
         await _respawner.ResetAsync(connection);
+    }
+
+    private async Task FlushRedisAsync()
+    {
+        try
+        {
+            var provider =
+                Factory.Services.GetRequiredService<Harmony.Infrastructure.Redis.IRedisConnectionProvider>();
+
+            if (!provider.IsConnected)
+                return;
+
+            var endpoints = provider.Connection!.GetEndPoints();
+            foreach (var endpoint in endpoints)
+            {
+                var server = provider.Connection.GetServer(endpoint);
+                await server.FlushDatabaseAsync();
+            }
+        }
+        catch
+        {
+            // Fail silently if Redis is unavailable — tests that need it will fail
+            // on their own assertions, and fail-open paths are unaffected.
+        }
     }
 }

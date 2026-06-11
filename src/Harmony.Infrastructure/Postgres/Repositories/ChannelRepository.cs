@@ -66,5 +66,19 @@ public class ChannelRepository : IChannelRepository
         });
     }
 
+    public async Task<List<long>> GetTextChannelIdsByGuildIdsAsync(IEnumerable<long> guildIds)
+    {
+        var ids = guildIds as IReadOnlyList<long> ?? guildIds.ToList();
+        if (ids.Count == 0)
+            return [];
+
+        return await _db
+            .Channels.Where(c =>
+                c.GuildId != null && ids.Contains(c.GuildId.Value) && c.Type == "text"
+            )
+            .Select(c => c.Id)
+            .ToListAsync();
+    }
+
     public async Task SaveChangesAsync() => await _db.SaveChangesAsync();
 }
