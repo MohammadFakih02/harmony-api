@@ -1,3 +1,4 @@
+using Cassandra;
 using Harmony.API.Filters;
 using Harmony.Application.Interfaces.Services;
 using Harmony.Application.Services;
@@ -18,6 +19,9 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Polly;
+using Polly.CircuitBreaker;
+using RabbitMQ.Client.Exceptions;
 
 namespace Harmony.Infrastructure.Extensions;
 
@@ -48,8 +52,8 @@ public static class DependencyInjection
                 npgsqlOptions =>
                 {
                     npgsqlOptions.EnableRetryOnFailure(
-                        maxRetryCount: 3,
-                        maxRetryDelay: TimeSpan.FromSeconds(2),
+                        maxRetryCount: 5,
+                        maxRetryDelay: TimeSpan.FromSeconds(5),
                         errorCodesToAdd: null
                     );
                     npgsqlOptions.UseQuerySplittingBehavior(QuerySplittingBehavior.SplitQuery);
@@ -69,7 +73,8 @@ public static class DependencyInjection
         // RabbitMQ
         // -----------------------------------------------------------------------
         services.AddSingleton<RabbitMQConnection>();
-        services.AddSingleton<IMessagePublisher, RabbitMQPublisher>();
+        // Concrete registered for DI resolution by the decorator factory below.
+        services.AddSingleton<RabbitMQPublisher>();
 
         // -----------------------------------------------------------------------
         // Redis — shared connection via IRedisConnectionProvider
@@ -117,7 +122,8 @@ public static class DependencyInjection
         services.AddScoped<IGuildRepository, GuildRepository>();
         services.AddScoped<IChannelRepository, ChannelRepository>();
         services.AddScoped<IUserRepository, UserRepository>();
-        services.AddScoped<IMessageRepository, MessageRepository>();
+        // Concrete registered for DI resolution by the decorator factory below.
+        services.AddScoped<MessageRepository>();
         services.AddScoped<IReadStateRepository, ReadStateRepository>();
         services.AddScoped<IRefreshTokenRepository, RefreshTokenRepository>();
 
@@ -139,6 +145,103 @@ public static class DependencyInjection
         {
             services.AddHostedService<TokenPruningService>();
         }
+
+        // -----------------------------------------------------------------------
+        // Circuit breakers — built once (singleton lifetime via closure capture).
+        // Each pipeline tracks its own failure window; Scylla and RabbitMQ
+        // failures never pollute each other's counters.
+        // -----------------------------------------------------------------------
+
+        // Nullable loggers captured by the pipeline callbacks; set on first service resolution.
+        ILogger<ResilientMessageRepository>? scyllaCircuitLogger = null;
+        ILogger<ResilientMessagePublisher>? rabbitCircuitLogger = null;
+
+        var scyllaPipeline = new ResiliencePipelineBuilder()
+            .AddCircuitBreaker(new CircuitBreakerStrategyOptions
+            {
+                ShouldHandle = new PredicateBuilder()
+                    .Handle<NoHostAvailableException>()
+                    .Handle<OperationTimedOutException>(),
+                FailureRatio = 0.5,
+                MinimumThroughput = 5,
+                SamplingDuration = TimeSpan.FromSeconds(30),
+                BreakDuration = TimeSpan.FromSeconds(30),
+                OnOpened = args =>
+                {
+                    scyllaCircuitLogger?.LogError(
+                        "Scylla circuit OPENED — fast-failing reads for {BreakDuration}",
+                        args.BreakDuration
+                    );
+                    return default;
+                },
+                OnClosed = args =>
+                {
+                    scyllaCircuitLogger?.LogInformation("Scylla circuit CLOSED — reads resuming");
+                    return default;
+                },
+                OnHalfOpened = args =>
+                {
+                    scyllaCircuitLogger?.LogInformation("Scylla circuit HALF-OPEN — probing");
+                    return default;
+                },
+            })
+            .Build();
+
+        var rabbitPipeline = new ResiliencePipelineBuilder()
+            .AddCircuitBreaker(new CircuitBreakerStrategyOptions
+            {
+                ShouldHandle = new PredicateBuilder()
+                    .Handle<BrokerUnreachableException>()
+                    .Handle<AlreadyClosedException>()
+                    .Handle<OperationInterruptedException>(),
+                FailureRatio = 0.5,
+                MinimumThroughput = 5,
+                SamplingDuration = TimeSpan.FromSeconds(30),
+                BreakDuration = TimeSpan.FromSeconds(30),
+                OnOpened = args =>
+                {
+                    rabbitCircuitLogger?.LogError(
+                        "RabbitMQ publish circuit OPENED — fast-failing publishes for {BreakDuration}",
+                        args.BreakDuration
+                    );
+                    return default;
+                },
+                OnClosed = args =>
+                {
+                    rabbitCircuitLogger?.LogInformation(
+                        "RabbitMQ publish circuit CLOSED — publishes resuming"
+                    );
+                    return default;
+                },
+                OnHalfOpened = args =>
+                {
+                    rabbitCircuitLogger?.LogInformation(
+                        "RabbitMQ publish circuit HALF-OPEN — probing"
+                    );
+                    return default;
+                },
+            })
+            .Build();
+
+        // Scoped decorator — inner MessageRepository is scoped; pipeline is singleton.
+        services.AddScoped<IMessageRepository>(sp =>
+        {
+            scyllaCircuitLogger ??= sp.GetRequiredService<ILogger<ResilientMessageRepository>>();
+            return new ResilientMessageRepository(
+                sp.GetRequiredService<MessageRepository>(),
+                scyllaPipeline
+            );
+        });
+
+        // Singleton decorator — inner RabbitMQPublisher is singleton; pipeline is singleton.
+        services.AddSingleton<IMessagePublisher>(sp =>
+        {
+            rabbitCircuitLogger ??= sp.GetRequiredService<ILogger<ResilientMessagePublisher>>();
+            return new ResilientMessagePublisher(
+                sp.GetRequiredService<RabbitMQPublisher>(),
+                rabbitPipeline
+            );
+        });
 
         return services;
     }

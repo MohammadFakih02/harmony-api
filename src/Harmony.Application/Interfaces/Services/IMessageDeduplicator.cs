@@ -35,4 +35,16 @@ public interface IMessageDeduplicator
     /// <param name="messageId">The Snowflake message ID from the event.</param>
     /// <param name="ct">Cancellation token.</param>
     Task<bool> IsDuplicateAsync(string eventType, long messageId, CancellationToken ct = default);
+
+    /// <summary>
+    /// Clears the dedup key for this event, allowing a future redelivery to be processed.
+    ///
+    /// Called on terminal failure (after all retries exhausted) so a genuine RabbitMQ
+    /// redelivery is not wrongly swallowed as a duplicate. Scylla writes are idempotent
+    /// upserts, so reprocessing is safe. Fails open (silently) if Redis is unavailable.
+    /// </summary>
+    /// <param name="eventType">Use the constants on this interface: Sent, Deleted, Edited.</param>
+    /// <param name="messageId">The Snowflake message ID from the event.</param>
+    /// <param name="ct">Cancellation token.</param>
+    Task ClearAsync(string eventType, long messageId, CancellationToken ct = default);
 }

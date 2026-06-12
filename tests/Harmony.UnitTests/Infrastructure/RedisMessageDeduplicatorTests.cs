@@ -249,6 +249,36 @@ public class RedisMessageDeduplicatorTests
     }
 
     // -------------------------------------------------------------------------
+    // ClearAsync
+    // -------------------------------------------------------------------------
+
+    [Fact]
+    public async Task ClearAsync_RemovesKey_SoNextIsDuplicateCallIsNotDuplicate()
+    {
+        var (sut, dbMock) = BuildSut();
+        var key = RedisMessageDeduplicator.BuildKey(IMessageDeduplicator.Sent, 10001L);
+
+        dbMock
+            .Setup(d => d.KeyDeleteAsync(It.Is<RedisKey>(k => k.ToString() == key), It.IsAny<CommandFlags>()))
+            .ReturnsAsync(true)
+            .Verifiable();
+
+        await sut.ClearAsync(IMessageDeduplicator.Sent, 10001L);
+
+        dbMock.Verify(d => d.KeyDeleteAsync(It.Is<RedisKey>(k => k.ToString() == key), It.IsAny<CommandFlags>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task ClearAsync_DoesNothing_WhenRedisIsDisconnected()
+    {
+        var (sut, dbMock) = BuildSut(redisConnected: false);
+
+        await sut.ClearAsync(IMessageDeduplicator.Sent, 10002L);
+
+        dbMock.Verify(d => d.KeyDeleteAsync(It.IsAny<RedisKey>(), It.IsAny<CommandFlags>()), Times.Never);
+    }
+
+    // -------------------------------------------------------------------------
     // SET NX uses correct TTL
     // -------------------------------------------------------------------------
 

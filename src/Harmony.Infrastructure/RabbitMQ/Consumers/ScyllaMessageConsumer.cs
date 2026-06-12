@@ -39,9 +39,10 @@ public class ScyllaMessageConsumer : BackgroundService
     private readonly IHubBroadcaster _hubBroadcaster;
     private readonly IMessageDeduplicator _deduplicator;
     private readonly ILogger<ScyllaMessageConsumer> _logger;
-    private readonly AsyncRetryPolicy _retryPolicy;
+    private readonly ResiliencePipeline _retryPipeline;
     private IChannel? _channel;
     private string? _consumerTag;
+    private CancellationToken _stoppingToken;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -62,23 +63,31 @@ public class ScyllaMessageConsumer : BackgroundService
         _deduplicator = deduplicator;
         _logger = logger;
 
-        _retryPolicy = Policy
-            .Handle<Exception>(ex => ex is not JsonException)
-            .WaitAndRetryAsync(
-                retryCount: 3,
-                sleepDurationProvider: attempt => TimeSpan.FromSeconds(Math.Pow(2, attempt)),
-                onRetry: (exception, timeSpan, retryCount, _) =>
-                    _logger.LogWarning(
-                        exception,
+        _retryPipeline = new ResiliencePipelineBuilder()
+            .AddRetry(new RetryStrategyOptions
+            {
+                ShouldHandle = new PredicateBuilder().Handle<Exception>(ex => ex is not JsonException),
+                MaxRetryAttempts = 3,
+                DelayGenerator = args =>
+                {
+                    // v8 AttemptNumber is 0-based; +1 reproduces the v7 1-based 2s/4s/8s ladder. Cap 30s.
+                    var seconds = Math.Min(Math.Pow(2, args.AttemptNumber + 1), 30);
+                    return new ValueTask<TimeSpan?>(TimeSpan.FromSeconds(seconds));
+                },
+                OnRetry = args =>
+                {
+                    _logger.LogWarning(args.Outcome.Exception,
                         "ScyllaConsumer: retry {RetryCount} after {Delay:0.0}s",
-                        retryCount,
-                        timeSpan.TotalSeconds
-                    )
-            );
+                        args.AttemptNumber + 1, args.RetryDelay.TotalSeconds);
+                    return default;
+                },
+            })
+            .Build();
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        _stoppingToken = stoppingToken;
         _channel = await _connection.CreateChannelAsync();
         await _channel.BasicQosAsync(prefetchSize: 0, prefetchCount: 1, global: false);
 
@@ -108,7 +117,7 @@ public class ScyllaMessageConsumer : BackgroundService
 
         try
         {
-            await _retryPolicy.ExecuteAsync(async () =>
+            await _retryPipeline.ExecuteAsync(async ct =>
             {
                 using var scope = _scopeFactory.CreateScope();
                 var handler = scope.ServiceProvider.GetRequiredService<IMessageConsumerHandler>();
@@ -134,7 +143,7 @@ public class ScyllaMessageConsumer : BackgroundService
                         );
                         break;
                 }
-            });
+            }, _stoppingToken);
 
             await _channel!.BasicAckAsync(ea.DeliveryTag, multiple: false);
         }
@@ -145,6 +154,35 @@ public class ScyllaMessageConsumer : BackgroundService
                 "ScyllaConsumer: unrecoverable failure for RoutingKey {RoutingKey} — routing to DLQ",
                 routingKey
             );
+
+            if (routingKey == Topology.MessageSentKey)
+            {
+                // Best-effort: notify the sender and clear the dedup key.
+                // If parsing fails (JsonException → null), skip silently — message still goes to DLQ.
+                // Wrapped in its own try/catch so a notification failure never suppresses the BasicNack.
+                try
+                {
+                    var evt = JsonSerializer.Deserialize<MessageSentEvent>(body, JsonOptions);
+                    if (evt is not null)
+                    {
+                        await _hubBroadcaster.BroadcastMessageFailedAsync(
+                            evt.UserId,
+                            new MessageFailedPayload(evt.MessageId, evt.ChannelId, evt.GuildId)
+                        );
+
+                        // Decision D: clear the dedup key so a genuine RabbitMQ redelivery can
+                        // recover. Scylla writes are idempotent upserts — safe to reprocess.
+                        await _deduplicator.ClearAsync(IMessageDeduplicator.Sent, evt.MessageId);
+                    }
+                }
+                catch (Exception notifyEx)
+                {
+                    _logger.LogWarning(
+                        notifyEx,
+                        "ScyllaConsumer: failed to notify sender of message failure — nacking anyway"
+                    );
+                }
+            }
 
             await _channel!.BasicNackAsync(ea.DeliveryTag, multiple: false, requeue: false);
         }

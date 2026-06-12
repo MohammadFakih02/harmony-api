@@ -57,4 +57,14 @@ public interface IHubBroadcaster
         UnreadCountPayload payload,
         CancellationToken ct = default
     );
+
+    /// <summary>
+    /// Notifies the original sender that their message failed to persist after all retries.
+    /// Per-sender only (Clients.User) — other users never saw an optimistic copy.
+    /// </summary>
+    Task BroadcastMessageFailedAsync(
+        long senderId,
+        MessageFailedPayload payload,
+        CancellationToken ct = default
+    );
 }
