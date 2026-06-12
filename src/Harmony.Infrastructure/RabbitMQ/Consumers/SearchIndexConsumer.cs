@@ -20,7 +20,7 @@ public class SearchIndexConsumer : BackgroundService
     private readonly RabbitMQConnection _connection;
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<SearchIndexConsumer> _logger;
-    private readonly AsyncRetryPolicy _retryPolicy;
+    private readonly ResiliencePipeline _retryPipeline;
     private IChannel? _channel;
     private string? _consumerTag;
     private CancellationToken _stoppingToken;
@@ -40,21 +40,27 @@ public class SearchIndexConsumer : BackgroundService
         _scopeFactory = scopeFactory;
         _logger = logger;
 
-        _retryPolicy = Policy
-            .Handle<Exception>(ex =>
-                ex is not JsonException && ex is not ServiceUnavailableException
-            )
-            .WaitAndRetryAsync(
-                retryCount: 3,
-                sleepDurationProvider: attempt => TimeSpan.FromSeconds(Math.Pow(2, attempt)),
-                onRetry: (exception, timeSpan, retryCount, _) =>
-                    _logger.LogWarning(
-                        exception,
+        _retryPipeline = new ResiliencePipelineBuilder()
+            .AddRetry(new RetryStrategyOptions
+            {
+                ShouldHandle = new PredicateBuilder().Handle<Exception>(ex =>
+                    ex is not JsonException && ex is not ServiceUnavailableException),
+                MaxRetryAttempts = 3,
+                DelayGenerator = args =>
+                {
+                    // v8 AttemptNumber is 0-based; +1 reproduces the v7 1-based 2s/4s/8s ladder. Cap 30s.
+                    var seconds = Math.Min(Math.Pow(2, args.AttemptNumber + 1), 30);
+                    return new ValueTask<TimeSpan?>(TimeSpan.FromSeconds(seconds));
+                },
+                OnRetry = args =>
+                {
+                    _logger.LogWarning(args.Outcome.Exception,
                         "SearchIndexConsumer: retry {RetryCount} after {Delay:0.0}s",
-                        retryCount,
-                        timeSpan.TotalSeconds
-                    )
-            );
+                        args.AttemptNumber + 1, args.RetryDelay.TotalSeconds);
+                    return default;
+                },
+            })
+            .Build();
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -89,7 +95,7 @@ public class SearchIndexConsumer : BackgroundService
 
         try
         {
-            await _retryPolicy.ExecuteAsync(async () =>
+            await _retryPipeline.ExecuteAsync(async ct =>
             {
                 using var scope = _scopeFactory.CreateScope();
                 var handler =
@@ -142,7 +148,7 @@ public class SearchIndexConsumer : BackgroundService
                         );
                         break;
                 }
-            });
+            }, _stoppingToken);
 
             if (_channel!.IsOpen)
                 await _channel.BasicAckAsync(ea.DeliveryTag, multiple: false);

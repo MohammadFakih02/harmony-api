@@ -4,6 +4,7 @@ using Harmony.Application.Services;
 using Harmony.Domain.Interfaces;
 using Harmony.Domain.Interfaces.Repositories;
 using Harmony.Domain.Interfaces.Services;
+using Polly.CircuitBreaker;
 
 namespace Harmony.Application.Services;
 
@@ -173,7 +174,7 @@ public class MessageService : IMessageService
         );
     }
 
-    public async Task<IEnumerable<MessageResponse>> GetChannelMessagesAsync(
+    public async Task<ChannelMessagesResponse> GetChannelMessagesAsync(
         long userId,
         long guildId,
         long channelId,
@@ -191,29 +192,40 @@ public class MessageService : IMessageService
             throw new UnauthorizedAccessException("You are not a member of this guild.");
 
         limit = Math.Clamp(limit, 1, 100);
-        var messages = await _messageRepository.GetChannelMessagesAsync(
-            channelId,
-            limit,
-            beforeMessageId,
-            ct
-        );
 
-        return messages.Select(m => new MessageResponse(
-            MessageId: m.MessageId,
-            ChannelId: m.ChannelId,
-            GuildId: guildId,
-            UserId: m.UserId,
-            Content: m.IsDeleted ? string.Empty : m.Content,
-            MessageType: m.MessageType,
-            IsDeleted: m.IsDeleted,
-            IsEdited: m.IsEdited,
-            ReplyToId: m.ReplyToId,
-            MentionIds: m.IsDeleted ? [] : m.MentionIds,
-            AttachmentIds: m.IsDeleted ? [] : m.AttachmentIds,
-            SentAt: ((DateTimeOffset)m.CreatedAt).ToUnixTimeMilliseconds(),
-            EditedAt: m.EditedAt.HasValue
-                ? ((DateTimeOffset)m.EditedAt.Value).ToUnixTimeMilliseconds()
-                : null
-        ));
+        try
+        {
+            var messages = await _messageRepository.GetChannelMessagesAsync(
+                channelId,
+                limit,
+                beforeMessageId,
+                ct
+            );
+
+            return new ChannelMessagesResponse(
+                messages.Select(m => new MessageResponse(
+                    MessageId: m.MessageId,
+                    ChannelId: m.ChannelId,
+                    GuildId: guildId,
+                    UserId: m.UserId,
+                    Content: m.IsDeleted ? string.Empty : m.Content,
+                    MessageType: m.MessageType,
+                    IsDeleted: m.IsDeleted,
+                    IsEdited: m.IsEdited,
+                    ReplyToId: m.ReplyToId,
+                    MentionIds: m.IsDeleted ? [] : m.MentionIds,
+                    AttachmentIds: m.IsDeleted ? [] : m.AttachmentIds,
+                    SentAt: ((DateTimeOffset)m.CreatedAt).ToUnixTimeMilliseconds(),
+                    EditedAt: m.EditedAt.HasValue
+                        ? ((DateTimeOffset)m.EditedAt.Value).ToUnixTimeMilliseconds()
+                        : null
+                )),
+                Degraded: false
+            );
+        }
+        catch (BrokenCircuitException)
+        {
+            return new ChannelMessagesResponse([], Degraded: true);
+        }
     }
 }

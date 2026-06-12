@@ -13,7 +13,7 @@ public interface IMessageService
         CancellationToken ct = default
     );
 
-    Task<IEnumerable<MessageResponse>> GetChannelMessagesAsync(
+    Task<ChannelMessagesResponse> GetChannelMessagesAsync(
         long userId,
         long guildId,
         long channelId,

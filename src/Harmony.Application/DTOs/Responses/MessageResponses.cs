@@ -28,3 +28,8 @@ public record MessageResponse(
     long SentAt,
     long? EditedAt
 );
+
+public record ChannelMessagesResponse(
+    IEnumerable<MessageResponse> Messages,
+    bool Degraded
+);

@@ -91,6 +91,31 @@ public sealed class RedisMessageDeduplicator : IMessageDeduplicator
         }
     }
 
+    /// <inheritdoc/>
+    public async Task ClearAsync(string eventType, long messageId, CancellationToken ct = default)
+    {
+        if (!_redisProvider.IsConnected)
+            return;
+
+        var key = BuildKey(eventType, messageId);
+        try
+        {
+            await _redisProvider.Connection!.GetDatabase().KeyDeleteAsync(key);
+            _logger.LogDebug(
+                "Deduplicator: cleared key for {EventType}:{MessageId}",
+                eventType, messageId
+            );
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Deduplicator: failed to clear key for {EventType}:{MessageId} — ignoring",
+                eventType, messageId
+            );
+        }
+    }
+
     /// <summary>
     /// Builds the Redis key for a given event type and message ID.
     /// Format: <c>dedup:msg:{eventType}:{messageId}</c>
