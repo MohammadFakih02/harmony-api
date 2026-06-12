@@ -117,9 +117,10 @@ public class SendMessageFlowTests : ApiTestBase, IClassFixture<HarmonyWebApplica
             $"/api/guilds/{_guildId}/channels/{_channelId}/messages"
         );
 
-        var body = await response.Content.ReadFromJsonAsync<List<MessageResponse>>();
+        var body = await response.Content.ReadFromJsonAsync<ChannelMessagesResponse>();
         body.Should().NotBeNull();
-        body.Should().BeEmpty();
+        body!.Messages.Should().BeEmpty();
+        body.Degraded.Should().BeFalse();
     }
 
     [Fact]
@@ -296,7 +297,8 @@ public class SendMessageFlowTests : ApiTestBase, IClassFixture<HarmonyWebApplica
                 );
                 if (!response.IsSuccessStatusCode)
                     return [];
-                return await response.Content.ReadFromJsonAsync<List<MessageResponse>>() ?? [];
+                var body = await response.Content.ReadFromJsonAsync<ChannelMessagesResponse>();
+                return body?.Messages.ToList() ?? [];
             },
             predicate: messages => messages.Any(m => m.MessageId == messageId),
             retries: 100,

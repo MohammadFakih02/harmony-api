@@ -65,4 +65,10 @@ public class HubBroadcaster : IHubBroadcaster
         UnreadCountPayload payload,
         CancellationToken ct = default
     ) => _hubContext.Clients.User(userId.ToString()).UnreadCountUpdated(payload);
+
+    public Task BroadcastMessageFailedAsync(
+        long senderId,
+        MessageFailedPayload payload,
+        CancellationToken ct = default
+    ) => _hubContext.Clients.User(senderId.ToString()).MessageFailed(payload);
 }

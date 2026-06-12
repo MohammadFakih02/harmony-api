@@ -52,6 +52,14 @@ public interface IChatClient
     /// Carries the absolute count, not a delta, so the client is self-correcting.
     /// </summary>
     Task UnreadCountUpdated(UnreadCountPayload payload);
+
+    /// <summary>
+    /// Fired when the consumer's Scylla persist fails after all retries are exhausted.
+    /// Sent only to the original sender via Clients.User — other users never saw an
+    /// optimistic copy and must not receive this event.
+    /// The client should remove the optimistic message and show an error state.
+    /// </summary>
+    Task MessageFailed(MessageFailedPayload payload);
 }
 
 /// <summary>Minimal delete notification — no content, just identity.</summary>
@@ -81,3 +89,6 @@ public record ChannelDeletedPayload(long ChannelId, long GuildId, long DeletedAt
 
 /// <summary>Absolute unread count for one user in one channel.</summary>
 public record UnreadCountPayload(long ChannelId, long GuildId, int UnreadCount);
+
+/// <summary>Failure notification sent to the original sender of an undeliverable message.</summary>
+public record MessageFailedPayload(long MessageId, long ChannelId, long GuildId);
