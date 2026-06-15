@@ -4,6 +4,7 @@ using Harmony.Application.DTOs.Responses;
 using Harmony.Application.Hubs;
 using Harmony.Application.Interfaces.Services;
 using Harmony.Domain.Interfaces;
+using Harmony.Domain.Interfaces.Repositories;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -216,12 +217,29 @@ public class ScyllaMessageConsumer : BackgroundService
         await handler.HandleMessageSentAsync(evt);
 
         // 3. Broadcast authoritative message to channel subscribers
+        // Fetch sender's display info for the client (best-effort; falls back to "Unknown")
+        string senderUsername = "Unknown";
+        string? senderAvatarKey = null;
+        try
+        {
+            var userRepo = services.GetRequiredService<IUserRepository>();
+            var sender = await userRepo.GetByIdAsync(evt.UserId);
+            senderUsername = sender?.UserName ?? "Unknown";
+            senderAvatarKey = sender?.AvatarKey;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "ScyllaConsumer: could not fetch sender info for {UserId}", evt.UserId);
+        }
+
         await _hubBroadcaster.BroadcastMessageReceivedAsync(
             new MessageResponse(
                 MessageId: evt.MessageId,
                 ChannelId: evt.ChannelId,
                 GuildId: evt.GuildId,
                 UserId: evt.UserId,
+                Username: senderUsername,
+                AvatarKey: senderAvatarKey,
                 Content: evt.Content,
                 MessageType: evt.MessageType,
                 IsDeleted: false,

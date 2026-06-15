@@ -16,6 +16,8 @@ using Harmony.Infrastructure.Scylla.Repositories;
 using Harmony.Infrastructure.Services;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -96,6 +98,15 @@ public static class DependencyInjection
             options.KeepAliveInterval = TimeSpan.FromSeconds(15);
             options.ClientTimeoutInterval = TimeSpan.FromSeconds(30);
             options.AddFilter<HubExceptionFilter>();
+        })
+        .AddJsonProtocol(options =>
+        {
+            // Serialize long (Snowflake IDs) as JSON strings so JavaScript clients
+            // can round-trip 64-bit IDs without float64 precision loss.
+            // AllowReadingFromString lets hub method params accept "123" as long.
+            options.PayloadSerializerOptions.Converters.Add(new LongStringConverter());
+            options.PayloadSerializerOptions.NumberHandling =
+                JsonNumberHandling.AllowReadingFromString;
         });
 
         var redisConnectionString = configuration.GetConnectionString("Redis");
@@ -245,4 +256,19 @@ public static class DependencyInjection
 
         return services;
     }
+}
+
+/// <summary>
+/// Serializes <c>long</c> as a JSON string and reads both string and number forms.
+/// Prevents JavaScript float64 precision loss for 64-bit Snowflake IDs in SignalR payloads.
+/// </summary>
+internal sealed class LongStringConverter : JsonConverter<long>
+{
+    public override long Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
+        reader.TokenType == JsonTokenType.String
+            ? long.Parse(reader.GetString()!)
+            : reader.GetInt64();
+
+    public override void Write(Utf8JsonWriter writer, long value, JsonSerializerOptions options) =>
+        writer.WriteStringValue(value.ToString());
 }
