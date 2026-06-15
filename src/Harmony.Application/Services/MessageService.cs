@@ -15,13 +15,15 @@ public class MessageService : IMessageService
     private readonly IMessagePublisher _publisher;
     private readonly ISnowflakeIdGenerator _snowflake;
     private readonly IMessageRepository _messageRepository;
+    private readonly IUserRepository _userRepository;
 
     public MessageService(
         IChannelRepository channelRepository,
         IGuildRepository guildRepository,
         IMessagePublisher publisher,
         ISnowflakeIdGenerator snowflake,
-        IMessageRepository messageRepository
+        IMessageRepository messageRepository,
+        IUserRepository userRepository
     )
     {
         _channelRepository = channelRepository;
@@ -29,6 +31,7 @@ public class MessageService : IMessageService
         _publisher = publisher;
         _snowflake = snowflake;
         _messageRepository = messageRepository;
+        _userRepository = userRepository;
     }
 
     public async Task<SendMessageResponse> SendMessageAsync(
@@ -202,24 +205,33 @@ public class MessageService : IMessageService
                 ct
             );
 
+            var userIds = messages.Select(m => m.UserId).Distinct();
+            var users = await _userRepository.GetByIdsAsync(userIds);
+
             return new ChannelMessagesResponse(
-                messages.Select(m => new MessageResponse(
-                    MessageId: m.MessageId,
-                    ChannelId: m.ChannelId,
-                    GuildId: guildId,
-                    UserId: m.UserId,
-                    Content: m.IsDeleted ? string.Empty : m.Content,
-                    MessageType: m.MessageType,
-                    IsDeleted: m.IsDeleted,
-                    IsEdited: m.IsEdited,
-                    ReplyToId: m.ReplyToId,
-                    MentionIds: m.IsDeleted ? [] : m.MentionIds,
-                    AttachmentIds: m.IsDeleted ? [] : m.AttachmentIds,
-                    SentAt: ((DateTimeOffset)m.CreatedAt).ToUnixTimeMilliseconds(),
-                    EditedAt: m.EditedAt.HasValue
-                        ? ((DateTimeOffset)m.EditedAt.Value).ToUnixTimeMilliseconds()
-                        : null
-                )),
+                messages.Select(m =>
+                {
+                    users.TryGetValue(m.UserId, out var user);
+                    return new MessageResponse(
+                        MessageId: m.MessageId,
+                        ChannelId: m.ChannelId,
+                        GuildId: guildId,
+                        UserId: m.UserId,
+                        Username: user?.UserName ?? "Unknown",
+                        AvatarKey: user?.AvatarKey,
+                        Content: m.IsDeleted ? string.Empty : m.Content,
+                        MessageType: m.MessageType,
+                        IsDeleted: m.IsDeleted,
+                        IsEdited: m.IsEdited,
+                        ReplyToId: m.ReplyToId,
+                        MentionIds: m.IsDeleted ? [] : m.MentionIds,
+                        AttachmentIds: m.IsDeleted ? [] : m.AttachmentIds,
+                        SentAt: ((DateTimeOffset)m.CreatedAt).ToUnixTimeMilliseconds(),
+                        EditedAt: m.EditedAt.HasValue
+                            ? ((DateTimeOffset)m.EditedAt.Value).ToUnixTimeMilliseconds()
+                            : null
+                    );
+                }),
                 Degraded: false
             );
         }

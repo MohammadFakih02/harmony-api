@@ -18,6 +18,8 @@ public record MessageResponse(
     long ChannelId,
     long GuildId,
     long UserId,
+    string Username,
+    string? AvatarKey,
     string Content,
     string MessageType,
     bool IsDeleted,

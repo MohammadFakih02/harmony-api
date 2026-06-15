@@ -16,5 +16,13 @@ public class UserRepository : IUserRepository
     public async Task<User?> GetByIdAsync(long userId) =>
         await _db.Users.FirstOrDefaultAsync(u => u.Id == userId);
 
+    public async Task<Dictionary<long, User>> GetByIdsAsync(IEnumerable<long> userIds)
+    {
+        var ids = userIds.Distinct().ToList();
+        return await _db.Users
+            .Where(u => ids.Contains(u.Id))
+            .ToDictionaryAsync(u => u.Id);
+    }
+
     public async Task SaveChangesAsync() => await _db.SaveChangesAsync();
 }
