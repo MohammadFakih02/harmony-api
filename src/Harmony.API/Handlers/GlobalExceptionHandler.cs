@@ -1,5 +1,6 @@
 using System.Security.Authentication;
 using Cassandra;
+using FluentValidation;
 using Harmony.Application.Exceptions;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Mvc;
@@ -51,6 +52,7 @@ public class GlobalExceptionHandler : IExceptionHandler
             || exception is System.Security.Authentication.AuthenticationException
             || exception is UnauthorizedAccessException
             || exception is ArgumentException
+            || exception is ValidationException
             || exception is InvalidOperationException
         )
         {
@@ -73,6 +75,7 @@ public class GlobalExceptionHandler : IExceptionHandler
                 "Unauthorized"
             ),
             UnauthorizedAccessException => (StatusCodes.Status403Forbidden, "Forbidden Access"),
+            ValidationException => (StatusCodes.Status400BadRequest, "Validation failed"),
             ArgumentException => (StatusCodes.Status400BadRequest, "Bad Request"),
 
             // Cassandra DB Driver Exceptions

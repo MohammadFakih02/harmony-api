@@ -1,8 +1,10 @@
 using System.Net.Http.Json;
+using System.Text.Json.Serialization;
 using FluentAssertions;
 using Harmony.Application.DTOs.Responses;
 using Harmony.IntegrationTests.Infrastructure;
 using Microsoft.AspNetCore.SignalR.Client;
+using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
 namespace Harmony.IntegrationTests.Hubs;
@@ -37,6 +39,11 @@ public class HubBroadcastFlowTests : ApiTestBase, IClassFixture<HarmonyWebApplic
                 {
                     options.HttpMessageHandlerFactory = _ => Factory.Server.CreateHandler();
                 }
+            )
+            // The server serializes every Snowflake long as a JSON string (LongStringConverter);
+            // mirror that on the client so string ids deserialize back into long DTO fields.
+            .AddJsonProtocol(o =>
+                o.PayloadSerializerOptions.NumberHandling = JsonNumberHandling.AllowReadingFromString
             )
             .Build();
 
@@ -139,14 +146,18 @@ public class HubBroadcastFlowTests : ApiTestBase, IClassFixture<HarmonyWebApplic
         var senderToken = await RegisterAndGetTokenAsync("sender1", "sender1@test.com");
         var (guildId, channelId) = await SetupGuildAndChannelAsync(senderToken);
 
-        // Second user joins the guild
+        // Second user joins the guild. Resolve the invite code FIRST (it sets the auth
+        // header to senderToken), THEN switch the header to the receiver — otherwise the
+        // join POST runs as the owner and the receiver is never added as a member.
         var receiverToken = await RegisterAndGetTokenAsync("receiver1", "receiver1@test.com");
+        var inviteCode = await GetInviteCodeAsync(senderToken, guildId);
         Client.DefaultRequestHeaders.Authorization =
             new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", receiverToken);
-        await Client.PostAsJsonAsync(
-            $"/api/guilds/join/{await GetInviteCodeAsync(senderToken, guildId)}",
+        var joinResponse = await Client.PostAsJsonAsync(
+            $"/api/guilds/join/{inviteCode}",
             new { }
         );
+        joinResponse.EnsureSuccessStatusCode();
 
         var senderConn = BuildConnection(senderToken);
         var receiverConn = BuildConnection(receiverToken);

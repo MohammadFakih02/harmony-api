@@ -1,9 +1,12 @@
 using System.Text;
+using FluentValidation;
 using Harmony.API.Extensions;
+using Harmony.API.Filters;
 using Harmony.API.Handlers;
 using Harmony.API.Hubs;
 using Harmony.Application.Interfaces.Services;
 using Harmony.Application.Services;
+using Harmony.Application.Validation;
 using Harmony.Domain.Domain.Entities;
 using Harmony.Infrastructure.Extensions;
 using Harmony.Infrastructure.RabbitMQ;
@@ -133,7 +136,11 @@ builder.Services.AddSingleton<IHubBroadcaster, HubBroadcaster>();
 // -----------------------------------------------------------------------
 builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
 builder.Services.AddProblemDetails();
-builder.Services.AddControllers();
+
+// FluentValidation — validators discovered from the Application assembly; the global
+// ValidationActionFilter runs them for every controller action argument.
+builder.Services.AddValidatorsFromAssemblyContaining<RegisterRequestValidator>();
+builder.Services.AddControllers(options => options.Filters.Add<ValidationActionFilter>());
 builder.Services.AddOpenApi();
 
 // =======================================================================
