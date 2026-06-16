@@ -2,6 +2,7 @@ using System.Security.Claims;
 using Harmony.Application.DTOs.Requests;
 using Harmony.Application.DTOs.Responses;
 using Harmony.Application.Hubs;
+using Harmony.Domain.Interfaces.Repositories;
 using Harmony.Domain.Interfaces.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.SignalR;
@@ -21,11 +22,20 @@ namespace Harmony.API.Hubs;
 public class ChatHub : Hub<IChatClient>
 {
     private readonly IMessageService _messageService;
+    private readonly IGuildRepository _guildRepository;
+    private readonly IChannelRepository _channelRepository;
     private readonly ILogger<ChatHub> _logger;
 
-    public ChatHub(IMessageService messageService, ILogger<ChatHub> logger)
+    public ChatHub(
+        IMessageService messageService,
+        IGuildRepository guildRepository,
+        IChannelRepository channelRepository,
+        ILogger<ChatHub> logger
+    )
     {
         _messageService = messageService;
+        _guildRepository = guildRepository;
+        _channelRepository = channelRepository;
         _logger = logger;
     }
 
@@ -68,8 +78,26 @@ public class ChatHub : Hub<IChatClient>
 
     public async Task JoinChannel(long channelId)
     {
+        var userId = GetUserId();
+
+        // Authorize: resolve the channel's owning guild and verify membership before
+        // subscribing to the broadcast group. Without this, any authenticated client
+        // could join channel:{id} for a guild they don't belong to and receive its
+        // messages. (Fine-grained ViewChannel comes with the Phase 3 permission service.)
+        var channel = await _channelRepository.GetByIdAsync(channelId);
+        if (channel is null)
+            throw new HubException("Channel not found.");
+
+        // Guild channels require membership. DM/group channels (no GuildId) are not
+        // supported over this path yet — that's a Phase 4 feature.
+        if (channel.GuildId is not { } guildId)
+            throw new HubException("You cannot join this channel.");
+
+        if (!await _guildRepository.IsMemberAsync(guildId, userId))
+            throw new HubException("You are not a member of this guild.");
+
         await Groups.AddToGroupAsync(Context.ConnectionId, ChannelGroup(channelId));
-        _logger.LogDebug("User {UserId} joined {Group}", GetUserId(), ChannelGroup(channelId));
+        _logger.LogDebug("User {UserId} joined {Group}", userId, ChannelGroup(channelId));
     }
 
     public async Task LeaveChannel(long channelId)
@@ -80,8 +108,14 @@ public class ChatHub : Hub<IChatClient>
 
     public async Task JoinGuild(long guildId)
     {
+        var userId = GetUserId();
+
+        // Authorize: only members may subscribe to a guild's broadcast group.
+        if (!await _guildRepository.IsMemberAsync(guildId, userId))
+            throw new HubException("You are not a member of this guild.");
+
         await Groups.AddToGroupAsync(Context.ConnectionId, GuildGroup(guildId));
-        _logger.LogDebug("User {UserId} joined {Group}", GetUserId(), GuildGroup(guildId));
+        _logger.LogDebug("User {UserId} joined {Group}", userId, GuildGroup(guildId));
     }
 
     public async Task LeaveGuild(long guildId)
