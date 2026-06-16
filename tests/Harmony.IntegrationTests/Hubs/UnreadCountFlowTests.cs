@@ -1,8 +1,10 @@
 using System.Net.Http.Json;
+using System.Text.Json.Serialization;
 using FluentAssertions;
 using Harmony.Application.Hubs;
 using Harmony.IntegrationTests.Infrastructure;
 using Microsoft.AspNetCore.SignalR.Client;
+using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
 namespace Harmony.IntegrationTests.Hubs;
@@ -29,6 +31,11 @@ public class UnreadCountFlowTests : ApiTestBase, IClassFixture<HarmonyWebApplica
                 {
                     options.HttpMessageHandlerFactory = _ => Factory.Server.CreateHandler();
                 }
+            )
+            // The server serializes every Snowflake long as a JSON string (LongStringConverter);
+            // mirror that on the client so string ids deserialize back into long DTO fields.
+            .AddJsonProtocol(o =>
+                o.PayloadSerializerOptions.NumberHandling = JsonNumberHandling.AllowReadingFromString
             )
             .Build();
 

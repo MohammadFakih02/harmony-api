@@ -1,10 +1,12 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Text.Json.Serialization;
 using FluentAssertions;
 using Harmony.IntegrationTests.Infrastructure;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.AspNetCore.SignalR.Client;
+using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
 namespace Harmony.IntegrationTests.Hubs;
@@ -45,6 +47,11 @@ public class ChatHubTests : ApiTestBase, IClassFixture<HarmonyWebApplicationFact
                     // the in-process pipeline rather than over a real network socket.
                     options.HttpMessageHandlerFactory = _ => Factory.Server.CreateHandler();
                 }
+            )
+            // The server serializes every Snowflake long as a JSON string (LongStringConverter);
+            // mirror that on the client so string ids deserialize back into long DTO fields.
+            .AddJsonProtocol(o =>
+                o.PayloadSerializerOptions.NumberHandling = JsonNumberHandling.AllowReadingFromString
             )
             .Build();
     }

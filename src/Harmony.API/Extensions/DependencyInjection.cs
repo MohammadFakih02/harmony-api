@@ -88,6 +88,10 @@ public static class DependencyInjection
         // -----------------------------------------------------------------------
         services.AddSingleton<IRedisConnectionProvider, RedisConnectionProvider>();
 
+        // Hub rate-limit filter — singleton; depends only on the singleton Redis
+        // provider and logger. Resolved by SignalR for the AddFilter<> registration.
+        services.AddSingleton<RateLimitHubFilter>();
+
         // -----------------------------------------------------------------------
         // SignalR + Redis backplane
         // -----------------------------------------------------------------------
@@ -97,6 +101,12 @@ public static class DependencyInjection
                 env.Equals("Development", StringComparison.OrdinalIgnoreCase) || isTest;
             options.KeepAliveInterval = TimeSpan.FromSeconds(15);
             options.ClientTimeoutInterval = TimeSpan.FromSeconds(30);
+            // Rate-limit before the exception filter so a rejected (throttled) call is
+            // still surfaced to the client through the normal hub error path. Disabled
+            // under Test (same posture as the HTTP rate limiter) so message-burst tests
+            // aren't throttled by the real test Redis.
+            if (!isTest)
+                options.AddFilter<RateLimitHubFilter>();
             options.AddFilter<HubExceptionFilter>();
         })
         .AddJsonProtocol(options =>
