@@ -2,6 +2,7 @@ using System.Security.Claims;
 using Harmony.Application.DTOs.Requests;
 using Harmony.Application.DTOs.Responses;
 using Harmony.Domain.Domain.Entities;
+using Harmony.Domain.Domain.Enums;
 using Harmony.Domain.Interfaces.Repositories;
 using Harmony.Application.Services;
 using Microsoft.AspNetCore.Authorization;
@@ -17,11 +18,17 @@ namespace Harmony.API.Controllers;
 public class GuildsController : ControllerBase
 {
     private readonly IGuildRepository _guilds;
+    private readonly IRoleRepository _roles;
     private readonly ISnowflakeIdGenerator _snowflake;
 
-    public GuildsController(IGuildRepository guilds, ISnowflakeIdGenerator snowflake)
+    public GuildsController(
+        IGuildRepository guilds,
+        IRoleRepository roles,
+        ISnowflakeIdGenerator snowflake
+    )
     {
         _guilds = guilds;
+        _roles = roles;
         _snowflake = snowflake;
     }
 
@@ -56,9 +63,24 @@ public class GuildsController : ControllerBase
 
         await _guilds.AddMemberAsync(member);
 
-        // Create default @everyone role
-        // Note: role creation will be fleshed out in feature/role-management
-        // For now just persist the guild and member
+        // Default @everyone role — the permission baseline applied implicitly to every
+        // member (no RoleAssignment row needed). IsDefault marks it so the permission
+        // resolver can find it. Additional roles are layered on top in later features.
+        var everyone = new Role
+        {
+            Id = _snowflake.NextId(),
+            GuildId = guild.Id,
+            Name = "@everyone",
+            Color = 0,
+            PermissionBits = (long)Permission.DefaultEveryone,
+            Position = 0,
+            IsHoisted = false,
+            IsMentionable = false,
+            IsDefault = true,
+            CreatedAt = guild.CreatedAt
+        };
+
+        await _roles.AddAsync(everyone);
 
         await _guilds.SaveChangesAsync();
 
