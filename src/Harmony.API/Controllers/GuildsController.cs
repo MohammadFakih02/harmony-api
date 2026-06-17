@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using Harmony.API.Filters;
 using Harmony.Application.DTOs.Requests;
 using Harmony.Application.DTOs.Responses;
 using Harmony.Domain.Domain.Entities;
@@ -102,13 +103,11 @@ public class GuildsController : ControllerBase
 
     // PATCH /api/guilds/{id}
     [HttpPatch("{id:long}")]
+    [RequirePermission(Permission.ManageGuild)]
     public async Task<IActionResult> Update(long id, [FromBody] UpdateGuildRequest request)
     {
         var guild = await _guilds.GetByIdAsync(id);
         if (guild is null) return NotFound();
-
-        if (guild.OwnerId != GetUserId())
-            return Forbid();
 
         if (request.Name is not null) guild.Name = request.Name;
         if (request.Description is not null) guild.Description = request.Description;

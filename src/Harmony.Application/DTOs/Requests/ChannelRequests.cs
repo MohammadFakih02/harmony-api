@@ -26,3 +26,9 @@ public record ReorderChannelRequest(
     long ChannelId,
     int Position
 );
+
+public record UpsertChannelOverrideRequest(
+    string TargetType,      // "role" | "user"
+    long AllowBits,
+    long DenyBits
+);

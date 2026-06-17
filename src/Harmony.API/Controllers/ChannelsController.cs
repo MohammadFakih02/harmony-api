@@ -1,12 +1,13 @@
 using System.Collections.Generic;
 using System.Linq;
-using System.Security.Claims;
 using System.Threading.Tasks;
 using Harmony.Application.DTOs.Requests;
 using Harmony.Application.DTOs.Responses;
+using Harmony.API.Filters;
 using Harmony.Application.Interfaces.Services; // For IHubBroadcaster
 using Harmony.Application.Services;
 using Harmony.Domain.Domain.Entities;
+using Harmony.Domain.Domain.Enums;
 using Harmony.Domain.Interfaces; // For IMessagePublisher
 using Harmony.Domain.Interfaces.Repositories;
 using Microsoft.AspNetCore.Authorization;
@@ -44,14 +45,12 @@ public class ChannelsController : ControllerBase
 
     // POST /api/guilds/{guildId}/channels
     [HttpPost]
+    [RequirePermission(Permission.ManageChannels)]
     public async Task<IActionResult> Create(long guildId, [FromBody] CreateChannelRequest request)
     {
         var guild = await _guilds.GetByIdAsync(guildId);
         if (guild is null)
             return NotFound();
-
-        if (guild.OwnerId != GetUserId())
-            return Forbid();
 
         var validTypes = new[] { "text", "voice", "category" };
         if (!validTypes.Contains(request.Type))
@@ -88,19 +87,13 @@ public class ChannelsController : ControllerBase
 
     // PATCH /api/guilds/{guildId}/channels/{channelId}
     [HttpPatch("{channelId:long}")]
+    [RequirePermission(Permission.ManageChannels)]
     public async Task<IActionResult> Update(
         long guildId,
         long channelId,
         [FromBody] UpdateChannelRequest request
     )
     {
-        var guild = await _guilds.GetByIdAsync(guildId);
-        if (guild is null)
-            return NotFound();
-
-        if (guild.OwnerId != GetUserId())
-            return Forbid();
-
         var channel = await _channels.GetByIdAsync(channelId);
         if (channel is null || channel.GuildId != guildId)
             return NotFound();
@@ -132,15 +125,9 @@ public class ChannelsController : ControllerBase
 
     // DELETE /api/guilds/{guildId}/channels/{channelId}
     [HttpDelete("{channelId:long}")]
+    [RequirePermission(Permission.ManageChannels)]
     public async Task<IActionResult> Delete(long guildId, long channelId)
     {
-        var guild = await _guilds.GetByIdAsync(guildId);
-        if (guild is null)
-            return NotFound();
-
-        if (guild.OwnerId != GetUserId())
-            return Forbid();
-
         var channel = await _channels.GetByIdAsync(channelId);
         if (channel is null || channel.GuildId != guildId)
             return NotFound();
@@ -163,18 +150,12 @@ public class ChannelsController : ControllerBase
 
     // PATCH /api/guilds/{guildId}/channels/reorder
     [HttpPatch("reorder")]
+    [RequirePermission(Permission.ManageChannels)]
     public async Task<IActionResult> Reorder(
         long guildId,
         [FromBody] List<ReorderChannelRequest> request
     )
     {
-        var guild = await _guilds.GetByIdAsync(guildId);
-        if (guild is null)
-            return NotFound();
-
-        if (guild.OwnerId != GetUserId())
-            return Forbid();
-
         // DECOUPLED TRANSACTION: Map requests to basic C# Value Tuples
         var updates = request.Select(r => (r.ChannelId, r.Position));
         await _channels.ReorderAsync(updates);
@@ -192,22 +173,18 @@ public class ChannelsController : ControllerBase
 
     // GET /api/guilds/{guildId}/channels
     [HttpGet]
+    [RequirePermission(Permission.ViewChannel)]
     public async Task<IActionResult> GetAll(long guildId)
     {
-        if (!await _guilds.IsMemberAsync(guildId, GetUserId()))
-            return Forbid();
-
         var channels = await _channels.GetByGuildIdAsync(guildId);
         return Ok(channels.Select(ToResponse));
     }
 
     // GET /api/guilds/{guildId}/channels/{channelId}
     [HttpGet("{channelId:long}")]
+    [RequirePermission(Permission.ViewChannel)]
     public async Task<IActionResult> GetById(long guildId, long channelId)
     {
-        if (!await _guilds.IsMemberAsync(guildId, GetUserId()))
-            return Forbid();
-
         var channel = await _channels.GetByIdAsync(channelId);
         if (channel is null || channel.GuildId != guildId)
             return NotFound();
@@ -218,8 +195,6 @@ public class ChannelsController : ControllerBase
     // -------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------
-
-    private long GetUserId() => long.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
 
     private static ChannelResponse ToResponse(Channel c) =>
         new(
