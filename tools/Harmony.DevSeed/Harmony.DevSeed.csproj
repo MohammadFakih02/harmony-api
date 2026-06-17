@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Dev-only seeder. NOT part of Harmony.sln (so it never builds in CI / the test suite).
+    Run from the repo root with: dotnet run [project] harmony-api/tools/Harmony.DevSeed
+    Provisions a multi-tier test guild against a running API + Postgres. See Program.cs.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>Harmony.DevSeed</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- For the few things the public API can't do yet: the Admin role + assignment
+         (no role CRUD endpoint) and the member timeout (no moderation endpoint). -->
+    <ProjectReference Include="..\..\src\Harmony.Infrastructure\Harmony.Infrastructure.csproj" />
+  </ItemGroup>
+
+</Project>
