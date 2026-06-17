@@ -27,11 +27,23 @@ public class UnreadCountServiceTests
         var readState = new Mock<IReadStateRepository>();
         var broadcaster = new Mock<IHubBroadcaster>();
 
+        // By default every member can view the channel (preserves pre-filter fan-out behavior).
+        var permissions = new Mock<IPermissionService>();
+        permissions
+            .Setup(p => p.HasAsync(
+                It.IsAny<long>(),
+                It.IsAny<long>(),
+                It.IsAny<Harmony.Domain.Domain.Enums.Permission>(),
+                It.IsAny<long?>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+
         var sut = new RedisUnreadCountService(
             provider.Object,
             guilds.Object,
             readState.Object,
             broadcaster.Object,
+            permissions.Object,
             NullLogger<RedisUnreadCountService>.Instance
         );
 

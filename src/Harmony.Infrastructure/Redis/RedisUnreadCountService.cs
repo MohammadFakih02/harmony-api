@@ -1,5 +1,6 @@
 using Harmony.Application.Hubs;
 using Harmony.Application.Interfaces.Services;
+using Harmony.Domain.Domain.Enums;
 using Harmony.Domain.Interfaces.Repositories;
 using Microsoft.Extensions.Logging;
 using StackExchange.Redis;
@@ -18,6 +19,7 @@ public sealed class RedisUnreadCountService : IUnreadCountService
     private readonly IGuildRepository _guildRepository;
     private readonly IReadStateRepository _readStateRepository;
     private readonly IHubBroadcaster _broadcaster;
+    private readonly IPermissionService _permissions;
     private readonly ILogger<RedisUnreadCountService> _logger;
 
     public RedisUnreadCountService(
@@ -25,6 +27,7 @@ public sealed class RedisUnreadCountService : IUnreadCountService
         IGuildRepository guildRepository,
         IReadStateRepository readStateRepository,
         IHubBroadcaster broadcaster,
+        IPermissionService permissions,
         ILogger<RedisUnreadCountService> logger
     )
     {
@@ -32,6 +35,7 @@ public sealed class RedisUnreadCountService : IUnreadCountService
         _guildRepository = guildRepository;
         _readStateRepository = readStateRepository;
         _broadcaster = broadcaster;
+        _permissions = permissions;
         _logger = logger;
     }
 
@@ -52,7 +56,7 @@ public sealed class RedisUnreadCountService : IUnreadCountService
         }
 
         // Recipient-resolution seam: guild members today; DMs branch here later.
-        var recipientIds = await ResolveRecipientIdsAsync(guildId, senderUserId);
+        var recipientIds = await ResolveRecipientIdsAsync(guildId, channelId, senderUserId);
         if (recipientIds.Count == 0)
             return;
 
@@ -199,10 +203,27 @@ public sealed class RedisUnreadCountService : IUnreadCountService
         return result;
     }
 
-    private async Task<List<long>> ResolveRecipientIdsAsync(long guildId, long senderUserId)
+    private async Task<List<long>> ResolveRecipientIdsAsync(
+        long guildId,
+        long channelId,
+        long senderUserId
+    )
     {
         var memberIds = await _guildRepository.GetMemberIdsAsync(guildId);
-        return memberIds.Where(id => id != senderUserId).ToList();
+
+        // Only members who can actually view the channel accrue unread for it — otherwise a
+        // member would get a badge (and a non-zero /me/unread) for an override-hidden channel
+        // like #staff. Resolution is cached per (user, channel), so repeated fan-outs are cheap.
+        var recipients = new List<long>(memberIds.Count);
+        foreach (var id in memberIds)
+        {
+            if (id == senderUserId)
+                continue;
+            if (await _permissions.HasAsync(id, guildId, Permission.ViewChannel, channelId))
+                recipients.Add(id);
+        }
+
+        return recipients;
     }
 
     public static string UnreadKey(long userId, long channelId) => $"unread:{userId}:{channelId}";

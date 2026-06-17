@@ -205,9 +205,70 @@ public class PermissionEnforcementTests : ApiTestBase, IClassFixture<HarmonyWebA
             .StatusCode.Should().Be(HttpStatusCode.Forbidden);
     }
 
+    [Fact]
+    public async Task ChannelList_OmitsChannelHiddenByOverride()
+    {
+        var ownerToken = await RegisterAsync("enfowner7", "enfowner7@test.com");
+        var (guildId, invite) = await CreateGuildAsync(ownerToken);
+        var channelId = await CreateChannelAsync(ownerToken, guildId);
+        var everyoneId = EveryoneRoleOf(Factory, guildId);
+
+        var memberToken = await RegisterAsync("enfmember7", "enfmember7@test.com");
+        await JoinAsync(memberToken, invite, guildId, OwnerOf(Factory, guildId));
+
+        Auth(ownerToken);
+        (await DenyEveryoneAsync(guildId, channelId, everyoneId, Permission.ViewChannel))
+            .EnsureSuccessStatusCode();
+
+        // Member: the override-hidden channel is absent from the list entirely.
+        Auth(memberToken);
+        var memberList = await Client.GetFromJsonAsync<List<ChannelDto>>(
+            $"/api/guilds/{guildId}/channels");
+        memberList.Should().NotContain(c => c.Id == channelId);
+
+        // Owner: still sees it (owner bypasses overrides).
+        Auth(ownerToken);
+        var ownerList = await Client.GetFromJsonAsync<List<ChannelDto>>(
+            $"/api/guilds/{guildId}/channels");
+        ownerList.Should().Contain(c => c.Id == channelId);
+    }
+
+    [Fact]
+    public async Task Capabilities_ReflectTimeoutAndPermissions()
+    {
+        var ownerToken = await RegisterAsync("enfowner8", "enfowner8@test.com");
+        var (guildId, invite) = await CreateGuildAsync(ownerToken);
+        var channelId = await CreateChannelAsync(ownerToken, guildId);
+
+        var memberToken = await RegisterAsync("enfmember8", "enfmember8@test.com");
+        var memberId = await JoinAsync(memberToken, invite, guildId, OwnerOf(Factory, guildId));
+
+        var capsUrl = $"/api/guilds/{guildId}/channels/{channelId}/permissions";
+
+        // Plain member: can view + send, not timed out, no management.
+        Auth(memberToken);
+        var caps = await Client.GetFromJsonAsync<CapsDto>(capsUrl);
+        caps!.CanView.Should().BeTrue();
+        caps.CanSend.Should().BeTrue();
+        caps.TimedOut.Should().BeFalse();
+        caps.CanManageMessages.Should().BeFalse();
+
+        // After a timeout: canView stays, canSend flips off, timedOut true.
+        await SetTimeoutAsync(guildId, memberId, DateTimeOffset.UtcNow.AddHours(1).ToUnixTimeMilliseconds());
+        Auth(memberToken);
+        var muted = await Client.GetFromJsonAsync<CapsDto>(capsUrl);
+        muted!.CanView.Should().BeTrue();
+        muted.CanSend.Should().BeFalse();
+        muted.TimedOut.Should().BeTrue();
+    }
+
     private record AuthResponse(string AccessToken);
 
     private record GuildResponse(long Id, string Name, string? InviteCode);
 
     private record ChannelResponse(long Id, long? GuildId, string Name, string Type);
+
+    private record ChannelDto(long Id, string Name, string Type);
+
+    private record CapsDto(bool CanView, bool CanSend, bool CanManageMessages, bool CanManageChannels, bool TimedOut);
 }

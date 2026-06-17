@@ -45,11 +45,24 @@ public class UnreadCountServiceTests : IAsyncLifetime
         _readStates = new Mock<IReadStateRepository>();
         _broadcaster = new Mock<IHubBroadcaster>();
 
+        // Every member can view the channel by default (these tests exercise fan-out/INCR,
+        // not the ViewChannel filter — which the permission-enforcement suite covers).
+        var permissions = new Mock<IPermissionService>();
+        permissions
+            .Setup(p => p.HasAsync(
+                It.IsAny<long>(),
+                It.IsAny<long>(),
+                It.IsAny<Harmony.Domain.Domain.Enums.Permission>(),
+                It.IsAny<long?>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+
         _sut = new RedisUnreadCountService(
             providerMock.Object,
             _guilds.Object,
             _readStates.Object,
             _broadcaster.Object,
+            permissions.Object,
             NullLogger<RedisUnreadCountService>.Instance
         );
     }
