@@ -143,6 +143,8 @@ public static class DependencyInjection
         services.AddScoped<IGuildRepository, GuildRepository>();
         services.AddScoped<IChannelRepository, ChannelRepository>();
         services.AddScoped<IUserRepository, UserRepository>();
+        services.AddScoped<IRoleRepository, RoleRepository>();
+        services.AddScoped<IChannelPermissionOverrideRepository, ChannelPermissionOverrideRepository>();
         // Concrete registered for DI resolution by the decorator factory below.
         services.AddScoped<MessageRepository>();
         services.AddScoped<IReadStateRepository, ReadStateRepository>();
@@ -154,6 +156,7 @@ public static class DependencyInjection
         services.AddScoped<IAuthService, AuthService>();
         services.AddScoped<IMessageService, MessageService>();
         services.AddScoped<IUnreadCountService, RedisUnreadCountService>();
+        services.AddScoped<IPermissionService, PermissionService>();
 
         // RabbitMQ consumers and handlers
         services.AddScoped<IMessageConsumerHandler, MessageConsumerHandler>();

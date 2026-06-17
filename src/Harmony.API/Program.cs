@@ -140,7 +140,13 @@ builder.Services.AddProblemDetails();
 // FluentValidation — validators discovered from the Application assembly; the global
 // ValidationActionFilter runs them for every controller action argument.
 builder.Services.AddValidatorsFromAssemblyContaining<RegisterRequestValidator>();
-builder.Services.AddControllers(options => options.Filters.Add<ValidationActionFilter>());
+// PermissionAuthorizationFilter enforces [RequirePermission] (runs as an authorization
+// filter, before model binding/validation); ValidationActionFilter validates action args.
+builder.Services.AddControllers(options =>
+{
+    options.Filters.Add<PermissionAuthorizationFilter>();
+    options.Filters.Add<ValidationActionFilter>();
+});
 builder.Services.AddOpenApi();
 
 // =======================================================================
