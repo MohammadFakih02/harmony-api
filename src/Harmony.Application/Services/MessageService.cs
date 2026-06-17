@@ -1,6 +1,8 @@
 using Harmony.Application.DTOs.Requests;
 using Harmony.Application.DTOs.Responses;
+using Harmony.Application.Interfaces.Services;
 using Harmony.Application.Services;
+using Harmony.Domain.Domain.Enums;
 using Harmony.Domain.Interfaces;
 using Harmony.Domain.Interfaces.Repositories;
 using Harmony.Domain.Interfaces.Services;
@@ -16,6 +18,7 @@ public class MessageService : IMessageService
     private readonly ISnowflakeIdGenerator _snowflake;
     private readonly IMessageRepository _messageRepository;
     private readonly IUserRepository _userRepository;
+    private readonly IPermissionService _permissions;
 
     public MessageService(
         IChannelRepository channelRepository,
@@ -23,7 +26,8 @@ public class MessageService : IMessageService
         IMessagePublisher publisher,
         ISnowflakeIdGenerator snowflake,
         IMessageRepository messageRepository,
-        IUserRepository userRepository
+        IUserRepository userRepository,
+        IPermissionService permissions
     )
     {
         _channelRepository = channelRepository;
@@ -32,6 +36,7 @@ public class MessageService : IMessageService
         _snowflake = snowflake;
         _messageRepository = messageRepository;
         _userRepository = userRepository;
+        _permissions = permissions;
     }
 
     public async Task<SendMessageResponse> SendMessageAsync(
@@ -47,10 +52,22 @@ public class MessageService : IMessageService
         if (channel is null)
             throw new KeyNotFoundException("Channel not found.");
 
-        // Verify user is a member of the guild natively via repository
-        var isMember = await _guildRepository.IsMemberAsync(guildId, userId);
-        if (!isMember)
-            throw new UnauthorizedAccessException("You are not a member of this guild.");
+        // Authorize: the caller must be able to view AND send in this channel. Resolved bits
+        // apply the channel's overrides; non-members resolve to 0, so this subsumes the old
+        // membership check. (ViewChannel | SendMessage are both in the @everyone default set.)
+        const long sendMask = (long)(Permission.ViewChannel | Permission.SendMessage);
+        var bits = await _permissions.ResolveAsync(userId, guildId, channelId, ct);
+        if ((bits & sendMask) != sendMask)
+            throw new UnauthorizedAccessException(
+                "You do not have permission to send messages in this channel."
+            );
+
+        // Timeout gate (deliberately excluded from the cached resolver, §27): a member whose
+        // CommunicationDisabledUntil is in the future cannot send, even with the permission.
+        var member = await _guildRepository.GetMemberAsync(guildId, userId);
+        if (member?.CommunicationDisabledUntil is { } until
+            && until > DateTimeOffset.UtcNow.ToUnixTimeMilliseconds())
+            throw new UnauthorizedAccessException("You are timed out and cannot send messages.");
 
         // Validate content
         if (string.IsNullOrWhiteSpace(request.Content) || request.Content.Length > 2000)
@@ -111,10 +128,10 @@ public class MessageService : IMessageService
                 "Message does not belong to the specified channel."
             );
 
-        var guild = await _guildRepository.GetByIdAsync(guildId);
-        var isOwner = guild is not null && guild.OwnerId == userId;
-
-        if (message.UserId != userId && !isOwner)
+        // You may always delete your own message; deleting another's requires ManageMessages
+        // (owners/administrators resolve to all bits, so this still covers them).
+        if (message.UserId != userId
+            && !await _permissions.HasAsync(userId, guildId, Permission.ManageMessages, channelId, ct))
             throw new UnauthorizedAccessException(
                 "You do not have permission to delete this message."
             );
@@ -190,9 +207,12 @@ public class MessageService : IMessageService
         if (channel is null)
             throw new KeyNotFoundException("Channel not found.");
 
-        var isMember = await _guildRepository.IsMemberAsync(guildId, userId);
-        if (!isMember)
-            throw new UnauthorizedAccessException("You are not a member of this guild.");
+        // Authorize: viewing channel history requires ViewChannel + ReadHistory (both in the
+        // @everyone default). Channel overrides apply; non-members resolve to 0.
+        const long readMask = (long)(Permission.ViewChannel | Permission.ReadHistory);
+        var bits = await _permissions.ResolveAsync(userId, guildId, channelId, ct);
+        if ((bits & readMask) != readMask)
+            throw new UnauthorizedAccessException("You do not have permission to view this channel.");
 
         limit = Math.Clamp(limit, 1, 100);
 

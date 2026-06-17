@@ -14,3 +14,12 @@ public record ChannelResponse(
     int? UserLimit,
     long CreatedAt
 );
+
+public record ChannelOverrideResponse(
+    long Id,
+    long ChannelId,
+    long TargetId,
+    string TargetType,
+    long AllowBits,
+    long DenyBits
+);
