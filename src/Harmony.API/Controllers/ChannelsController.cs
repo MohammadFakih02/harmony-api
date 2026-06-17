@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.Linq;
+using System.Security.Claims;
 using System.Threading.Tasks;
 using Harmony.Application.DTOs.Requests;
 using Harmony.Application.DTOs.Responses;
@@ -27,13 +28,15 @@ public class ChannelsController : ControllerBase
     private readonly ISnowflakeIdGenerator _snowflake;
     private readonly IMessagePublisher _publisher;
     private readonly IHubBroadcaster _broadcaster;
+    private readonly IPermissionService _permissions;
 
     public ChannelsController(
         IChannelRepository channels,
         IGuildRepository guilds,
         ISnowflakeIdGenerator snowflake,
         IMessagePublisher publisher,
-        IHubBroadcaster broadcaster
+        IHubBroadcaster broadcaster,
+        IPermissionService permissions
     )
     {
         _channels = channels;
@@ -41,6 +44,7 @@ public class ChannelsController : ControllerBase
         _snowflake = snowflake;
         _publisher = publisher;
         _broadcaster = broadcaster;
+        _permissions = permissions;
     }
 
     // POST /api/guilds/{guildId}/channels
@@ -172,12 +176,24 @@ public class ChannelsController : ControllerBase
     }
 
     // GET /api/guilds/{guildId}/channels
+    // The guild-level [RequirePermission] is a coarse gate (non-members → 403); each channel is
+    // then filtered by its OWN resolved ViewChannel so override-hidden channels (e.g. #staff)
+    // never appear in the list — not just blocked on entry.
     [HttpGet]
     [RequirePermission(Permission.ViewChannel)]
     public async Task<IActionResult> GetAll(long guildId)
     {
+        var userId = GetUserId();
         var channels = await _channels.GetByGuildIdAsync(guildId);
-        return Ok(channels.Select(ToResponse));
+
+        var visible = new List<ChannelResponse>(channels.Count);
+        foreach (var channel in channels)
+        {
+            if (await _permissions.HasAsync(userId, guildId, Permission.ViewChannel, channel.Id))
+                visible.Add(ToResponse(channel));
+        }
+
+        return Ok(visible);
     }
 
     // GET /api/guilds/{guildId}/channels/{channelId}
@@ -192,9 +208,38 @@ public class ChannelsController : ControllerBase
         return Ok(ToResponse(channel));
     }
 
+    // GET /api/guilds/{guildId}/channels/{channelId}/permissions
+    // The caller's effective capabilities in this channel, computed server-side so the client
+    // never reasons about permission bits. canSend factors in the live timeout (which the
+    // cached resolver omits); the others are pure resolved bits.
+    [HttpGet("{channelId:long}/permissions")]
+    public async Task<IActionResult> GetMyCapabilities(long guildId, long channelId)
+    {
+        var userId = GetUserId();
+        var bits = await _permissions.ResolveAsync(userId, guildId, channelId);
+
+        bool Has(Permission p) => (bits & (long)p) == (long)p;
+
+        var member = await _guilds.GetMemberAsync(guildId, userId);
+        var timedOut =
+            member?.CommunicationDisabledUntil is { } until
+            && until > DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
+        var canView = Has(Permission.ViewChannel);
+        return Ok(new ChannelCapabilitiesResponse(
+            CanView: canView,
+            CanSend: canView && Has(Permission.SendMessage) && !timedOut,
+            CanManageMessages: Has(Permission.ManageMessages),
+            CanManageChannels: Has(Permission.ManageChannels),
+            TimedOut: timedOut
+        ));
+    }
+
     // -------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------
+
+    private long GetUserId() => long.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
 
     private static ChannelResponse ToResponse(Channel c) =>
         new(
