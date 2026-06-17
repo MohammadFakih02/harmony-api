@@ -23,3 +23,16 @@ public record ChannelOverrideResponse(
     long AllowBits,
     long DenyBits
 );
+
+/// <summary>
+/// The authenticated caller's effective capabilities in a channel. Computed server-side so the
+/// client never reasons about permission bits. <c>CanSend</c> already accounts for the member
+/// timeout (which the cached permission resolver deliberately omits).
+/// </summary>
+public record ChannelCapabilitiesResponse(
+    bool CanView,
+    bool CanSend,
+    bool CanManageMessages,
+    bool CanManageChannels,
+    bool TimedOut
+);
