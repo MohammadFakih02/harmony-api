@@ -19,6 +19,10 @@ public class MessageService : IMessageService
     private readonly IMessageRepository _messageRepository;
     private readonly IUserRepository _userRepository;
     private readonly IPermissionService _permissions;
+    private readonly IFileAttachmentRepository _attachments;
+
+    /// <summary>Max attachments per message (Discord parity).</summary>
+    public const int MaxAttachments = 10;
 
     public MessageService(
         IChannelRepository channelRepository,
@@ -27,7 +31,8 @@ public class MessageService : IMessageService
         ISnowflakeIdGenerator snowflake,
         IMessageRepository messageRepository,
         IUserRepository userRepository,
-        IPermissionService permissions
+        IPermissionService permissions,
+        IFileAttachmentRepository attachments
     )
     {
         _channelRepository = channelRepository;
@@ -37,6 +42,7 @@ public class MessageService : IMessageService
         _messageRepository = messageRepository;
         _userRepository = userRepository;
         _permissions = permissions;
+        _attachments = attachments;
     }
 
     public async Task<SendMessageResponse> SendMessageAsync(
@@ -69,9 +75,29 @@ public class MessageService : IMessageService
             && until > DateTimeOffset.UtcNow.ToUnixTimeMilliseconds())
             throw new UnauthorizedAccessException("You are timed out and cannot send messages.");
 
-        // Validate content
-        if (string.IsNullOrWhiteSpace(request.Content) || request.Content.Length > 2000)
-            throw new ArgumentException("Message content must be between 1 and 2000 characters.");
+        // Validate attachments: each must exist, be confirmed, be owned by the sender, and belong to
+        // THIS channel (never trust client-provided ids — NON-NEGOTIABLE #8). Capped per message.
+        var attachmentIds = request.AttachmentIds ?? [];
+        if (attachmentIds.Count > MaxAttachments)
+            throw new ArgumentException($"A message may have at most {MaxAttachments} attachments.");
+
+        foreach (var attachmentId in attachmentIds)
+        {
+            var attachment = await _attachments.GetByIdAsync(attachmentId);
+            if (attachment is null || !attachment.IsConfirmed)
+                throw new ArgumentException("Attachment not found or not confirmed.");
+            if (attachment.UploaderId != userId)
+                throw new UnauthorizedAccessException("You can only attach files you uploaded.");
+            if (attachment.GuildId != guildId || attachment.ChannelId != channelId)
+                throw new ArgumentException("Attachment does not belong to this channel.");
+        }
+
+        // Content is required UNLESS the message carries at least one attachment (image-only message).
+        var content = request.Content ?? string.Empty;
+        if (content.Length > 2000)
+            throw new ArgumentException("Message content must be 2000 characters or fewer.");
+        if (string.IsNullOrWhiteSpace(content) && attachmentIds.Count == 0)
+            throw new ArgumentException("Message must have content or at least one attachment.");
 
         var messageId = _snowflake.NextId();
         var sentAt = DateTimeOffset.UtcNow;
@@ -82,9 +108,9 @@ public class MessageService : IMessageService
                 ChannelId: channelId,
                 GuildId: guildId,
                 UserId: userId,
-                Content: request.Content,
+                Content: content,
                 MessageType: request.MessageType ?? "text",
-                AttachmentIds: request.AttachmentIds ?? [],
+                AttachmentIds: attachmentIds,
                 MentionIds: request.MentionIds ?? [],
                 ReplyToId: request.ReplyToId,
                 SentAt: sentAt
@@ -97,11 +123,11 @@ public class MessageService : IMessageService
             ChannelId: channelId,
             GuildId: guildId,
             UserId: userId,
-            Content: request.Content,
+            Content: content,
             MessageType: request.MessageType ?? "text",
             ReplyToId: request.ReplyToId,
             MentionIds: request.MentionIds ?? [],
-            AttachmentIds: request.AttachmentIds ?? [],
+            AttachmentIds: attachmentIds,
             SentAt: sentAt.ToUnixTimeMilliseconds()
         );
     }

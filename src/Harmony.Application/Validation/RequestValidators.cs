@@ -44,9 +44,20 @@ public sealed class SendMessageRequestValidator : AbstractValidator<SendMessageR
 {
     public SendMessageRequestValidator()
     {
+        // Content is required only when the message has no attachments — an image-only message
+        // (empty content + ≥1 attachment) is valid. The owned/confirmed/in-channel attachment
+        // checks are semantic and live in MessageService.
         RuleFor(x => x.Content)
             .NotEmpty().WithMessage("Message content must not be empty.")
+            .When(x => x.AttachmentIds is null || x.AttachmentIds.Count == 0);
+
+        RuleFor(x => x.Content)
             .MaximumLength(2000).WithMessage("Message content must be 2000 characters or fewer.");
+
+        RuleFor(x => x.AttachmentIds!)
+            .Must(a => a.Count <= Services.MessageService.MaxAttachments)
+            .When(x => x.AttachmentIds is not null)
+            .WithMessage($"A message may have at most {Services.MessageService.MaxAttachments} attachments.");
     }
 }
 
