@@ -41,6 +41,15 @@ public class HarmonyWebApplicationFactory : WebApplicationFactory<Program>
                         ["ScyllaDB:ContactPoints:0"] = "127.0.0.1",
                         ["ScyllaDB:Port"] = "9042",
                         ["ScyllaDB:Keyspace"] = "harmony_test",
+                        // Real MinIO (S3-compatible) — exercises presign → PUT → confirm end-to-end.
+                        // Secret matches docker-compose's MINIO_ROOT_PASSWORD (and the CI service).
+                        ["ObjectStorage:Endpoint"] = "localhost:9000",
+                        ["ObjectStorage:AccessKey"] = "admin",
+                        ["ObjectStorage:SecretKey"] = "secretpassword",
+                        // Hyphen, not underscore: S3/MinIO bucket names reject underscores
+                        // (unlike the Postgres/Scylla "harmony_test").
+                        ["ObjectStorage:BucketName"] = "harmony-test",
+                        ["ObjectStorage:UseSSL"] = "false",
                     }
                 );
             }
