@@ -41,7 +41,7 @@ public interface IFileService
     /// belongs to that channel (otherwise <see cref="KeyNotFoundException"/> — never leak existence
     /// or pending uploads, and keep files scoped to their channel).
     /// </summary>
-    Task<FileUrlResponse> GetDownloadUrlAsync(
+    Task<FileDownloadResponse> GetDownloadUrlAsync(
         long guildId,
         long channelId,
         long fileId,

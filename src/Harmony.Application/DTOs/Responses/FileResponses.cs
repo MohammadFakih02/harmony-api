@@ -6,9 +6,20 @@ namespace Harmony.Application.DTOs.Responses;
 /// </summary>
 public record PresignFileResponse(long FileId, string UploadUrl, string ObjectKey, long ExpiresAt);
 
-/// <summary>A short-lived presigned URL to fetch a file's bytes directly from the store, with the
-/// unix-ms instant it stops working (the client caches the URL just under that lifetime).</summary>
-public record FileUrlResponse(string Url, long ExpiresAt);
+/// <summary>Everything the client needs to render a confirmed attachment: its metadata plus a
+/// short-lived presigned URL to fetch the bytes directly from the store, with the unix-ms instant the
+/// URL stops working (the client caches it just under that lifetime). Metadata is static; the URL is
+/// the only part that expires.</summary>
+public record FileDownloadResponse(
+    long Id,
+    string Filename,
+    string ContentType,
+    long SizeBytes,
+    int? Width,
+    int? Height,
+    string Url,
+    long ExpiresAt
+);
 
 public record FileAttachmentResponse(
     long Id,

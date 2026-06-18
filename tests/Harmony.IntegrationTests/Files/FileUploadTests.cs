@@ -183,6 +183,83 @@ public class FileUploadTests : ApiTestBase, IClassFixture<HarmonyWebApplicationF
         resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 
+    [Fact]
+    public async Task SendMessage_WithConfirmedAttachment_Succeeds()
+    {
+        var ownerToken = await RegisterAsync("fileowner7", "fileowner7@test.com");
+        var (guildId, _) = await CreateGuildAsync(ownerToken);
+        var channelId = await CreateChannelAsync(ownerToken, guildId);
+        var fileId = await UploadConfirmedFileAsync(ownerToken, guildId, channelId);
+
+        Auth(ownerToken);
+        var resp = await Client.PostAsJsonAsync(
+            $"/api/guilds/{guildId}/channels/{channelId}/messages",
+            new { content = "look at this", attachmentIds = new[] { fileId } }
+        );
+        resp.EnsureSuccessStatusCode();
+        var body = await resp.Content.ReadFromJsonAsync<MessageSendResponse>();
+        body!.AttachmentIds.Should().Contain(fileId);
+    }
+
+    [Fact]
+    public async Task SendMessage_ImageOnly_EmptyContentWithAttachment_Succeeds()
+    {
+        var ownerToken = await RegisterAsync("fileowner8", "fileowner8@test.com");
+        var (guildId, _) = await CreateGuildAsync(ownerToken);
+        var channelId = await CreateChannelAsync(ownerToken, guildId);
+        var fileId = await UploadConfirmedFileAsync(ownerToken, guildId, channelId);
+
+        Auth(ownerToken);
+        var resp = await Client.PostAsJsonAsync(
+            $"/api/guilds/{guildId}/channels/{channelId}/messages",
+            new { content = "", attachmentIds = new[] { fileId } }
+        );
+        resp.EnsureSuccessStatusCode();
+    }
+
+    [Fact]
+    public async Task SendMessage_WithUnconfirmedAttachment_IsBadRequest()
+    {
+        var ownerToken = await RegisterAsync("fileowner9", "fileowner9@test.com");
+        var (guildId, _) = await CreateGuildAsync(ownerToken);
+        var channelId = await CreateChannelAsync(ownerToken, guildId);
+
+        // Presign only — never confirmed.
+        Auth(ownerToken);
+        var presignResp = await Client.PostAsJsonAsync(
+            $"/api/guilds/{guildId}/channels/{channelId}/files/presign",
+            new { filename = "pixel.png", contentType = "image/png", sizeBytes = SmallPng.Length }
+        );
+        presignResp.EnsureSuccessStatusCode();
+        var presign = await presignResp.Content.ReadFromJsonAsync<PresignResponse>();
+
+        var resp = await Client.PostAsJsonAsync(
+            $"/api/guilds/{guildId}/channels/{channelId}/messages",
+            new { content = "nope", attachmentIds = new[] { presign!.FileId } }
+        );
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    [Fact]
+    public async Task SendMessage_WithAnotherUsersAttachment_IsForbidden()
+    {
+        var ownerToken = await RegisterAsync("fileowner10", "fileowner10@test.com");
+        var (guildId, invite) = await CreateGuildAsync(ownerToken);
+        var channelId = await CreateChannelAsync(ownerToken, guildId);
+        var fileId = await UploadConfirmedFileAsync(ownerToken, guildId, channelId);
+
+        var memberToken = await RegisterAsync("filemember10", "filemember10@test.com");
+        await JoinAsync(memberToken, invite);
+
+        // The member can send here, but the attachment belongs to the owner.
+        Auth(memberToken);
+        var resp = await Client.PostAsJsonAsync(
+            $"/api/guilds/{guildId}/channels/{channelId}/messages",
+            new { content = "stealing your file", attachmentIds = new[] { fileId } }
+        );
+        resp.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+    }
+
     // ---- Helpers (mirror ChannelOverrideTests) ----------------------------
 
     /// <summary>Full presign → PUT → confirm, returning the confirmed file's id.</summary>
@@ -272,6 +349,8 @@ public class FileUploadTests : ApiTestBase, IClassFixture<HarmonyWebApplicationF
     private record PresignResponse(long FileId, string UploadUrl, string ObjectKey, long ExpiresAt);
 
     private record FileUrlResponse(string Url, long ExpiresAt);
+
+    private record MessageSendResponse(long MessageId, long[] AttachmentIds);
 
     private record FileResponse(
         long Id,
