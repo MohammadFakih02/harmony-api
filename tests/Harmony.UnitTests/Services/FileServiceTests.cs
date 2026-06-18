@@ -42,6 +42,11 @@ public class FileServiceTests
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<TimeSpan>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync("http://minio/presigned");
 
+        storage
+            .Setup(s => s.GetPresignedGetUrlAsync(
+                It.IsAny<string>(), It.IsAny<TimeSpan>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync("http://minio/download");
+
         var sut = new FileService(files.Object, channels.Object, storage.Object, snowflake.Object);
         return (sut, files, channels, storage);
     }
@@ -203,5 +208,57 @@ public class FileServiceTests
         await sut.Invoking(s => s.ConfirmAsync(UserId, FileId))
             .Should().ThrowAsync<ArgumentException>();
         file.IsConfirmed.Should().BeFalse();
+    }
+
+    // ---- Download ---------------------------------------------------------
+
+    private static FileAttachment ConfirmedFile()
+    {
+        var f = PendingFile();
+        f.IsConfirmed = true;
+        return f;
+    }
+
+    [Fact]
+    public async Task GetDownloadUrl_HappyPath_ReturnsUrl()
+    {
+        var (sut, files, _, _) = BuildSut();
+        files.Setup(f => f.GetByIdAsync(FileId)).ReturnsAsync(ConfirmedFile());
+
+        var result = await sut.GetDownloadUrlAsync(GuildId, ChannelId, FileId);
+
+        result.Url.Should().Be("http://minio/download");
+        result.ExpiresAt.Should().BeGreaterThan(0);
+    }
+
+    [Fact]
+    public async Task GetDownloadUrl_UnknownFile_Throws404()
+    {
+        var (sut, files, _, _) = BuildSut();
+        files.Setup(f => f.GetByIdAsync(FileId)).ReturnsAsync((FileAttachment?)null);
+
+        await sut.Invoking(s => s.GetDownloadUrlAsync(GuildId, ChannelId, FileId))
+            .Should().ThrowAsync<KeyNotFoundException>();
+    }
+
+    [Fact]
+    public async Task GetDownloadUrl_UnconfirmedFile_Throws404()
+    {
+        var (sut, files, _, _) = BuildSut();
+        files.Setup(f => f.GetByIdAsync(FileId)).ReturnsAsync(PendingFile()); // IsConfirmed = false
+
+        await sut.Invoking(s => s.GetDownloadUrlAsync(GuildId, ChannelId, FileId))
+            .Should().ThrowAsync<KeyNotFoundException>();
+    }
+
+    [Fact]
+    public async Task GetDownloadUrl_FileInDifferentChannel_Throws404()
+    {
+        var (sut, files, _, _) = BuildSut();
+        files.Setup(f => f.GetByIdAsync(FileId)).ReturnsAsync(ConfirmedFile());
+
+        // Confirmed file, but requested via a channel it doesn't belong to.
+        await sut.Invoking(s => s.GetDownloadUrlAsync(GuildId, ChannelId + 1, FileId))
+            .Should().ThrowAsync<KeyNotFoundException>();
     }
 }

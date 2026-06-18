@@ -73,6 +73,22 @@ public sealed class S3FileStorageService : IFileStorageService
             }
         );
 
+    public Task<string> GetPresignedGetUrlAsync(
+        string objectKey,
+        TimeSpan expiry,
+        CancellationToken ct = default
+    ) =>
+        _client.GetPreSignedURLAsync(
+            new GetPreSignedUrlRequest
+            {
+                BucketName = _bucket,
+                Key = objectKey,
+                Verb = HttpVerb.GET,
+                Expires = DateTime.UtcNow.Add(expiry),
+                Protocol = _presignProtocol,
+            }
+        );
+
     public async Task<StoredObjectInfo?> StatObjectAsync(
         string objectKey,
         CancellationToken ct = default

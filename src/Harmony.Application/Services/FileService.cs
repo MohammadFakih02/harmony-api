@@ -25,6 +25,7 @@ public sealed class FileService : IFileService
     public const long MaxFileSizeBytes = 50L * 1024 * 1024; // 50 MB
 
     private static readonly TimeSpan PresignExpiry = TimeSpan.FromMinutes(5);
+    private static readonly TimeSpan DownloadUrlExpiry = TimeSpan.FromMinutes(15);
 
     private static readonly HashSet<string> AllowedContentTypes = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -142,6 +143,26 @@ public sealed class FileService : IFileService
         await _files.SaveChangesAsync();
 
         return ToResponse(file);
+    }
+
+    public async Task<FileUrlResponse> GetDownloadUrlAsync(
+        long guildId,
+        long channelId,
+        long fileId,
+        CancellationToken ct = default
+    )
+    {
+        var file = await _files.GetByIdAsync(fileId);
+
+        // 404 (not 403) for anything that isn't a confirmed file in this exact channel: don't leak
+        // existence or pending uploads, and keep a file scoped to its own channel. ViewChannel on the
+        // route channel is already enforced by the [RequirePermission] filter.
+        if (file is null || !file.IsConfirmed || file.GuildId != guildId || file.ChannelId != channelId)
+            throw new KeyNotFoundException("File not found.");
+
+        var url = await _storage.GetPresignedGetUrlAsync(file.MinioKey, DownloadUrlExpiry, ct);
+        var expiresAt = DateTimeOffset.UtcNow.Add(DownloadUrlExpiry).ToUnixTimeMilliseconds();
+        return new FileUrlResponse(url, expiresAt);
     }
 
     private static FileAttachmentResponse ToResponse(FileAttachment f) =>
