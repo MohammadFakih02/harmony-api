@@ -59,3 +59,23 @@ public sealed class EditMessageRequestValidator : AbstractValidator<EditMessageR
             .MaximumLength(2000).WithMessage("Message content must be 2000 characters or fewer.");
     }
 }
+
+public sealed class PresignFileRequestValidator : AbstractValidator<PresignFileRequest>
+{
+    public PresignFileRequestValidator()
+    {
+        RuleFor(x => x.Filename)
+            .NotEmpty().WithMessage("Filename is required.")
+            .MaximumLength(256).WithMessage("Filename must be 256 characters or fewer.");
+
+        RuleFor(x => x.ContentType)
+            .NotEmpty().WithMessage("Content type is required.");
+
+        // Upper bound only — the allowlist and any type-specific rules are semantic and live in
+        // FileService. The shared cap is FileService.MaxFileSizeBytes to keep one source of truth.
+        RuleFor(x => x.SizeBytes)
+            .GreaterThan(0).WithMessage("File size must be greater than zero.")
+            .LessThanOrEqualTo(Services.FileService.MaxFileSizeBytes)
+            .WithMessage("File exceeds the maximum allowed size.");
+    }
+}
