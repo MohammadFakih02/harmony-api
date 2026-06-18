@@ -23,6 +23,15 @@ public interface IFileStorageService
     );
 
     /// <summary>
+    /// Mints a presigned GET URL the client fetches the object from directly (download side).
+    /// </summary>
+    Task<string> GetPresignedGetUrlAsync(
+        string objectKey,
+        TimeSpan expiry,
+        CancellationToken ct = default
+    );
+
+    /// <summary>
     /// Stats the stored object — the source of truth for size/content-type after an upload.
     /// Returns null if the object does not exist (i.e. the client never completed the PUT).
     /// </summary>

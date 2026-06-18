@@ -50,5 +50,21 @@ public class FilesController : ControllerBase
         return Ok(response);
     }
 
+    // GET /api/guilds/{guildId}/channels/{channelId}/files/{fileId}
+    [HttpGet("{fileId:long}")]
+    [RequirePermission(Permission.ViewChannel)]
+    public async Task<IActionResult> GetUrl(
+        long guildId,
+        long channelId,
+        long fileId,
+        CancellationToken ct
+    )
+    {
+        var response = await _files.GetDownloadUrlAsync(guildId, channelId, fileId, ct);
+        // Let the client cache the presigned URL just under its 15-min lifetime.
+        Response.Headers.CacheControl = "private, max-age=840";
+        return Ok(response);
+    }
+
     private long GetUserId() => long.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
 }
