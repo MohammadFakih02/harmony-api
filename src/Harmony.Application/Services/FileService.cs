@@ -145,7 +145,7 @@ public sealed class FileService : IFileService
         return ToResponse(file);
     }
 
-    public async Task<FileUrlResponse> GetDownloadUrlAsync(
+    public async Task<FileDownloadResponse> GetDownloadUrlAsync(
         long guildId,
         long channelId,
         long fileId,
@@ -162,7 +162,16 @@ public sealed class FileService : IFileService
 
         var url = await _storage.GetPresignedGetUrlAsync(file.MinioKey, DownloadUrlExpiry, ct);
         var expiresAt = DateTimeOffset.UtcNow.Add(DownloadUrlExpiry).ToUnixTimeMilliseconds();
-        return new FileUrlResponse(url, expiresAt);
+        return new FileDownloadResponse(
+            file.Id,
+            file.Filename,
+            file.ContentType,
+            file.SizeBytes,
+            file.Width,
+            file.Height,
+            url,
+            expiresAt
+        );
     }
 
     private static FileAttachmentResponse ToResponse(FileAttachment f) =>
