@@ -157,6 +157,13 @@ public static class DependencyInjection
         services.AddScoped<IMessageService, MessageService>();
         services.AddScoped<IUnreadCountService, RedisUnreadCountService>();
         services.AddScoped<IPermissionService, PermissionService>();
+        services.AddScoped<IFileService, FileService>();
+
+        // File storage — S3FileStorageService builds its own IAmazonS3 from config (ObjectStorage
+        // section), so the AWS SDK types stay confined to Infrastructure (not referenced here).
+        services.AddScoped<IFileAttachmentRepository, FileAttachmentRepository>();
+        services.AddSingleton<IFileStorageService, S3FileStorageService>();
+        services.AddHostedService<ObjectStorageBucketInitializer>();
 
         // RabbitMQ consumers and handlers
         services.AddScoped<IMessageConsumerHandler, MessageConsumerHandler>();

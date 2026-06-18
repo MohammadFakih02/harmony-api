@@ -54,6 +54,22 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+      # bitnami/minio auto-starts the server (no `command:` — GH Actions service containers
+      # can't pass the `server /data` arg the stock minio/minio image needs). MINIO_DEFAULT_BUCKETS
+      # pre-creates the test bucket; the app's MinioBucketInitializer is idempotent on top of that.
+      minio:
+        image: bitnami/minio:latest
+        ports:
+          - 9000:9000
+        env:
+          MINIO_ROOT_USER: admin
+          MINIO_ROOT_PASSWORD: secretpassword
+          MINIO_DEFAULT_BUCKETS: harmony-test
+        options: >-
+          --health-cmd "curl -f http://localhost:9000/minio/health/live"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
 
     steps:
       - uses: actions/checkout@v4
