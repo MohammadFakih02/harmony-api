@@ -34,4 +34,17 @@ public interface IFileService
         long fileId,
         CancellationToken ct = default
     );
+
+    /// <summary>
+    /// Mints a short-lived presigned GET URL for a confirmed file in the given channel. ViewChannel
+    /// is enforced by the route filter; this verifies the file exists, is confirmed, and actually
+    /// belongs to that channel (otherwise <see cref="KeyNotFoundException"/> — never leak existence
+    /// or pending uploads, and keep files scoped to their channel).
+    /// </summary>
+    Task<FileUrlResponse> GetDownloadUrlAsync(
+        long guildId,
+        long channelId,
+        long fileId,
+        CancellationToken ct = default
+    );
 }

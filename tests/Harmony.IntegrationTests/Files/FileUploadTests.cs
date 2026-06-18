@@ -112,7 +112,104 @@ public class FileUploadTests : ApiTestBase, IClassFixture<HarmonyWebApplicationF
         confirmResp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
     }
 
+    [Fact]
+    public async Task Download_HappyPath_ReturnsUrlThatServesTheBytes()
+    {
+        var ownerToken = await RegisterAsync("fileowner4", "fileowner4@test.com");
+        var (guildId, _) = await CreateGuildAsync(ownerToken);
+        var channelId = await CreateChannelAsync(ownerToken, guildId);
+        var fileId = await UploadConfirmedFileAsync(ownerToken, guildId, channelId);
+
+        Auth(ownerToken);
+        var resp = await Client.GetAsync(
+            $"/api/guilds/{guildId}/channels/{channelId}/files/{fileId}"
+        );
+        resp.EnsureSuccessStatusCode();
+        var body = await resp.Content.ReadFromJsonAsync<FileUrlResponse>();
+        body!.Url.Should().NotBeNullOrEmpty();
+
+        // The presigned GET URL should actually serve the bytes we uploaded.
+        using var http = new HttpClient();
+        var bytes = await http.GetByteArrayAsync(body.Url);
+        bytes.Length.Should().Be(SmallPng.Length);
+    }
+
+    [Fact]
+    public async Task Download_WhenViewChannelDeniedByOverride_IsForbidden()
+    {
+        var ownerToken = await RegisterAsync("fileowner5", "fileowner5@test.com");
+        var (guildId, invite) = await CreateGuildAsync(ownerToken);
+        var channelId = await CreateChannelAsync(ownerToken, guildId);
+        var (_, everyoneId) = GuildFacts(guildId);
+        var fileId = await UploadConfirmedFileAsync(ownerToken, guildId, channelId);
+
+        var memberToken = await RegisterAsync("filemember5", "filemember5@test.com");
+        await JoinAsync(memberToken, invite);
+
+        // Deny ViewChannel for @everyone on this channel.
+        Auth(ownerToken);
+        var put = await Client.PutAsJsonAsync(
+            $"/api/guilds/{guildId}/channels/{channelId}/overrides/{everyoneId}",
+            new { targetType = "role", allowBits = 0L, denyBits = (long)Permission.ViewChannel }
+        );
+        put.EnsureSuccessStatusCode();
+
+        Auth(memberToken);
+        var resp = await Client.GetAsync(
+            $"/api/guilds/{guildId}/channels/{channelId}/files/{fileId}"
+        );
+        resp.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+    }
+
+    [Fact]
+    public async Task Download_UnconfirmedFile_IsNotFound()
+    {
+        var ownerToken = await RegisterAsync("fileowner6", "fileowner6@test.com");
+        var (guildId, _) = await CreateGuildAsync(ownerToken);
+        var channelId = await CreateChannelAsync(ownerToken, guildId);
+
+        // Presign only — never uploaded/confirmed.
+        Auth(ownerToken);
+        var presignResp = await Client.PostAsJsonAsync(
+            $"/api/guilds/{guildId}/channels/{channelId}/files/presign",
+            new { filename = "pixel.png", contentType = "image/png", sizeBytes = SmallPng.Length }
+        );
+        presignResp.EnsureSuccessStatusCode();
+        var presign = await presignResp.Content.ReadFromJsonAsync<PresignResponse>();
+
+        var resp = await Client.GetAsync(
+            $"/api/guilds/{guildId}/channels/{channelId}/files/{presign!.FileId}"
+        );
+        resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
     // ---- Helpers (mirror ChannelOverrideTests) ----------------------------
+
+    /// <summary>Full presign → PUT → confirm, returning the confirmed file's id.</summary>
+    private async Task<long> UploadConfirmedFileAsync(string ownerToken, long guildId, long channelId)
+    {
+        Auth(ownerToken);
+        var presignResp = await Client.PostAsJsonAsync(
+            $"/api/guilds/{guildId}/channels/{channelId}/files/presign",
+            new { filename = "pixel.png", contentType = "image/png", sizeBytes = SmallPng.Length }
+        );
+        presignResp.EnsureSuccessStatusCode();
+        var presign = await presignResp.Content.ReadFromJsonAsync<PresignResponse>();
+
+        using var http = new HttpClient();
+        var content = new ByteArrayContent(SmallPng);
+        content.Headers.ContentType = new MediaTypeHeaderValue("image/png");
+        (await http.PutAsync(presign!.UploadUrl, content)).EnsureSuccessStatusCode();
+
+        Auth(ownerToken);
+        var confirmResp = await Client.PostAsync(
+            $"/api/guilds/{guildId}/channels/{channelId}/files/{presign.FileId}/confirm",
+            null
+        );
+        confirmResp.EnsureSuccessStatusCode();
+        return presign.FileId;
+    }
+
 
     private async Task<string> RegisterAsync(string username, string email)
     {
@@ -173,6 +270,8 @@ public class FileUploadTests : ApiTestBase, IClassFixture<HarmonyWebApplicationF
     private record ChannelResponse(long Id, long? GuildId, string Name, string Type);
 
     private record PresignResponse(long FileId, string UploadUrl, string ObjectKey, long ExpiresAt);
+
+    private record FileUrlResponse(string Url, long ExpiresAt);
 
     private record FileResponse(
         long Id,
