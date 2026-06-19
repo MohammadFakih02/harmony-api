@@ -243,5 +243,5 @@ public class UnreadCountFlowTests : ApiTestBase, IClassFixture<HarmonyWebApplica
 
     private record IdResponse(long Id);
 
-    private record UnreadCountResponseDto(long ChannelId, int UnreadCount);
+    private record UnreadCountResponseDto(long ChannelId, long GuildId, int UnreadCount);
 }

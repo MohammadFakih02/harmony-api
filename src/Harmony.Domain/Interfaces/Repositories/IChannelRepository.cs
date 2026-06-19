@@ -20,8 +20,9 @@ public interface IChannelRepository
     Task ReorderAsync(IEnumerable<(long ChannelId, int Position)> updates);
 
     /// <summary>
-    /// Returns text-channel ids across many guilds in one query — for sidebar
-    /// unread load, avoiding an N+1 over the user's guilds.
+    /// Returns a channelId → guildId map for all text channels across many guilds in
+    /// one query — for the sidebar unread load. The guildId lets the client roll
+    /// per-channel unread counts up to per-guild badges, avoiding an N+1 over guilds.
     /// </summary>
-    Task<List<long>> GetTextChannelIdsByGuildIdsAsync(IEnumerable<long> guildIds);
+    Task<Dictionary<long, long>> GetTextChannelGuildMapAsync(IEnumerable<long> guildIds);
 }
