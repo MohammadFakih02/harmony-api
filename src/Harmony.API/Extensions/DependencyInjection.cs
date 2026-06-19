@@ -149,6 +149,7 @@ public static class DependencyInjection
         services.AddScoped<MessageRepository>();
         services.AddScoped<IReadStateRepository, ReadStateRepository>();
         services.AddScoped<IRefreshTokenRepository, RefreshTokenRepository>();
+        services.AddScoped<IUserBlockRepository, UserBlockRepository>();
 
         // Application & infrastructure services
         services.AddScoped<IIdentityService, IdentityService>();

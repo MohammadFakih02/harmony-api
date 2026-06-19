@@ -25,3 +25,13 @@ public record PublicUserResponse(
     string? Bio,
     string? StatusMessage
 );
+
+// Returned for /api/users/me/blocks — the blocked user's public identity + when blocked
+public record BlockResponse(
+    long Id,
+    string Username,
+    string? Discriminator,
+    string? AvatarKey,
+    string? BannerKey,
+    long CreatedAt
+);

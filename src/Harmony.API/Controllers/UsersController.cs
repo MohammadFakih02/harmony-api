@@ -21,18 +21,21 @@ public class UsersController : ControllerBase
     private readonly IGuildRepository _guilds;
     private readonly UserManager<User> _userManager;
     private readonly IPresenceService _presence;
+    private readonly IUserBlockRepository _blocks;
 
     public UsersController(
         IUserRepository users,
         IGuildRepository guilds,
         UserManager<User> userManager,
-        IPresenceService presence
+        IPresenceService presence,
+        IUserBlockRepository blocks
     )
     {
         _users = users;
         _guilds = guilds;
         _userManager = userManager;
         _presence = presence;
+        _blocks = blocks;
     }
 
     // GET /api/users/me
@@ -143,6 +146,83 @@ public class UsersController : ControllerBase
                 g.CreatedAt
             ))
         );
+    }
+
+    // -------------------------------------------------------------------------
+    // Blocking — block CRUD + a bidirectional query seam. The effects
+    // (DM/mention/presence suppression) belong to Phase 4 features that will
+    // consume IUserBlockRepository.AreBlockedAsync; nothing consumes it yet.
+    // -------------------------------------------------------------------------
+
+    // POST /api/users/{id}/block — idempotent
+    [HttpPost("{id:long}/block")]
+    public async Task<IActionResult> Block(long id)
+    {
+        var me = GetUserId();
+        if (id == me)
+            return BadRequest(new { error = "You cannot block yourself." });
+
+        var target = await _users.GetByIdAsync(id);
+        if (target is null)
+            return NotFound();
+
+        var existing = await _blocks.GetAsync(me, id);
+        if (existing is null)
+        {
+            await _blocks.AddAsync(
+                new UserBlock
+                {
+                    BlockerId = me,
+                    BlockedId = id,
+                    CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                }
+            );
+            await _blocks.SaveChangesAsync();
+        }
+
+        return NoContent();
+    }
+
+    // DELETE /api/users/{id}/block — idempotent
+    [HttpDelete("{id:long}/block")]
+    public async Task<IActionResult> Unblock(long id)
+    {
+        var me = GetUserId();
+        var existing = await _blocks.GetAsync(me, id);
+        if (existing is not null)
+        {
+            _blocks.Remove(existing);
+            await _blocks.SaveChangesAsync();
+        }
+
+        return NoContent();
+    }
+
+    // GET /api/users/me/blocks
+    [HttpGet("me/blocks")]
+    public async Task<IActionResult> GetMyBlocks()
+    {
+        var blocks = await _blocks.GetByBlockerAsync(GetUserId());
+        if (blocks.Count == 0)
+            return Ok(Array.Empty<BlockResponse>());
+
+        var users = await _users.GetByIdsAsync(blocks.Select(b => b.BlockedId));
+        var result = blocks
+            .Where(b => users.ContainsKey(b.BlockedId))
+            .Select(b =>
+            {
+                var u = users[b.BlockedId];
+                return new BlockResponse(
+                    u.Id,
+                    u.UserName!,
+                    u.Discriminator,
+                    u.AvatarKey,
+                    u.BannerKey,
+                    b.CreatedAt
+                );
+            });
+
+        return Ok(result);
     }
 
     // -------------------------------------------------------------------------
