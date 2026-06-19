@@ -27,6 +27,7 @@ public class ChatHub : Hub<IChatClient>
     private readonly IGuildRepository _guildRepository;
     private readonly IChannelRepository _channelRepository;
     private readonly IPermissionService _permissions;
+    private readonly IPresenceService _presence;
     private readonly ILogger<ChatHub> _logger;
 
     public ChatHub(
@@ -34,6 +35,7 @@ public class ChatHub : Hub<IChatClient>
         IGuildRepository guildRepository,
         IChannelRepository channelRepository,
         IPermissionService permissions,
+        IPresenceService presence,
         ILogger<ChatHub> logger
     )
     {
@@ -41,6 +43,7 @@ public class ChatHub : Hub<IChatClient>
         _guildRepository = guildRepository;
         _channelRepository = channelRepository;
         _permissions = permissions;
+        _presence = presence;
         _logger = logger;
     }
 
@@ -55,11 +58,14 @@ public class ChatHub : Hub<IChatClient>
             GetUserId(),
             Context.ConnectionId
         );
+        await _presence.SetOnlineAsync(GetUserId(), Context.ConnectionId);
         await base.OnConnectedAsync();
     }
 
     public override async Task OnDisconnectedAsync(Exception? exception)
     {
+        await _presence.SetOfflineAsync(GetUserId(), Context.ConnectionId);
+
         if (exception is not null)
             _logger.LogWarning(
                 exception,
@@ -75,6 +81,25 @@ public class ChatHub : Hub<IChatClient>
             );
 
         await base.OnDisconnectedAsync(exception);
+    }
+
+    /// <summary>
+    /// Periodic client keep-alive (every 45s per the client contract). Refreshes
+    /// the user's presence TTL without broadcasting — connect/disconnect own that.
+    /// </summary>
+    public async Task Heartbeat()
+    {
+        await _presence.HeartbeatAsync(GetUserId());
+    }
+
+    /// <summary>
+    /// Client-reported activity signal. The client calls SetIdle(true) after ~15 min
+    /// with no user interaction, and SetIdle(false) on the next interaction. Only shifts
+    /// the effective status when the user's preferred status is "online" (online ↔ away).
+    /// </summary>
+    public async Task SetIdle(bool idle)
+    {
+        await _presence.SetIdleAsync(GetUserId(), idle);
     }
 
     // -------------------------------------------------------------------------

@@ -71,4 +71,22 @@ public class HubBroadcaster : IHubBroadcaster
         MessageFailedPayload payload,
         CancellationToken ct = default
     ) => _hubContext.Clients.User(senderId.ToString()).MessageFailed(payload);
+
+    public Task BroadcastOnlineStatusAsync(
+        long recipientId,
+        OnlineStatusPayload payload,
+        CancellationToken ct = default
+    ) => _hubContext.Clients.User(recipientId.ToString()).OnlineStatus(payload);
+
+    public Task BroadcastOfflineStatusAsync(
+        long recipientId,
+        OfflineStatusPayload payload,
+        CancellationToken ct = default
+    ) => _hubContext.Clients.User(recipientId.ToString()).OfflineStatus(payload);
+
+    public Task BroadcastStatusChangedAsync(
+        long recipientId,
+        StatusChangedPayload payload,
+        CancellationToken ct = default
+    ) => _hubContext.Clients.User(recipientId.ToString()).StatusChanged(payload);
 }

@@ -67,4 +67,35 @@ public interface IHubBroadcaster
         MessageFailedPayload payload,
         CancellationToken ct = default
     );
+
+    /// <summary>
+    /// Notifies a single recipient that a user came online. Per-recipient
+    /// (Clients.User) — callers fan this out over a resolved recipient list.
+    /// </summary>
+    Task BroadcastOnlineStatusAsync(
+        long recipientId,
+        OnlineStatusPayload payload,
+        CancellationToken ct = default
+    );
+
+    /// <summary>
+    /// Notifies a single recipient that a user went offline. Same per-recipient
+    /// fan-out shape as BroadcastOnlineStatusAsync.
+    /// </summary>
+    Task BroadcastOfflineStatusAsync(
+        long recipientId,
+        OfflineStatusPayload payload,
+        CancellationToken ct = default
+    );
+
+    /// <summary>
+    /// Notifies a single recipient of a user's status change. Same per-recipient
+    /// shape as the online/offline broadcasters; the caller chooses the payload's
+    /// Status per audience (effective for friends, preferred for the user itself).
+    /// </summary>
+    Task BroadcastStatusChangedAsync(
+        long recipientId,
+        StatusChangedPayload payload,
+        CancellationToken ct = default
+    );
 }
