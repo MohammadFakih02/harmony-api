@@ -58,10 +58,17 @@ public class ReadStatesController : ControllerBase
         var userId = GetUserId();
 
         var guilds = await _guilds.GetByUserIdAsync(userId);
-        var channelIds = await _channels.GetTextChannelIdsByGuildIdsAsync(guilds.Select(g => g.Id));
-        var counts = await _unread.GetUnreadForUserAsync(userId, channelIds);
+        var channelGuildMap = await _channels.GetTextChannelGuildMapAsync(guilds.Select(g => g.Id));
+        var counts = await _unread.GetUnreadForUserAsync(userId, channelGuildMap.Keys);
 
-        return Ok(counts.Select(kv => new UnreadCountResponse(kv.Key, kv.Value)));
+        // Attach each channel's guildId so the client can roll counts up to guild badges.
+        return Ok(
+            counts.Select(kv => new UnreadCountResponse(
+                kv.Key,
+                channelGuildMap[kv.Key],
+                kv.Value
+            ))
+        );
     }
 
     private long GetUserId() => long.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);

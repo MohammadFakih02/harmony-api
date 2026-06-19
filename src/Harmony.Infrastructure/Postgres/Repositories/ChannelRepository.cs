@@ -66,7 +66,7 @@ public class ChannelRepository : IChannelRepository
         });
     }
 
-    public async Task<List<long>> GetTextChannelIdsByGuildIdsAsync(IEnumerable<long> guildIds)
+    public async Task<Dictionary<long, long>> GetTextChannelGuildMapAsync(IEnumerable<long> guildIds)
     {
         var ids = guildIds as IReadOnlyList<long> ?? guildIds.ToList();
         if (ids.Count == 0)
@@ -76,8 +76,7 @@ public class ChannelRepository : IChannelRepository
             .Channels.Where(c =>
                 c.GuildId != null && ids.Contains(c.GuildId.Value) && c.Type == "text"
             )
-            .Select(c => c.Id)
-            .ToListAsync();
+            .ToDictionaryAsync(c => c.Id, c => c.GuildId!.Value);
     }
 
     public async Task SaveChangesAsync() => await _db.SaveChangesAsync();
