@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace Harmony.Application.DTOs.Responses;
 
 public record SendMessageResponse(
@@ -26,7 +28,9 @@ public record MessageResponse(
     bool IsEdited,
     long? ReplyToId,
     List<long> MentionIds,
-    List<long> AttachmentIds,
+    // Snowflake ids → JSON strings so the browser keeps full precision (the attachment
+    // renderer fetches GET /files/{id} with these; a rounded id would 404).
+    [property: JsonNumberHandling(JsonNumberHandling.WriteAsString)] List<long> AttachmentIds,
     long SentAt,
     long? EditedAt
 );

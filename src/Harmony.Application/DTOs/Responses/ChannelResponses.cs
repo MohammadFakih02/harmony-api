@@ -32,6 +32,7 @@ public record ChannelOverrideResponse(
 public record ChannelCapabilitiesResponse(
     bool CanView,
     bool CanSend,
+    bool CanAttach,
     bool CanManageMessages,
     bool CanManageChannels,
     bool TimedOut
