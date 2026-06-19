@@ -229,6 +229,7 @@ public class ChannelsController : ControllerBase
         return Ok(new ChannelCapabilitiesResponse(
             CanView: canView,
             CanSend: canView && Has(Permission.SendMessage) && !timedOut,
+            CanAttach: canView && Has(Permission.AttachFiles),
             CanManageMessages: Has(Permission.ManageMessages),
             CanManageChannels: Has(Permission.ManageChannels),
             TimedOut: timedOut
