@@ -28,7 +28,7 @@ jobs:
           POSTGRES_USER: admin
           POSTGRES_PASSWORD: secret
         options: >-
-          --health-cmd "pg_isready -U harmony"
+          --health-cmd "pg_isready -U admin -d harmony_test"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
@@ -54,22 +54,12 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
-      # bitnami/minio auto-starts the server (no `command:` — GH Actions service containers
-      # can't pass the `server /data` arg the stock minio/minio image needs). MINIO_DEFAULT_BUCKETS
-      # pre-creates the test bucket; the app's MinioBucketInitializer is idempotent on top of that.
-      minio:
-        image: bitnami/minio:latest
-        ports:
-          - 9000:9000
-        env:
-          MINIO_ROOT_USER: admin
-          MINIO_ROOT_PASSWORD: secretpassword
-          MINIO_DEFAULT_BUCKETS: harmony-test
-        options: >-
-          --health-cmd "curl -f http://localhost:9000/minio/health/live"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
+      # NOTE: MinIO is NOT a service container. The official minio/minio image needs the
+      # `server /data` argument, which GH Actions service containers can't pass, and
+      # bitnami/minio (which auto-started without args) was removed from Docker Hub in 2025
+      # (`manifest unknown`). Instead it's started as an explicit `docker run` step below,
+      # where args work exactly like docker-compose. The app's ObjectStorageBucketInitializer
+      # creates the harmony-test bucket on startup, so no pre-seeding is needed.
 
     steps:
       - uses: actions/checkout@v4
@@ -78,6 +68,24 @@ jobs:
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: "10.0.x"
+
+      - name: Start MinIO
+        run: |
+          docker run -d --name minio \
+            -p 9000:9000 \
+            -e MINIO_ROOT_USER=admin \
+            -e MINIO_ROOT_PASSWORD=secretpassword \
+            minio/minio server /data
+
+      - name: Wait for MinIO
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:9000/minio/health/live; then
+              echo "MinIO is ready"; exit 0
+            fi
+            echo "Waiting for MinIO ($i/30)..."; sleep 2
+          done
+          echo "MinIO did not become healthy in time"; docker logs minio; exit 1
 
       - name: Restore dependencies
         run: dotnet restore

@@ -156,6 +156,7 @@ public static class DependencyInjection
         services.AddScoped<IAuthService, AuthService>();
         services.AddScoped<IMessageService, MessageService>();
         services.AddScoped<IUnreadCountService, RedisUnreadCountService>();
+        services.AddScoped<IPresenceService, RedisPresenceService>();
         services.AddScoped<IPermissionService, PermissionService>();
         services.AddScoped<IFileService, FileService>();
 

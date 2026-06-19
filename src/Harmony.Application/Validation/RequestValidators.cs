@@ -1,5 +1,6 @@
 using FluentValidation;
 using Harmony.Application.DTOs.Requests;
+using Harmony.Application.Interfaces.Services;
 
 namespace Harmony.Application.Validation;
 
@@ -68,6 +69,17 @@ public sealed class EditMessageRequestValidator : AbstractValidator<EditMessageR
         RuleFor(x => x.Content)
             .NotEmpty().WithMessage("Message content must not be empty.")
             .MaximumLength(2000).WithMessage("Message content must be 2000 characters or fewer.");
+    }
+}
+
+public sealed class UpdateStatusRequestValidator : AbstractValidator<UpdateStatusRequest>
+{
+    public UpdateStatusRequestValidator()
+    {
+        RuleFor(x => x.Status)
+            .NotEmpty().WithMessage("Status is required.")
+            .Must(PresenceStatus.IsValidPreferred)
+            .WithMessage("Status must be one of: online, away, dnd, invisible.");
     }
 }
 
