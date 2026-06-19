@@ -12,6 +12,7 @@ public class User : IdentityUser<long>
     public string? BannerKey { get; set; }
     public string? Bio { get; set; }
     public string? StatusMessage { get; set; }
+    public string PreferredStatus { get; set; } = "online"; // online | away | dnd | invisible
     public string AccountStatus { get; set; } = "active";
     public long CreatedAt { get; set; }
 

@@ -10,6 +10,7 @@ public record UserProfileResponse(
     string? BannerKey,
     string? Bio,
     string? StatusMessage,
+    string PreferredStatus,
     string AccountStatus,
     long CreatedAt
 );

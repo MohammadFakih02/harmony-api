@@ -60,6 +60,27 @@ public interface IChatClient
     /// The client should remove the optimistic message and show an error state.
     /// </summary>
     Task MessageFailed(MessageFailedPayload payload);
+
+    /// <summary>
+    /// Fired when a user's first connection comes online. Sent to that user's friends
+    /// via Clients.User (per-recipient) — recipient resolution is a seam that returns
+    /// no one until the friends-system feature lands.
+    /// </summary>
+    Task OnlineStatus(OnlineStatusPayload payload);
+
+    /// <summary>
+    /// Fired when a user's last connection drops (all tabs/devices closed). Same
+    /// per-recipient delivery and friends-system seam as OnlineStatus.
+    /// </summary>
+    Task OfflineStatus(OfflineStatusPayload payload);
+
+    /// <summary>
+    /// Fired when a connected user's status changes (manual status pick or the
+    /// 15-min idle toggle). Friends receive the public effective status; the user's
+    /// own connections receive their raw preferred status (so other tabs sync the
+    /// real choice — including invisible/dnd, which friends never see as such).
+    /// </summary>
+    Task StatusChanged(StatusChangedPayload payload);
 }
 
 /// <summary>Minimal delete notification — no content, just identity.</summary>
@@ -92,3 +113,16 @@ public record UnreadCountPayload(long ChannelId, long GuildId, int UnreadCount);
 
 /// <summary>Failure notification sent to the original sender of an undeliverable message.</summary>
 public record MessageFailedPayload(long MessageId, long ChannelId, long GuildId);
+
+/// <summary>A user came online (their first connection was established).</summary>
+public record OnlineStatusPayload(long UserId, string Status);
+
+/// <summary>A user went offline (their last connection dropped).</summary>
+public record OfflineStatusPayload(long UserId);
+
+/// <summary>
+/// A connected user's status changed. <see cref="Status"/> carries either the public
+/// effective status (to friends) or the raw preferred status (to the user's own tabs),
+/// depending on the audience the broadcaster targeted.
+/// </summary>
+public record StatusChangedPayload(long UserId, string Status, string? StatusMessage);
