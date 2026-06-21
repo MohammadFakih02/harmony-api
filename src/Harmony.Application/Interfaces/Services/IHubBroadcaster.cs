@@ -98,4 +98,14 @@ public interface IHubBroadcaster
         StatusChangedPayload payload,
         CancellationToken ct = default
     );
+
+    /// <summary>
+    /// Notifies a single user that one of their mutes ended (expired or manually
+    /// removed). Per-user (Clients.User) — a mute is private to its owner.
+    /// </summary>
+    Task BroadcastMuteExpiredAsync(
+        long userId,
+        MuteExpiredPayload payload,
+        CancellationToken ct = default
+    );
 }

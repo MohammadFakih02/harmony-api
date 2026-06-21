@@ -89,4 +89,10 @@ public class HubBroadcaster : IHubBroadcaster
         StatusChangedPayload payload,
         CancellationToken ct = default
     ) => _hubContext.Clients.User(recipientId.ToString()).StatusChanged(payload);
+
+    public Task BroadcastMuteExpiredAsync(
+        long userId,
+        MuteExpiredPayload payload,
+        CancellationToken ct = default
+    ) => _hubContext.Clients.User(userId.ToString()).MuteExpired(payload);
 }

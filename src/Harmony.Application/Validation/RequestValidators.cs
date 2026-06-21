@@ -102,3 +102,25 @@ public sealed class PresignFileRequestValidator : AbstractValidator<PresignFileR
             .WithMessage("File exceeds the maximum allowed size.");
     }
 }
+
+public sealed class CreateMuteRequestValidator : AbstractValidator<CreateMuteRequest>
+{
+    public CreateMuteRequestValidator()
+    {
+        RuleFor(x => x.TargetType)
+            .NotEmpty().WithMessage("Target type is required.")
+            .Must(MuteTargetType.IsValid)
+            .WithMessage("Target type must be one of: guild, channel, user.");
+
+        RuleFor(x => x.TargetId)
+            .GreaterThan(0).WithMessage("Target id is required.");
+
+        // Lenient by design: a mute is a personal preference, so we don't verify the
+        // target exists or that the caller is a member. The only temporal rule is that
+        // a provided expiry must be in the future — a past expiry would be swept instantly.
+        RuleFor(x => x.MutedUntil!.Value)
+            .GreaterThan(_ => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds())
+            .When(x => x.MutedUntil.HasValue)
+            .WithMessage("MutedUntil must be a future timestamp.");
+    }
+}

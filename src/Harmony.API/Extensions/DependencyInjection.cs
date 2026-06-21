@@ -150,6 +150,7 @@ public static class DependencyInjection
         services.AddScoped<IReadStateRepository, ReadStateRepository>();
         services.AddScoped<IRefreshTokenRepository, RefreshTokenRepository>();
         services.AddScoped<IUserBlockRepository, UserBlockRepository>();
+        services.AddScoped<IUserMuteRepository, UserMuteRepository>();
 
         // Application & infrastructure services
         services.AddScoped<IIdentityService, IdentityService>();
@@ -177,6 +178,8 @@ public static class DependencyInjection
         if (!isTest)
         {
             services.AddHostedService<TokenPruningService>();
+            services.AddHostedService<MuteExpiryService>();
+            services.AddHostedService<OrphanFileSweepService>();
         }
 
         // -----------------------------------------------------------------------

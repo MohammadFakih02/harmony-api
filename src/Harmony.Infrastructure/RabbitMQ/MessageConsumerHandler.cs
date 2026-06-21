@@ -56,8 +56,25 @@ public class MessageConsumerHandler : IMessageConsumerHandler
 
         await _messageRepository.SaveAsync(message, ct);
 
+        // Best-effort, like the consumer's unread fan-out: the Scylla message is already
+        // persisted, so a notification-write failure (e.g. a constraint violation because a
+        // mentioned user/channel is gone) must NOT bubble into the retry pipeline and block
+        // the message's broadcast. Notifications are a non-critical side effect.
         if (evt.MentionIds.Count > 0)
-            await CreateMentionNotificationsAsync(evt, ct);
+        {
+            try
+            {
+                await CreateMentionNotificationsAsync(evt, ct);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "MessageSent: mention-notification creation failed for MessageId {MessageId} — message persisted, continuing",
+                    evt.MessageId
+                );
+            }
+        }
 
         _logger.LogInformation(
             "MessageSent handled (Scylla) — MessageId: {MessageId}",
