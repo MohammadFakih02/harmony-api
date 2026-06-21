@@ -20,6 +20,8 @@ public class MessageService : IMessageService
     private readonly IUserRepository _userRepository;
     private readonly IPermissionService _permissions;
     private readonly IFileAttachmentRepository _attachments;
+    private readonly IDirectMessageRepository _dms;
+    private readonly IUserBlockRepository _blocks;
 
     /// <summary>Max attachments per message (Discord parity).</summary>
     public const int MaxAttachments = 10;
@@ -32,7 +34,9 @@ public class MessageService : IMessageService
         IMessageRepository messageRepository,
         IUserRepository userRepository,
         IPermissionService permissions,
-        IFileAttachmentRepository attachments
+        IFileAttachmentRepository attachments,
+        IDirectMessageRepository dms,
+        IUserBlockRepository blocks
     )
     {
         _channelRepository = channelRepository;
@@ -43,37 +47,48 @@ public class MessageService : IMessageService
         _userRepository = userRepository;
         _permissions = permissions;
         _attachments = attachments;
+        _dms = dms;
+        _blocks = blocks;
     }
 
     public async Task<SendMessageResponse> SendMessageAsync(
         long userId,
-        long guildId,
+        long? guildId,
         long channelId,
         SendMessageRequest request,
         CancellationToken ct = default
     )
     {
-        // Verify channel exists and belongs to guild natively via repository
-        var channel = await _channelRepository.GetByIdAndGuildIdAsync(channelId, guildId);
-        if (channel is null)
-            throw new KeyNotFoundException("Channel not found.");
+        if (guildId is { } gid)
+        {
+            // Verify channel exists and belongs to guild natively via repository
+            var channel = await _channelRepository.GetByIdAndGuildIdAsync(channelId, gid);
+            if (channel is null)
+                throw new KeyNotFoundException("Channel not found.");
 
-        // Authorize: the caller must be able to view AND send in this channel. Resolved bits
-        // apply the channel's overrides; non-members resolve to 0, so this subsumes the old
-        // membership check. (ViewChannel | SendMessage are both in the @everyone default set.)
-        const long sendMask = (long)(Permission.ViewChannel | Permission.SendMessage);
-        var bits = await _permissions.ResolveAsync(userId, guildId, channelId, ct);
-        if ((bits & sendMask) != sendMask)
-            throw new UnauthorizedAccessException(
-                "You do not have permission to send messages in this channel."
-            );
+            // Authorize: the caller must be able to view AND send in this channel. Resolved bits
+            // apply the channel's overrides; non-members resolve to 0, so this subsumes the old
+            // membership check. (ViewChannel | SendMessage are both in the @everyone default set.)
+            const long sendMask = (long)(Permission.ViewChannel | Permission.SendMessage);
+            var bits = await _permissions.ResolveAsync(userId, gid, channelId, ct);
+            if ((bits & sendMask) != sendMask)
+                throw new UnauthorizedAccessException(
+                    "You do not have permission to send messages in this channel."
+                );
 
-        // Timeout gate (deliberately excluded from the cached resolver, §27): a member whose
-        // CommunicationDisabledUntil is in the future cannot send, even with the permission.
-        var member = await _guildRepository.GetMemberAsync(guildId, userId);
-        if (member?.CommunicationDisabledUntil is { } until
-            && until > DateTimeOffset.UtcNow.ToUnixTimeMilliseconds())
-            throw new UnauthorizedAccessException("You are timed out and cannot send messages.");
+            // Timeout gate (deliberately excluded from the cached resolver, §27): a member whose
+            // CommunicationDisabledUntil is in the future cannot send, even with the permission.
+            var member = await _guildRepository.GetMemberAsync(gid, userId);
+            if (member?.CommunicationDisabledUntil is { } until
+                && until > DateTimeOffset.UtcNow.ToUnixTimeMilliseconds())
+                throw new UnauthorizedAccessException("You are timed out and cannot send messages.");
+        }
+        else
+        {
+            // DM: no guild permissions — the caller must be a participant of the DM channel and
+            // must not be blocked by (or blocking) the peer. Throws 404/403 as appropriate.
+            await AuthorizeDmSendAsync(userId, channelId);
+        }
 
         // Validate attachments: each must exist, be confirmed, be owned by the sender, and belong to
         // THIS channel (never trust client-provided ids — NON-NEGOTIABLE #8). Capped per message.
@@ -88,7 +103,9 @@ public class MessageService : IMessageService
                 throw new ArgumentException("Attachment not found or not confirmed.");
             if (attachment.UploaderId != userId)
                 throw new UnauthorizedAccessException("You can only attach files you uploaded.");
-            if (attachment.GuildId != guildId || attachment.ChannelId != channelId)
+            // ChannelId uniquely identifies the container (guild channel or DM), so it is the
+            // authoritative scope check for both guild messages and DMs.
+            if (attachment.ChannelId != channelId)
                 throw new ArgumentException("Attachment does not belong to this channel.");
         }
 
@@ -118,6 +135,10 @@ public class MessageService : IMessageService
             ct
         );
 
+        // A new message resurfaces a DM that either participant had hidden (§19).
+        if (guildId is null)
+            await _dms.UnhideAllAsync(channelId);
+
         return new SendMessageResponse(
             MessageId: messageId,
             ChannelId: channelId,
@@ -134,15 +155,22 @@ public class MessageService : IMessageService
 
     public async Task DeleteMessageAsync(
         long userId,
-        long guildId,
+        long? guildId,
         long channelId,
         long messageId,
         CancellationToken ct = default
     )
     {
-        var channel = await _channelRepository.GetByIdAndGuildIdAsync(channelId, guildId);
-        if (channel is null)
-            throw new KeyNotFoundException("Channel not found.");
+        if (guildId is { } gid)
+        {
+            var channel = await _channelRepository.GetByIdAndGuildIdAsync(channelId, gid);
+            if (channel is null)
+                throw new KeyNotFoundException("Channel not found.");
+        }
+        else
+        {
+            await GetDmChannelOrThrowAsync(channelId);
+        }
 
         var message = await _messageRepository.GetByIdAsync(messageId, ct);
         if (message is null)
@@ -154,13 +182,23 @@ public class MessageService : IMessageService
                 "Message does not belong to the specified channel."
             );
 
-        // You may always delete your own message; deleting another's requires ManageMessages
-        // (owners/administrators resolve to all bits, so this still covers them).
-        if (message.UserId != userId
-            && !await _permissions.HasAsync(userId, guildId, Permission.ManageMessages, channelId, ct))
-            throw new UnauthorizedAccessException(
-                "You do not have permission to delete this message."
-            );
+        // You may always delete your own message. In a guild, deleting another's requires
+        // ManageMessages (owners/administrators resolve to all bits). A DM has no moderators,
+        // so only the author may delete — and only a participant could own a message anyway.
+        if (message.UserId != userId)
+        {
+            if (guildId is { } mgid
+                && await _permissions.HasAsync(userId, mgid, Permission.ManageMessages, channelId, ct))
+            {
+                // moderator delete — allowed
+            }
+            else
+            {
+                throw new UnauthorizedAccessException(
+                    "You do not have permission to delete this message."
+                );
+            }
+        }
 
         // 1. Synchronously update ScyllaDB
         await _messageRepository.DeleteAsync(messageId, channelId, ct);
@@ -180,13 +218,15 @@ public class MessageService : IMessageService
 
     public async Task EditMessageAsync(
         long userId,
-        long guildId,
+        long? guildId,
         long channelId,
         long messageId,
         EditMessageRequest request,
         CancellationToken ct = default
     )
     {
+        // Edit is own-message-only for both guild and DM (ownership implies participation),
+        // so no guild/DM authorization branch is needed beyond the author check below.
         if (string.IsNullOrWhiteSpace(request.Content) || request.Content.Length > 2000)
             throw new ArgumentException("Message content must be between 1 and 2000 characters.");
 
@@ -222,23 +262,36 @@ public class MessageService : IMessageService
 
     public async Task<ChannelMessagesResponse> GetChannelMessagesAsync(
         long userId,
-        long guildId,
+        long? guildId,
         long channelId,
         int limit = 50,
         long? beforeMessageId = null,
         CancellationToken ct = default
     )
     {
-        var channel = await _channelRepository.GetByIdAndGuildIdAsync(channelId, guildId);
-        if (channel is null)
-            throw new KeyNotFoundException("Channel not found.");
+        if (guildId is { } gid)
+        {
+            var channel = await _channelRepository.GetByIdAndGuildIdAsync(channelId, gid);
+            if (channel is null)
+                throw new KeyNotFoundException("Channel not found.");
 
-        // Authorize: viewing channel history requires ViewChannel + ReadHistory (both in the
-        // @everyone default). Channel overrides apply; non-members resolve to 0.
-        const long readMask = (long)(Permission.ViewChannel | Permission.ReadHistory);
-        var bits = await _permissions.ResolveAsync(userId, guildId, channelId, ct);
-        if ((bits & readMask) != readMask)
-            throw new UnauthorizedAccessException("You do not have permission to view this channel.");
+            // Authorize: viewing channel history requires ViewChannel + ReadHistory (both in the
+            // @everyone default). Channel overrides apply; non-members resolve to 0.
+            const long readMask = (long)(Permission.ViewChannel | Permission.ReadHistory);
+            var bits = await _permissions.ResolveAsync(userId, gid, channelId, ct);
+            if ((bits & readMask) != readMask)
+                throw new UnauthorizedAccessException(
+                    "You do not have permission to view this channel."
+                );
+        }
+        else
+        {
+            // DM: must be a participant. (Reading history is allowed even if blocked — blocking
+            // hides the peer client-side; it doesn't revoke access to your own conversation.)
+            await GetDmChannelOrThrowAsync(channelId);
+            if (!await _dms.IsParticipantAsync(channelId, userId))
+                throw new UnauthorizedAccessException("You are not a participant of this conversation.");
+        }
 
         limit = Math.Clamp(limit, 1, 100);
 
@@ -284,6 +337,41 @@ public class MessageService : IMessageService
         catch (BrokenCircuitException)
         {
             return new ChannelMessagesResponse([], Degraded: true);
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // DM authorization helpers
+    // -------------------------------------------------------------------------
+
+    /// <summary>
+    /// Asserts the channel exists and is a DM (no owning guild). Throws 404 otherwise,
+    /// so a guild channel id can never be driven down the guild-less DM path.
+    /// </summary>
+    private async Task GetDmChannelOrThrowAsync(long channelId)
+    {
+        var channel = await _channelRepository.GetByIdAsync(channelId);
+        if (channel is null || channel.GuildId is not null || channel.Type != "dm")
+            throw new KeyNotFoundException("Channel not found.");
+    }
+
+    /// <summary>
+    /// Authorizes a DM send: the channel must be a DM, the caller a participant, and the
+    /// caller must not be blocked by (or blocking) the peer.
+    /// </summary>
+    private async Task AuthorizeDmSendAsync(long userId, long channelId)
+    {
+        await GetDmChannelOrThrowAsync(channelId);
+
+        var participantIds = await _dms.GetParticipantIdsAsync(channelId);
+        if (!participantIds.Contains(userId))
+            throw new UnauthorizedAccessException("You are not a participant of this conversation.");
+
+        // Blocking suppresses DMs in either direction.
+        foreach (var peerId in participantIds)
+        {
+            if (peerId != userId && await _blocks.AreBlockedAsync(userId, peerId))
+                throw new UnauthorizedAccessException("You cannot send messages to this user.");
         }
     }
 }

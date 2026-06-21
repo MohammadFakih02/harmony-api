@@ -4,7 +4,7 @@ public class FileAttachment
 {
     public long Id { get; set; }
     public long UploaderId { get; set; }
-    public long GuildId { get; set; }
+    public long? GuildId { get; set; } // null for DM attachments — a DM has no guild
     public long ChannelId { get; set; }
     public string MinioKey { get; set; } = null!;
     public string Filename { get; set; } = null!;

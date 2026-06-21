@@ -34,6 +34,8 @@ public class MessageServiceAttachmentTests
         var users = new Mock<IUserRepository>();
         var permissions = new Mock<IPermissionService>();
         var files = new Mock<IFileAttachmentRepository>();
+        var dms = new Mock<IDirectMessageRepository>();
+        var blocks = new Mock<IUserBlockRepository>();
 
         // Happy-path send context: channel exists, can view+send, not timed out.
         channels.Setup(c => c.GetByIdAndGuildIdAsync(ChannelId, GuildId))
@@ -48,7 +50,8 @@ public class MessageServiceAttachmentTests
 
         var sut = new MessageService(
             channels.Object, guilds.Object, publisher.Object, snowflake.Object,
-            messages.Object, users.Object, permissions.Object, files.Object
+            messages.Object, users.Object, permissions.Object, files.Object,
+            dms.Object, blocks.Object
         );
         return (sut, publisher, files);
     }

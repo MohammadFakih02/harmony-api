@@ -5,7 +5,7 @@ namespace Harmony.Application.DTOs.Responses;
 public record SendMessageResponse(
     long MessageId,
     long ChannelId,
-    long GuildId,
+    long? GuildId,
     long UserId,
     string Content,
     string MessageType,
@@ -18,7 +18,7 @@ public record SendMessageResponse(
 public record MessageResponse(
     long MessageId,
     long ChannelId,
-    long GuildId,
+    long? GuildId,
     long UserId,
     string Username,
     string? AvatarKey,

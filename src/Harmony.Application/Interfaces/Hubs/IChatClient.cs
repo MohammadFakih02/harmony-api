@@ -110,20 +110,20 @@ public interface IChatClient
     Task FriendRemoved(FriendRemovedPayload payload);
 }
 
-/// <summary>Minimal delete notification — no content, just identity.</summary>
+/// <summary>Minimal delete notification — no content, just identity. GuildId is null for DMs.</summary>
 public record MessageDeletedPayload(
     long MessageId,
     long ChannelId,
-    long GuildId,
+    long? GuildId,
     long DeletedByUserId,
     long DeletedAt
 );
 
-/// <summary>Minimal edit notification — new content and metadata only.</summary>
+/// <summary>Minimal edit notification — new content and metadata only. GuildId is null for DMs.</summary>
 public record MessageEditedPayload(
     long MessageId,
     long ChannelId,
-    long GuildId,
+    long? GuildId,
     long EditedByUserId,
     string NewContent,
     long EditedAt
@@ -135,11 +135,11 @@ public record MessageEditedPayload(
 /// </summary>
 public record ChannelDeletedPayload(long ChannelId, long GuildId, long DeletedAt);
 
-/// <summary>Absolute unread count for one user in one channel.</summary>
-public record UnreadCountPayload(long ChannelId, long GuildId, int UnreadCount);
+/// <summary>Absolute unread count for one user in one channel. GuildId is null for DMs.</summary>
+public record UnreadCountPayload(long ChannelId, long? GuildId, int UnreadCount);
 
-/// <summary>Failure notification sent to the original sender of an undeliverable message.</summary>
-public record MessageFailedPayload(long MessageId, long ChannelId, long GuildId);
+/// <summary>Failure notification sent to the original sender of an undeliverable message. GuildId is null for DMs.</summary>
+public record MessageFailedPayload(long MessageId, long ChannelId, long? GuildId);
 
 /// <summary>A user came online (their first connection was established).</summary>
 public record OnlineStatusPayload(long UserId, string Status);

@@ -28,6 +28,7 @@ public class ChatHub : Hub<IChatClient>
     private readonly IChannelRepository _channelRepository;
     private readonly IPermissionService _permissions;
     private readonly IPresenceService _presence;
+    private readonly IDirectMessageRepository _dms;
     private readonly ILogger<ChatHub> _logger;
 
     public ChatHub(
@@ -36,6 +37,7 @@ public class ChatHub : Hub<IChatClient>
         IChannelRepository channelRepository,
         IPermissionService permissions,
         IPresenceService presence,
+        IDirectMessageRepository dms,
         ILogger<ChatHub> logger
     )
     {
@@ -44,6 +46,7 @@ public class ChatHub : Hub<IChatClient>
         _channelRepository = channelRepository;
         _permissions = permissions;
         _presence = presence;
+        _dms = dms;
         _logger = logger;
     }
 
@@ -119,13 +122,18 @@ public class ChatHub : Hub<IChatClient>
         if (channel is null)
             throw new HubException("Channel not found.");
 
-        // Guild channels require membership. DM/group channels (no GuildId) are not
-        // supported over this path yet — that's a Phase 4 feature.
-        if (channel.GuildId is not { } guildId)
-            throw new HubException("You cannot join this channel.");
-
-        if (!await _permissions.HasAsync(userId, guildId, Permission.ViewChannel, channelId))
-            throw new HubException("You do not have permission to view this channel.");
+        // Guild channels require ViewChannel (overrides applied; non-members resolve to 0).
+        // Guild-less channels are DMs — the caller must be a participant.
+        if (channel.GuildId is { } guildId)
+        {
+            if (!await _permissions.HasAsync(userId, guildId, Permission.ViewChannel, channelId))
+                throw new HubException("You do not have permission to view this channel.");
+        }
+        else
+        {
+            if (!await _dms.IsParticipantAsync(channelId, userId))
+                throw new HubException("You cannot join this channel.");
+        }
 
         await Groups.AddToGroupAsync(Context.ConnectionId, ChannelGroup(channelId));
         _logger.LogDebug("User {UserId} joined {Group}", userId, ChannelGroup(channelId));

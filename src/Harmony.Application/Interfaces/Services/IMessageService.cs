@@ -7,7 +7,7 @@ public interface IMessageService
 {
     Task<SendMessageResponse> SendMessageAsync(
         long userId,
-        long guildId,
+        long? guildId,
         long channelId,
         SendMessageRequest request,
         CancellationToken ct = default
@@ -15,7 +15,7 @@ public interface IMessageService
 
     Task<ChannelMessagesResponse> GetChannelMessagesAsync(
         long userId,
-        long guildId,
+        long? guildId,
         long channelId,
         int limit = 50,
         long? beforeMessageId = null,
@@ -24,7 +24,7 @@ public interface IMessageService
 
     Task DeleteMessageAsync(
         long userId,
-        long guildId,
+        long? guildId,
         long channelId,
         long messageId,
         CancellationToken ct = default
@@ -32,7 +32,7 @@ public interface IMessageService
 
     Task EditMessageAsync(
         long userId,
-        long guildId,
+        long? guildId,
         long channelId,
         long messageId,
         EditMessageRequest request,

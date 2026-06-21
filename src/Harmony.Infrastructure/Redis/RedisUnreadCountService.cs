@@ -20,6 +20,7 @@ public sealed class RedisUnreadCountService : IUnreadCountService
     private readonly IReadStateRepository _readStateRepository;
     private readonly IHubBroadcaster _broadcaster;
     private readonly IPermissionService _permissions;
+    private readonly IDirectMessageRepository _dms;
     private readonly ILogger<RedisUnreadCountService> _logger;
 
     public RedisUnreadCountService(
@@ -28,6 +29,7 @@ public sealed class RedisUnreadCountService : IUnreadCountService
         IReadStateRepository readStateRepository,
         IHubBroadcaster broadcaster,
         IPermissionService permissions,
+        IDirectMessageRepository dms,
         ILogger<RedisUnreadCountService> logger
     )
     {
@@ -36,11 +38,12 @@ public sealed class RedisUnreadCountService : IUnreadCountService
         _readStateRepository = readStateRepository;
         _broadcaster = broadcaster;
         _permissions = permissions;
+        _dms = dms;
         _logger = logger;
     }
 
     public async Task IncrementForChannelAsync(
-        long guildId,
+        long? guildId,
         long channelId,
         long senderUserId,
         CancellationToken ct = default
@@ -55,7 +58,7 @@ public sealed class RedisUnreadCountService : IUnreadCountService
             return;
         }
 
-        // Recipient-resolution seam: guild members today; DMs branch here later.
+        // Recipient resolution branches on guild: visible guild members, or DM participants.
         var recipientIds = await ResolveRecipientIdsAsync(guildId, channelId, senderUserId);
         if (recipientIds.Count == 0)
             return;
@@ -107,7 +110,7 @@ public sealed class RedisUnreadCountService : IUnreadCountService
 
     public async Task MarkReadAsync(
         long userId,
-        long guildId,
+        long? guildId,
         long channelId,
         long lastReadMessageId,
         CancellationToken ct = default
@@ -204,12 +207,20 @@ public sealed class RedisUnreadCountService : IUnreadCountService
     }
 
     private async Task<List<long>> ResolveRecipientIdsAsync(
-        long guildId,
+        long? guildId,
         long channelId,
         long senderUserId
     )
     {
-        var memberIds = await _guildRepository.GetMemberIdsAsync(guildId);
+        // DM (no guild): the recipients are the channel's participants minus the sender.
+        // DMs have no overrides, so no per-channel visibility check is needed.
+        if (guildId is not { } gid)
+        {
+            var participantIds = await _dms.GetParticipantIdsAsync(channelId);
+            return participantIds.Where(id => id != senderUserId).ToList();
+        }
+
+        var memberIds = await _guildRepository.GetMemberIdsAsync(gid);
 
         // Only members who can actually view the channel accrue unread for it — otherwise a
         // member would get a badge (and a non-zero /me/unread) for an override-hidden channel
@@ -219,7 +230,7 @@ public sealed class RedisUnreadCountService : IUnreadCountService
         {
             if (id == senderUserId)
                 continue;
-            if (await _permissions.HasAsync(id, guildId, Permission.ViewChannel, channelId))
+            if (await _permissions.HasAsync(id, gid, Permission.ViewChannel, channelId))
                 recipients.Add(id);
         }
 
