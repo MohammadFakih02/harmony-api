@@ -108,4 +108,34 @@ public interface IHubBroadcaster
         MuteExpiredPayload payload,
         CancellationToken ct = default
     );
+
+    /// <summary>
+    /// Notifies the addressee of an incoming friend request. Per-user (Clients.User).
+    /// </summary>
+    Task BroadcastFriendRequestAsync(
+        long recipientId,
+        FriendUserPayload payload,
+        CancellationToken ct = default
+    );
+
+    /// <summary>
+    /// Notifies a single party that a friend request was accepted. Per-user
+    /// (Clients.User) — the caller invokes this once per party with the other
+    /// user's identity as the payload.
+    /// </summary>
+    Task BroadcastFriendAcceptedAsync(
+        long recipientId,
+        FriendUserPayload payload,
+        CancellationToken ct = default
+    );
+
+    /// <summary>
+    /// Notifies a single user that a friendship/pending request was removed. Per-user
+    /// (Clients.User).
+    /// </summary>
+    Task BroadcastFriendRemovedAsync(
+        long recipientId,
+        FriendRemovedPayload payload,
+        CancellationToken ct = default
+    );
 }

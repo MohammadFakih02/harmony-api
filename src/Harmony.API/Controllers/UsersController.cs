@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using Harmony.Application.DTOs.Requests;
 using Harmony.Application.DTOs.Responses;
+using Harmony.Application.Hubs;
 using Harmony.Application.Interfaces.Services;
 using Harmony.Domain.Domain.Entities;
 using Harmony.Domain.Interfaces.Repositories;
@@ -22,13 +23,17 @@ public class UsersController : ControllerBase
     private readonly UserManager<User> _userManager;
     private readonly IPresenceService _presence;
     private readonly IUserBlockRepository _blocks;
+    private readonly IFriendRepository _friends;
+    private readonly IHubBroadcaster _broadcaster;
 
     public UsersController(
         IUserRepository users,
         IGuildRepository guilds,
         UserManager<User> userManager,
         IPresenceService presence,
-        IUserBlockRepository blocks
+        IUserBlockRepository blocks,
+        IFriendRepository friends,
+        IHubBroadcaster broadcaster
     )
     {
         _users = users;
@@ -36,6 +41,8 @@ public class UsersController : ControllerBase
         _userManager = userManager;
         _presence = presence;
         _blocks = blocks;
+        _friends = friends;
+        _broadcaster = broadcaster;
     }
 
     // GET /api/users/me
@@ -178,6 +185,19 @@ public class UsersController : ControllerBase
                 }
             );
             await _blocks.SaveChangesAsync();
+        }
+
+        // Blocking severs any friendship or pending request between the two users
+        // (the deferred §5.14 cleanup, now that friends-system exists).
+        var friendship = await _friends.GetBetweenAsync(me, id);
+        if (friendship is not null)
+        {
+            _friends.Remove(friendship);
+            await _friends.SaveChangesAsync();
+
+            // Notify the blocked user to prune; keep my own other tabs in sync too.
+            await _broadcaster.BroadcastFriendRemovedAsync(id, new FriendRemovedPayload(me));
+            await _broadcaster.BroadcastFriendRemovedAsync(me, new FriendRemovedPayload(id));
         }
 
         return NoContent();

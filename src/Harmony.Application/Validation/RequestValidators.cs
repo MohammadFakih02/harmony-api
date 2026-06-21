@@ -124,3 +124,15 @@ public sealed class CreateMuteRequestValidator : AbstractValidator<CreateMuteReq
             .WithMessage("MutedUntil must be a future timestamp.");
     }
 }
+
+public sealed class SendFriendRequestRequestValidator : AbstractValidator<SendFriendRequestRequest>
+{
+    public SendFriendRequestRequestValidator()
+    {
+        // Shape only — whether the username resolves to a real, non-self, non-blocked
+        // user is semantic and lives in FriendsController.
+        RuleFor(x => x.Username)
+            .NotEmpty().WithMessage("Username is required.")
+            .Length(2, 32).WithMessage("Username must be between 2 and 32 characters.");
+    }
+}
