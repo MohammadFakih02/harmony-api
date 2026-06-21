@@ -45,6 +45,12 @@ public interface IFileStorageService
         string objectKey,
         CancellationToken ct = default
     );
+
+    /// <summary>
+    /// Deletes the object if present. Idempotent — removing a missing key is not an error.
+    /// Used by the orphan-attachment sweep to drop objects whose DB row never confirmed.
+    /// </summary>
+    Task DeleteObjectAsync(string objectKey, CancellationToken ct = default);
 }
 
 /// <summary>The authoritative size and content-type read back from the object store.</summary>
