@@ -81,6 +81,13 @@ public interface IChatClient
     /// real choice — including invisible/dnd, which friends never see as such).
     /// </summary>
     Task StatusChanged(StatusChangedPayload payload);
+
+    /// <summary>
+    /// Fired when one of the user's mutes ends — either swept by MuteExpiryService
+    /// once its expiry passes, or removed by a manual unmute. Sent only to the mute's
+    /// owner via Clients.User so all their tabs drop the mute from local state.
+    /// </summary>
+    Task MuteExpired(MuteExpiredPayload payload);
 }
 
 /// <summary>Minimal delete notification — no content, just identity.</summary>
@@ -126,3 +133,6 @@ public record OfflineStatusPayload(long UserId);
 /// depending on the audience the broadcaster targeted.
 /// </summary>
 public record StatusChangedPayload(long UserId, string Status, string? StatusMessage);
+
+/// <summary>A mute the user held has ended (expired or manually removed).</summary>
+public record MuteExpiredPayload(long TargetId, string TargetType);

@@ -35,3 +35,11 @@ public record BlockResponse(
     string? BannerKey,
     long CreatedAt
 );
+
+// Returned for /api/mutes — one active mute the caller holds
+public record MuteResponse(
+    string TargetType,
+    long TargetId,
+    long? MutedUntil,
+    long CreatedAt
+);

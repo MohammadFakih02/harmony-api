@@ -132,4 +132,11 @@ public sealed class S3FileStorageService : IFileStorageService
             return null;
         }
     }
+
+    public Task DeleteObjectAsync(string objectKey, CancellationToken ct = default) =>
+        // S3/MinIO DeleteObject is idempotent — deleting a missing key returns success.
+        _client.DeleteObjectAsync(
+            new DeleteObjectRequest { BucketName = _bucket, Key = objectKey },
+            ct
+        );
 }

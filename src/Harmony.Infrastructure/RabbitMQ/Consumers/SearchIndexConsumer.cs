@@ -44,7 +44,11 @@ public class SearchIndexConsumer : BackgroundService
             .AddRetry(new RetryStrategyOptions
             {
                 ShouldHandle = new PredicateBuilder().Handle<Exception>(ex =>
-                    ex is not JsonException && ex is not ServiceUnavailableException),
+                    ex is not JsonException
+                    && ex is not ServiceUnavailableException
+                    // Constraint-violation poison (e.g. 23503 FK on the decoupled search row,
+                    // 23505 unique) fails identically on every retry — DLQ it now, don't ladder.
+                    && !ConsumerRetryPredicate.IsConstraintViolation(ex)),
                 MaxRetryAttempts = 3,
                 DelayGenerator = args =>
                 {

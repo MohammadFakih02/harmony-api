@@ -67,7 +67,13 @@ public class ScyllaMessageConsumer : BackgroundService
         _retryPipeline = new ResiliencePipelineBuilder()
             .AddRetry(new RetryStrategyOptions
             {
-                ShouldHandle = new PredicateBuilder().Handle<Exception>(ex => ex is not JsonException),
+                ShouldHandle = new PredicateBuilder().Handle<Exception>(ex =>
+                    ex is not JsonException
+                    // Symmetry + safety net: constraint-violation poison fast-fails to the DLQ
+                    // instead of laddering. The Scylla write itself can't throw a PostgresException;
+                    // the one Postgres touch (mention notifications) is best-effort in the handler,
+                    // so in practice nothing constraint-shaped reaches this predicate here.
+                    && !ConsumerRetryPredicate.IsConstraintViolation(ex)),
                 MaxRetryAttempts = 3,
                 DelayGenerator = args =>
                 {
