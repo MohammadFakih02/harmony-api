@@ -95,4 +95,22 @@ public class HubBroadcaster : IHubBroadcaster
         MuteExpiredPayload payload,
         CancellationToken ct = default
     ) => _hubContext.Clients.User(userId.ToString()).MuteExpired(payload);
+
+    public Task BroadcastFriendRequestAsync(
+        long recipientId,
+        FriendUserPayload payload,
+        CancellationToken ct = default
+    ) => _hubContext.Clients.User(recipientId.ToString()).FriendRequest(payload);
+
+    public Task BroadcastFriendAcceptedAsync(
+        long recipientId,
+        FriendUserPayload payload,
+        CancellationToken ct = default
+    ) => _hubContext.Clients.User(recipientId.ToString()).FriendAccepted(payload);
+
+    public Task BroadcastFriendRemovedAsync(
+        long recipientId,
+        FriendRemovedPayload payload,
+        CancellationToken ct = default
+    ) => _hubContext.Clients.User(recipientId.ToString()).FriendRemoved(payload);
 }

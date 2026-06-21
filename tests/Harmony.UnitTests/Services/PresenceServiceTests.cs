@@ -30,11 +30,14 @@ public class PresenceServiceTests
 
         var broadcaster = new Mock<IHubBroadcaster>();
         var users = new Mock<IUserRepository>(); // GetByIdAsync → null ⇒ preferred defaults to "online"
+        var friends = new Mock<IFriendRepository>(); // no friends ⇒ broadcasts reach no recipients
+        friends.Setup(f => f.GetFriendIdsAsync(It.IsAny<long>())).ReturnsAsync(new List<long>());
 
         var sut = new RedisPresenceService(
             providerMock.Object,
             broadcaster.Object,
             users.Object,
+            friends.Object,
             NullLogger<RedisPresenceService>.Instance
         );
 
