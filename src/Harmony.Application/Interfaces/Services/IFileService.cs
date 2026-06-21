@@ -17,7 +17,7 @@ public interface IFileService
     /// </summary>
     Task<PresignFileResponse> PresignAsync(
         long userId,
-        long guildId,
+        long? guildId,
         long channelId,
         PresignFileRequest request,
         CancellationToken ct = default
@@ -42,7 +42,7 @@ public interface IFileService
     /// or pending uploads, and keep files scoped to their channel).
     /// </summary>
     Task<FileDownloadResponse> GetDownloadUrlAsync(
-        long guildId,
+        long? guildId,
         long channelId,
         long fileId,
         CancellationToken ct = default

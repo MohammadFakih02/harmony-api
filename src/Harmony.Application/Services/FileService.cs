@@ -55,16 +55,27 @@ public sealed class FileService : IFileService
 
     public async Task<PresignFileResponse> PresignAsync(
         long userId,
-        long guildId,
+        long? guildId,
         long channelId,
         PresignFileRequest request,
         CancellationToken ct = default
     )
     {
-        // Channel-existence 404 before any other check (mirrors MessageService).
-        var channel = await _channels.GetByIdAndGuildIdAsync(channelId, guildId);
-        if (channel is null)
-            throw new KeyNotFoundException("Channel not found.");
+        // Channel-existence 404 before any other check (mirrors MessageService). A guild upload
+        // must resolve in that guild; a DM upload must be a guild-less "dm" channel. (Participant
+        // authorization for DMs is enforced by the controller, mirroring how AttachFiles is
+        // enforced at the guild route.)
+        if (guildId is { } gid)
+        {
+            if (await _channels.GetByIdAndGuildIdAsync(channelId, gid) is null)
+                throw new KeyNotFoundException("Channel not found.");
+        }
+        else
+        {
+            var channel = await _channels.GetByIdAsync(channelId);
+            if (channel is null || channel.GuildId is not null || channel.Type != "dm")
+                throw new KeyNotFoundException("Channel not found.");
+        }
 
         if (!AllowedContentTypes.Contains(request.ContentType))
             throw new ArgumentException($"Content type '{request.ContentType}' is not allowed.");
@@ -73,7 +84,9 @@ public sealed class FileService : IFileService
             throw new ArgumentException("File size is out of the allowed range.");
 
         var fileId = _snowflake.NextId();
-        var objectKey = $"attachments/{guildId}/{channelId}/{fileId}";
+        // DMs have no guild — bucket them under a "dm" segment so the key never contains an empty path.
+        var scope = guildId is { } g ? g.ToString() : "dm";
+        var objectKey = $"attachments/{scope}/{channelId}/{fileId}";
 
         await _files.AddAsync(
             new FileAttachment
@@ -146,7 +159,7 @@ public sealed class FileService : IFileService
     }
 
     public async Task<FileDownloadResponse> GetDownloadUrlAsync(
-        long guildId,
+        long? guildId,
         long channelId,
         long fileId,
         CancellationToken ct = default
