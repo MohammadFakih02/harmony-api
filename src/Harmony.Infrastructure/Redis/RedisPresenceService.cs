@@ -30,18 +30,21 @@ public sealed class RedisPresenceService : IPresenceService
     private readonly IRedisConnectionProvider _redisProvider;
     private readonly IHubBroadcaster _broadcaster;
     private readonly IUserRepository _users;
+    private readonly IFriendRepository _friends;
     private readonly ILogger<RedisPresenceService> _logger;
 
     public RedisPresenceService(
         IRedisConnectionProvider redisProvider,
         IHubBroadcaster broadcaster,
         IUserRepository users,
+        IFriendRepository friends,
         ILogger<RedisPresenceService> logger
     )
     {
         _redisProvider = redisProvider;
         _broadcaster = broadcaster;
         _users = users;
+        _friends = friends;
         _logger = logger;
     }
 
@@ -434,12 +437,26 @@ public sealed class RedisPresenceService : IPresenceService
     }
 
     /// <summary>
-    /// Friend-recipient seam. No IFriendRepository exists yet — friends-system is
-    /// Phase 4. Returns no recipients today; this is the one lookup that feature
-    /// needs to fill in to make friend-facing presence broadcasts actually deliver.
+    /// Friend-recipient seam — resolves the user's accepted friends so presence /
+    /// status broadcasts reach them. Fails open (returns no recipients) if the lookup
+    /// throws, so a DB hiccup never breaks the hub connection lifecycle.
     /// </summary>
-    private static Task<List<long>> ResolveFriendIdsAsync(long userId) =>
-        Task.FromResult(new List<long>());
+    private async Task<List<long>> ResolveFriendIdsAsync(long userId)
+    {
+        try
+        {
+            return await _friends.GetFriendIdsAsync(userId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Presence: friend-id resolution failed for user {UserId} — broadcasting to no friends",
+                userId
+            );
+            return [];
+        }
+    }
 
     // -------------------------------------------------------------------------
     // Key helpers

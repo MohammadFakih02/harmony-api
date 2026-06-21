@@ -151,6 +151,7 @@ public static class DependencyInjection
         services.AddScoped<IRefreshTokenRepository, RefreshTokenRepository>();
         services.AddScoped<IUserBlockRepository, UserBlockRepository>();
         services.AddScoped<IUserMuteRepository, UserMuteRepository>();
+        services.AddScoped<IFriendRepository, FriendRepository>();
 
         // Application & infrastructure services
         services.AddScoped<IIdentityService, IdentityService>();

@@ -42,11 +42,14 @@ public class RedisPresenceServiceTests : IAsyncLifetime
         _broadcaster = new Mock<IHubBroadcaster>();
         // GetByIdAsync → null ⇒ preferred falls back to "online" (cache warmed on connect).
         var users = new Mock<IUserRepository>();
+        var friends = new Mock<IFriendRepository>(); // friend fan-out not under test here
+        friends.Setup(f => f.GetFriendIdsAsync(It.IsAny<long>())).ReturnsAsync(new List<long>());
 
         _sut = new RedisPresenceService(
             providerMock.Object,
             _broadcaster.Object,
             users.Object,
+            friends.Object,
             NullLogger<RedisPresenceService>.Instance
         );
     }

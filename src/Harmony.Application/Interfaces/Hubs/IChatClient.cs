@@ -88,6 +88,26 @@ public interface IChatClient
     /// owner via Clients.User so all their tabs drop the mute from local state.
     /// </summary>
     Task MuteExpired(MuteExpiredPayload payload);
+
+    /// <summary>
+    /// Fired when a user sends the recipient a friend request. Sent to the addressee
+    /// via Clients.User so all their tabs surface the incoming request. Carries the
+    /// requester's public identity so the client can render it without a refetch.
+    /// </summary>
+    Task FriendRequest(FriendUserPayload payload);
+
+    /// <summary>
+    /// Fired when a pending request is accepted. Sent to <em>both</em> parties via
+    /// Clients.User; the payload identifies the other user who is now a friend.
+    /// </summary>
+    Task FriendAccepted(FriendUserPayload payload);
+
+    /// <summary>
+    /// Fired when a friendship/pending request is removed — declined, cancelled,
+    /// unfriended, or dropped because one user blocked the other. Sent to the other
+    /// party via Clients.User with just the id so they prune local friend state.
+    /// </summary>
+    Task FriendRemoved(FriendRemovedPayload payload);
 }
 
 /// <summary>Minimal delete notification — no content, just identity.</summary>
@@ -136,3 +156,18 @@ public record StatusChangedPayload(long UserId, string Status, string? StatusMes
 
 /// <summary>A mute the user held has ended (expired or manually removed).</summary>
 public record MuteExpiredPayload(long TargetId, string TargetType);
+
+/// <summary>
+/// Public identity of the user a friend event concerns — the requester (FriendRequest)
+/// or the now-confirmed friend (FriendAccepted). No email or other private fields.
+/// </summary>
+public record FriendUserPayload(
+    long Id,
+    string Username,
+    string? Discriminator,
+    string? AvatarKey,
+    string? BannerKey
+);
+
+/// <summary>A friendship or pending request involving the user was removed.</summary>
+public record FriendRemovedPayload(long UserId);
