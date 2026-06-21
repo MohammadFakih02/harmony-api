@@ -17,7 +17,7 @@ public interface IMessagePublisher
 public record MessageSentEvent(
     long MessageId,
     long ChannelId,
-    long GuildId,
+    long? GuildId,
     long UserId,
     string Content,
     string MessageType,
@@ -30,7 +30,7 @@ public record MessageSentEvent(
 public record MessageDeletedEvent(
     long MessageId,
     long ChannelId,
-    long GuildId,
+    long? GuildId,
     long DeletedByUserId,
     DateTimeOffset DeletedAt
 );
@@ -38,7 +38,7 @@ public record MessageDeletedEvent(
 public record MessageEditedEvent(
     long MessageId,
     long ChannelId,
-    long GuildId,
+    long? GuildId,
     long EditedByUserId,
     string NewContent,
     DateTimeOffset EditedAt

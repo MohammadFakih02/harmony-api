@@ -34,7 +34,7 @@ public record FileDownloadResponse(
 public record FileAttachmentResponse(
     [property: JsonNumberHandling(JsonNumberHandling.WriteAsString)] long Id,
     [property: JsonNumberHandling(JsonNumberHandling.WriteAsString)] long ChannelId,
-    [property: JsonNumberHandling(JsonNumberHandling.WriteAsString)] long GuildId,
+    [property: JsonNumberHandling(JsonNumberHandling.WriteAsString)] long? GuildId,
     string Filename,
     string ContentType,
     long SizeBytes,

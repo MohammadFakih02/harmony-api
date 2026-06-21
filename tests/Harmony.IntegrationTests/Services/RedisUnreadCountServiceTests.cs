@@ -57,12 +57,15 @@ public class UnreadCountServiceTests : IAsyncLifetime
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(true);
 
+        var dms = new Mock<IDirectMessageRepository>();
+
         _sut = new RedisUnreadCountService(
             providerMock.Object,
             _guilds.Object,
             _readStates.Object,
             _broadcaster.Object,
             permissions.Object,
+            dms.Object,
             NullLogger<RedisUnreadCountService>.Instance
         );
     }

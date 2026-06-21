@@ -14,11 +14,12 @@ public interface IUnreadCountService
     /// <summary>
     /// After a message is persisted, increments the unread count for every
     /// channel recipient except the sender, then pushes UnreadCountUpdated to each.
-    /// Recipient resolution today = guild members; DMs branch here later.
-    /// Best-effort: never throws into the caller (the consumer's ack).
+    /// Recipient resolution branches on guild: a guild channel fans out to its
+    /// visible members; a guild-less channel (guildId null) fans out to its DM
+    /// participants. Best-effort: never throws into the caller (the consumer's ack).
     /// </summary>
     Task IncrementForChannelAsync(
-        long guildId,
+        long? guildId,
         long channelId,
         long senderUserId,
         CancellationToken ct = default
@@ -32,7 +33,7 @@ public interface IUnreadCountService
     /// </summary>
     Task MarkReadAsync(
         long userId,
-        long guildId,
+        long? guildId,
         long channelId,
         long lastReadMessageId,
         CancellationToken ct = default
