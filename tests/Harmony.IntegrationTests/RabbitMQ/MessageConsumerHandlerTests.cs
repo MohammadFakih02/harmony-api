@@ -1,14 +1,19 @@
 using FluentAssertions;
+using Harmony.Application.Hubs;
+using Harmony.Application.Interfaces.Services;
 using Harmony.Application.Services; // <- Ensure this is imported for SnowflakeIdGenerator
 using Harmony.Domain.Domain.Entities;
 using Harmony.Domain.Interfaces;
 using Harmony.Domain.Interfaces.Repositories;
+using Harmony.Infrastructure.Postgres.Repositories;
 using Harmony.Infrastructure.RabbitMQ;
 using Harmony.Infrastructure.Scylla;
 using Harmony.Infrastructure.Scylla.Repositories;
+using Harmony.Infrastructure.Services;
 using Harmony.IntegrationTests.Infrastructure;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
+using Moq;
 
 namespace Harmony.IntegrationTests.RabbitMQ;
 
@@ -44,11 +49,23 @@ public class MessageConsumerHandlerTests : ScyllaAndPostgresTestBase
             NullLogger<MessageRepository>.Instance
         );
 
-        // Inject the mocked repo and the real test database context into the handler
+        // NotificationService is real (backed by the test's Postgres Db) so the mention
+        // suppression chain runs for real; only the live SignalR push is mocked — there's
+        // no hub context in this lower-level fixture, and HubBroadcaster failures are
+        // already fail-open / try-caught inside NotificationService itself.
+        var notificationService = new NotificationService(
+            new NotificationRepository(Db),
+            new UserBlockRepository(Db),
+            new UserMuteRepository(Db),
+            Mock.Of<IHubBroadcaster>(),
+            new NotificationPreferenceRepository(Db),
+            new SnowflakeIdGenerator(0, 0),
+            NullLogger<NotificationService>.Instance
+        );
+
         _handler = new MessageConsumerHandler(
             _messageRepository,
-            Db,
-            new SnowflakeIdGenerator(0, 0), // <- Fixed: Pass the snowflake generator dependency
+            notificationService,
             NullLogger<MessageConsumerHandler>.Instance
         );
 

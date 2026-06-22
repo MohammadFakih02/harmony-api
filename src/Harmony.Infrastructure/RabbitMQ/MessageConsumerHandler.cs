@@ -1,13 +1,10 @@
 using System.Collections.Generic;
-using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
-using Harmony.Application.Services;
+using Harmony.Application.Interfaces.Services;
 using Harmony.Domain.Domain.Entities;
 using Harmony.Domain.Interfaces;
 using Harmony.Domain.Interfaces.Repositories;
-using Harmony.Infrastructure.Postgres;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 
 namespace Harmony.Infrastructure.RabbitMQ;
@@ -15,20 +12,17 @@ namespace Harmony.Infrastructure.RabbitMQ;
 public class MessageConsumerHandler : IMessageConsumerHandler
 {
     private readonly IMessageRepository _messageRepository;
-    private readonly HarmonyDbContext _db;
-    private readonly ISnowflakeIdGenerator _snowflake;
+    private readonly INotificationService _notificationService;
     private readonly ILogger<MessageConsumerHandler> _logger;
 
     public MessageConsumerHandler(
         IMessageRepository messageRepository,
-        HarmonyDbContext db,
-        ISnowflakeIdGenerator snowflake,
+        INotificationService notificationService,
         ILogger<MessageConsumerHandler> logger
     )
     {
         _messageRepository = messageRepository;
-        _db = db;
-        _snowflake = snowflake;
+        _notificationService = notificationService;
         _logger = logger;
     }
 
@@ -64,7 +58,15 @@ public class MessageConsumerHandler : IMessageConsumerHandler
         {
             try
             {
-                await CreateMentionNotificationsAsync(evt, ct);
+                await _notificationService.CreateMentionNotificationsAsync(
+                    evt.MentionIds,
+                    evt.UserId,
+                    evt.GuildId,
+                    evt.ChannelId,
+                    evt.MessageId,
+                    evt.SentAt.ToUnixTimeMilliseconds(),
+                    ct
+                );
             }
             catch (Exception ex)
             {
@@ -148,62 +150,6 @@ public class MessageConsumerHandler : IMessageConsumerHandler
         _logger.LogInformation(
             "ChannelDeleted handled (Scylla Purges) — ChannelId: {ChannelId}",
             evt.ChannelId
-        );
-    }
-
-    private async Task CreateMentionNotificationsAsync(MessageSentEvent evt, CancellationToken ct)
-    {
-        var preferences = await _db
-            .NotificationPreferences.Where(p => evt.MentionIds.Contains(p.UserId))
-            .ToListAsync(ct);
-
-        var preferenceMap = preferences.ToDictionary(p => p.UserId);
-        var notifications = new List<Notification>();
-
-        foreach (var mentionedUserId in evt.MentionIds)
-        {
-            if (preferenceMap.TryGetValue(mentionedUserId, out var pref) && !pref.MentionsEnabled)
-                continue;
-
-            if (mentionedUserId == evt.UserId)
-                continue;
-
-            notifications.Add(
-                new Notification
-                {
-                    Id = _snowflake.NextId(),
-                    UserId = mentionedUserId,
-                    Type = "mention",
-                    ActorId = evt.UserId,
-                    GuildId = evt.GuildId,
-                    ChannelId = evt.ChannelId,
-                    MessageId = evt.MessageId,
-                    IsRead = false,
-                    CreatedAt = evt.SentAt.ToUnixTimeMilliseconds(),
-                }
-            );
-        }
-
-        if (notifications.Count == 0)
-            return;
-
-        var existingIds = await _db
-            .Notifications.Where(n => notifications.Select(x => x.Id).Contains(n.Id))
-            .Select(n => n.Id)
-            .ToListAsync(ct);
-
-        var toInsert = notifications.Where(n => !existingIds.Contains(n.Id)).ToList();
-
-        if (toInsert.Count > 0)
-        {
-            _db.Notifications.AddRange(toInsert);
-            await _db.SaveChangesAsync(ct);
-        }
-
-        _logger.LogDebug(
-            "Created {Count} mention notifications for MessageId: {MessageId}",
-            toInsert.Count,
-            evt.MessageId
         );
     }
 }

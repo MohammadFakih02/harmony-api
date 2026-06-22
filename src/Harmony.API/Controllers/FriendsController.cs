@@ -9,6 +9,7 @@ using Harmony.Domain.Interfaces.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.Extensions.Logging;
 
 namespace Harmony.API.Controllers;
 
@@ -33,13 +34,17 @@ public class FriendsController : ControllerBase
     private readonly IIdentityService _identity;
     private readonly IUserBlockRepository _blocks;
     private readonly IHubBroadcaster _broadcaster;
+    private readonly INotificationService _notifications;
+    private readonly ILogger<FriendsController> _logger;
 
     public FriendsController(
         IFriendRepository friends,
         IUserRepository users,
         IIdentityService identity,
         IUserBlockRepository blocks,
-        IHubBroadcaster broadcaster
+        IHubBroadcaster broadcaster,
+        INotificationService notifications,
+        ILogger<FriendsController> logger
     )
     {
         _friends = friends;
@@ -47,6 +52,8 @@ public class FriendsController : ControllerBase
         _identity = identity;
         _blocks = blocks;
         _broadcaster = broadcaster;
+        _notifications = notifications;
+        _logger = logger;
     }
 
     // GET /api/friends — accepted friends
@@ -154,6 +161,22 @@ public class FriendsController : ControllerBase
         var meUser = await _users.GetByIdAsync(me);
         if (meUser is not null)
             await _broadcaster.BroadcastFriendRequestAsync(target.Id, ToPayload(meUser));
+
+        // Best-effort: the friend request itself already persisted + broadcast above,
+        // so a notification-side failure (preference/mute/block lookup, persist) must
+        // not turn a successful request into a 500.
+        try
+        {
+            await _notifications.CreateFriendRequestNotificationAsync(target.Id, me);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "FriendRequest: notification creation failed for AddresseeId {AddresseeId} — request persisted, continuing",
+                target.Id
+            );
+        }
 
         return Ok(
             new PendingFriendResponse(

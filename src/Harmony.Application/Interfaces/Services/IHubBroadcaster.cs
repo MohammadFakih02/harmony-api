@@ -138,4 +138,15 @@ public interface IHubBroadcaster
         FriendRemovedPayload payload,
         CancellationToken ct = default
     );
+
+    /// <summary>
+    /// Notifies a single user that a notification was created for them (mention,
+    /// friend request, ...). Per-user (Clients.User) — a notification is private
+    /// to its owner.
+    /// </summary>
+    Task BroadcastNotificationReceivedAsync(
+        long userId,
+        NotificationPayload payload,
+        CancellationToken ct = default
+    );
 }
