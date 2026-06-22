@@ -113,4 +113,10 @@ public class HubBroadcaster : IHubBroadcaster
         FriendRemovedPayload payload,
         CancellationToken ct = default
     ) => _hubContext.Clients.User(recipientId.ToString()).FriendRemoved(payload);
+
+    public Task BroadcastNotificationReceivedAsync(
+        long userId,
+        NotificationPayload payload,
+        CancellationToken ct = default
+    ) => _hubContext.Clients.User(userId.ToString()).NotificationReceived(payload);
 }
