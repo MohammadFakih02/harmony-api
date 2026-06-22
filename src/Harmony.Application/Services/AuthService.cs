@@ -13,6 +13,7 @@ public class AuthService : IAuthService
 {
     private readonly IIdentityService _identityService;
     private readonly IRefreshTokenRepository _tokenRepository;
+    private readonly INotificationPreferenceRepository _notificationPreferences;
     private readonly IJwtService _jwtService;
     private readonly ISnowflakeIdGenerator _snowflake;
     private readonly IConfiguration _config;
@@ -20,6 +21,7 @@ public class AuthService : IAuthService
     public AuthService(
         IIdentityService identityService,
         IRefreshTokenRepository tokenRepository,
+        INotificationPreferenceRepository notificationPreferences,
         IJwtService jwtService,
         ISnowflakeIdGenerator snowflake,
         IConfiguration config
@@ -27,6 +29,7 @@ public class AuthService : IAuthService
     {
         _identityService = identityService;
         _tokenRepository = tokenRepository;
+        _notificationPreferences = notificationPreferences;
         _jwtService = jwtService;
         _snowflake = snowflake;
         _config = config;
@@ -59,6 +62,9 @@ public class AuthService : IAuthService
         var (succeeded, errors) = await _identityService.CreateUserAsync(user, request.Password);
         if (!succeeded)
             throw new InvalidOperationException(string.Join(", ", errors));
+
+        await _notificationPreferences.AddAsync(new NotificationPreference { UserId = user.Id });
+        await _notificationPreferences.SaveChangesAsync();
 
         var (accessToken, rawRefreshToken) = await IssueTokensAsync(user);
         return (new AuthResponse(accessToken, ToUserResponse(user)), rawRefreshToken);

@@ -1,4 +1,5 @@
 using Harmony.Application.DTOs.Responses;
+using Harmony.Domain.Domain.Entities;
 
 namespace Harmony.Application.Hubs;
 
@@ -108,6 +109,15 @@ public interface IChatClient
     /// party via Clients.User with just the id so they prune local friend state.
     /// </summary>
     Task FriendRemoved(FriendRemovedPayload payload);
+
+    /// <summary>
+    /// Fired when a notification (mention, friend request, ...) is created for the
+    /// user. Sent only to the owner via Clients.User. The persisted Notification row
+    /// is the source of truth — this event is a live push on top of it for whichever
+    /// of the owner's tabs are connected; an offline owner picks the row up on next
+    /// load via GET /api/notifications instead.
+    /// </summary>
+    Task NotificationReceived(NotificationPayload payload);
 }
 
 /// <summary>Minimal delete notification — no content, just identity. GuildId is null for DMs.</summary>
@@ -171,3 +181,18 @@ public record FriendUserPayload(
 
 /// <summary>A friendship or pending request involving the user was removed.</summary>
 public record FriendRemovedPayload(long UserId);
+
+/// <summary>
+/// A notification created for the user (e.g. Type="mention" or "friend_request").
+/// GuildId/ChannelId/MessageId are null when the notification type has no such
+/// context (a friend request has none of the three).
+/// </summary>
+public record NotificationPayload(
+    long Id,
+    string Type,
+    long ActorId,
+    long? GuildId,
+    long? ChannelId,
+    long? MessageId,
+    long CreatedAt
+);
