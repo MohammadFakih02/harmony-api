@@ -71,6 +71,9 @@ public sealed class RedisPresenceService : IPresenceService
             var preferred = await GetPreferredAsync(db, userId);
             var idle = await IsIdleAsync(db, userId);
             var effective = ResolveEffective(preferred, idle);
+            // Warm the custom-message cache from Postgres so the member-list bulk read can
+            // surface it while this user is online.
+            await ReadStatusMessageAsync(db, userId);
 
             await db.StringSetAsync(StatusKey(userId), effective, StatusTtl);
             await db.SortedSetAddAsync(
@@ -206,8 +209,16 @@ public sealed class RedisPresenceService : IPresenceService
             await db.StringSetAsync(StatusKey(userId), effective, StatusTtl);
 
             // Friends see the masked effective value; the user's own tabs see the real
-            // preferred value so the picker stays in sync (incl. invisible/dnd).
-            await BroadcastStatusChangedAsync(userId, friendsStatus: effective, selfStatus: preferred, ct);
+            // preferred value so the picker stays in sync (incl. invisible/dnd). The custom
+            // message rides along so a status change doesn't blank it on observers.
+            var message = await ReadStatusMessageAsync(db, userId);
+            await BroadcastStatusChangedAsync(
+                userId,
+                friendsStatus: effective,
+                selfStatus: preferred,
+                statusMessage: message,
+                ct
+            );
         }
         catch (Exception ex)
         {
@@ -249,7 +260,14 @@ public sealed class RedisPresenceService : IPresenceService
 
             // Auto-away is a derived state, not a masked choice — the user's own tabs
             // should reflect it too, so self and friends both get the effective value.
-            await BroadcastStatusChangedAsync(userId, friendsStatus: effective, selfStatus: effective, ct);
+            var message = await ReadStatusMessageAsync(db, userId);
+            await BroadcastStatusChangedAsync(
+                userId,
+                friendsStatus: effective,
+                selfStatus: effective,
+                statusMessage: message,
+                ct
+            );
         }
         catch (Exception ex)
         {
@@ -311,6 +329,80 @@ public sealed class RedisPresenceService : IPresenceService
         return result;
     }
 
+    public async Task<IReadOnlyDictionary<long, string?>> GetStatusMessagesAsync(
+        IEnumerable<long> userIds,
+        CancellationToken ct = default
+    )
+    {
+        var ids = userIds.Distinct().ToList();
+        var result = ids.ToDictionary(id => id, _ => (string?)null);
+
+        if (ids.Count == 0 || !_redisProvider.IsConnected)
+            return result;
+
+        try
+        {
+            var db = _redisProvider.Connection!.GetDatabase();
+            var keys = ids.Select(id => (RedisKey)StatusMessageKey(id)).ToArray();
+            var values = await db.StringGetAsync(keys);
+
+            for (var i = 0; i < ids.Count; i++)
+            {
+                if (values[i].HasValue && values[i].ToString() is { Length: > 0 } s)
+                    result[ids[i]] = s;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Presence: failed reading status messages (MGET)");
+        }
+
+        return result;
+    }
+
+    public async Task SetCustomStatusAsync(
+        long userId,
+        string? message,
+        CancellationToken ct = default
+    )
+    {
+        var normalized = string.IsNullOrWhiteSpace(message) ? null : message.Trim();
+
+        if (!_redisProvider.IsConnected)
+            return;
+
+        try
+        {
+            var db = _redisProvider.Connection!.GetDatabase();
+            await db.StringSetAsync(StatusMessageKey(userId), normalized ?? ""); // empty = none
+
+            // Only broadcast for a connected user — nobody's watching an offline one live.
+            var connected = await db.SetLengthAsync(SessionKey(userId)) > 0;
+            if (!connected)
+                return;
+
+            var preferred = await GetPreferredAsync(db, userId);
+            var idle = await IsIdleAsync(db, userId);
+            var effective = ResolveEffective(preferred, idle);
+
+            await BroadcastStatusChangedAsync(
+                userId,
+                friendsStatus: effective,
+                selfStatus: preferred,
+                statusMessage: normalized,
+                ct
+            );
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Presence: failed setting custom status for user {UserId} — continuing",
+                userId
+            );
+        }
+    }
+
     public async Task<string> GetPreferredStatusAsync(long userId, CancellationToken ct = default)
     {
         if (!_redisProvider.IsConnected)
@@ -365,6 +457,23 @@ public sealed class RedisPresenceService : IPresenceService
     private static async Task<bool> IsIdleAsync(IDatabase db, long userId) =>
         await db.KeyExistsAsync(IdleKey(userId));
 
+    /// <summary>
+    /// Reads the cached custom status message, falling back to Postgres on a cache miss
+    /// and repopulating the cache (the message is stored as an empty string to mark
+    /// "no message", distinct from a cold/missing key). Returns null when there's none.
+    /// </summary>
+    private async Task<string?> ReadStatusMessageAsync(IDatabase db, long userId)
+    {
+        var cached = await db.StringGetAsync(StatusMessageKey(userId));
+        if (cached.HasValue)
+            return cached.ToString() is { Length: > 0 } s ? s : null;
+
+        var user = await _users.GetByIdAsync(userId);
+        var message = string.IsNullOrEmpty(user?.StatusMessage) ? null : user!.StatusMessage;
+        await db.StringSetAsync(StatusMessageKey(userId), message ?? ""); // warm (empty = none)
+        return message;
+    }
+
     // -------------------------------------------------------------------------
     // Broadcast fan-out
     // -------------------------------------------------------------------------
@@ -408,12 +517,16 @@ public sealed class RedisPresenceService : IPresenceService
         long userId,
         string friendsStatus,
         string selfStatus,
+        string? statusMessage,
         CancellationToken ct
     )
     {
+        // Friends never see the custom message of someone who appears offline (invisible).
+        var friendsMessage = friendsStatus == PresenceStatus.Offline ? null : statusMessage;
+
         await BroadcastToFriendsAsync(
             userId,
-            new StatusChangedPayload(userId, friendsStatus, StatusMessage: null),
+            new StatusChangedPayload(userId, friendsStatus, friendsMessage),
             (recipientId, payload) =>
                 _broadcaster.BroadcastStatusChangedAsync(recipientId, payload, ct)
         );
@@ -422,7 +535,7 @@ public sealed class RedisPresenceService : IPresenceService
         {
             await _broadcaster.BroadcastStatusChangedAsync(
                 userId,
-                new StatusChangedPayload(userId, selfStatus, StatusMessage: null),
+                new StatusChangedPayload(userId, selfStatus, statusMessage),
                 ct
             );
         }
@@ -469,4 +582,6 @@ public sealed class RedisPresenceService : IPresenceService
     public static string PreferredKey(long userId) => $"user:{userId}:preferred";
 
     public static string IdleKey(long userId) => $"user:{userId}:idle";
+
+    public static string StatusMessageKey(long userId) => $"user:{userId}:statusmsg";
 }

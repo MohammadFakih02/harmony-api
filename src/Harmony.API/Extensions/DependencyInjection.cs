@@ -189,6 +189,7 @@ public static class DependencyInjection
             services.AddHostedService<TokenPruningService>();
             services.AddHostedService<MuteExpiryService>();
             services.AddHostedService<OrphanFileSweepService>();
+            services.AddHostedService<StatusExpiryService>();
         }
 
         // -----------------------------------------------------------------------

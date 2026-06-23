@@ -15,11 +15,15 @@ public class UserConfiguration : IEntityTypeConfiguration<User>
         builder.Property(u => u.AvatarKey).HasColumnName("avatar_key");
         builder.Property(u => u.BannerKey).HasColumnName("banner_key");
         builder.Property(u => u.StatusMessage).HasMaxLength(128);
+        builder.Property(u => u.StatusMessageExpiresAt).HasColumnName("status_message_expires_at");
         builder
             .Property(u => u.PreferredStatus)
             .HasColumnName("preferred_status")
             .HasMaxLength(16)
             .HasDefaultValue("online");
+        builder
+            .Property(u => u.PreferredStatusExpiresAt)
+            .HasColumnName("preferred_status_expires_at");
         builder.Property(u => u.AccountStatus).HasMaxLength(16).HasDefaultValue("active");
         builder.Property(u => u.CreatedAt).IsRequired();
 

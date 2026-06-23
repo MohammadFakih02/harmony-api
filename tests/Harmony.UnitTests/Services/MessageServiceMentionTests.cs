@@ -40,6 +40,7 @@ public class MessageServiceMentionTests
         public Mock<IPresenceService> Presence { get; } = new();
 
         public MessageSentEvent? PublishedEvent { get; private set; }
+        public MessageEditedEvent? PublishedEditEvent { get; private set; }
 
         public MessageService BuildSut()
         {
@@ -47,6 +48,10 @@ public class MessageServiceMentionTests
             Publisher
                 .Setup(p => p.PublishMessageSentAsync(It.IsAny<MessageSentEvent>(), It.IsAny<CancellationToken>()))
                 .Callback<MessageSentEvent, CancellationToken>((evt, _) => PublishedEvent = evt)
+                .Returns(Task.CompletedTask);
+            Publisher
+                .Setup(p => p.PublishMessageEditedAsync(It.IsAny<MessageEditedEvent>(), It.IsAny<CancellationToken>()))
+                .Callback<MessageEditedEvent, CancellationToken>((evt, _) => PublishedEditEvent = evt)
                 .Returns(Task.CompletedTask);
 
             return new MessageService(
@@ -93,6 +98,39 @@ public class MessageServiceMentionTests
         await sut.SendMessageAsync(ActorId, GuildId, ChannelId, new SendMessageRequest(Content: "hey @bob"));
 
         h.PublishedEvent!.MentionIds.Should().BeEquivalentTo(new List<long> { BobId });
+    }
+
+    [Fact]
+    public async Task EditMessageAsync_ShouldPublishPreEditMentionSet_SoTheConsumerCanDiff()
+    {
+        // Regression: the consumer can't re-read the "old" mention set (the synchronous
+        // edit overwrites it first), so MessageService must capture it and ship it in the
+        // event. A message previously mentioning bob, edited to mention carol instead, must
+        // publish OldMentionIds=[bob] and MentionIds=[carol].
+        var h = new Harness();
+        h.SetUpGuildSendContext();
+        h.SetUpGuildMembers(new Dictionary<long, string>
+        {
+            [ActorId] = "actor",
+            [BobId] = "bob",
+            [CarolId] = "carol",
+        });
+        h.Messages
+            .Setup(m => m.GetByIdAsync(999, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Message
+            {
+                MessageId = 999,
+                ChannelId = ChannelId,
+                UserId = ActorId,
+                MentionIds = new List<long> { BobId },
+            });
+        var sut = h.BuildSut();
+
+        await sut.EditMessageAsync(ActorId, GuildId, ChannelId, 999, new EditMessageRequest("now @carol"));
+
+        h.PublishedEditEvent.Should().NotBeNull();
+        h.PublishedEditEvent!.OldMentionIds.Should().BeEquivalentTo(new List<long> { BobId });
+        h.PublishedEditEvent!.MentionIds.Should().BeEquivalentTo(new List<long> { CarolId });
     }
 
     [Fact]
