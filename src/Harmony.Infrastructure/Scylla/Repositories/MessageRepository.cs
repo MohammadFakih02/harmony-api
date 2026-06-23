@@ -86,6 +86,7 @@ public class MessageRepository : IMessageRepository
                 message.UserId,
                 message.Content,
                 message.AttachmentIds,
+                message.MentionIds,
                 message.ReplyToId,
                 false,
                 false,
@@ -117,16 +118,17 @@ public class MessageRepository : IMessageRepository
         long messageId,
         long channelId,
         string newContent,
+        List<long> mentionIds,
         CancellationToken ct = default
     )
     {
         var now = DateTime.UtcNow;
         var byChannel = _session.ExecuteAsync(
-            _statements.EditByChannel.Bind(newContent, now, channelId, messageId),
+            _statements.EditByChannel.Bind(newContent, mentionIds, now, channelId, messageId),
             "write"
         );
         var byId = _session.ExecuteAsync(
-            _statements.EditById.Bind(newContent, now, messageId),
+            _statements.EditById.Bind(newContent, mentionIds, now, messageId),
             "write"
         );
         await Task.WhenAll(byChannel, byId);
@@ -207,6 +209,7 @@ public class MessageRepository : IMessageRepository
             UserId = row.GetValue<long>("user_id"),
             Content = row.GetValue<string>("content") ?? string.Empty,
             AttachmentIds = row.GetValue<List<long>>("attachment_ids") ?? [],
+            MentionIds = row.GetValue<List<long>>("mention_ids") ?? [],
             ReplyToId = row.GetValue<long?>("reply_to_id"),
             IsDeleted = row.GetValue<bool>("is_deleted"),
             IsEdited = row.GetValue<bool>("is_edited"),

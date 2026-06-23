@@ -198,7 +198,6 @@ public class ChatHub : Hub<IChatClient>
                     Content: content,
                     MessageType: "text",
                     ReplyToId: null,
-                    MentionIds: null,
                     AttachmentIds: null
                 )
             );

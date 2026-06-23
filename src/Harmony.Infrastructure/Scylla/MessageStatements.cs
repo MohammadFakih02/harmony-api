@@ -33,9 +33,9 @@ public class MessageStatements
 
         InsertById = session.Prepare(
             $@"INSERT INTO {ks}.messages_by_id
-                (message_id, channel_id, user_id, content,
-                 attachment_ids, reply_to_id, is_deleted, is_edited, edited_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                (message_id, channel_id, user_id, content, attachment_ids,
+                 mention_ids, reply_to_id, is_deleted, is_edited, edited_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         );
 
         SelectByChannel = session.Prepare(
@@ -56,7 +56,7 @@ public class MessageStatements
 
         SelectById = session.Prepare(
             $@"SELECT message_id, channel_id, user_id, content, attachment_ids,
-                      reply_to_id, is_deleted, is_edited, edited_at
+                      mention_ids, reply_to_id, is_deleted, is_edited, edited_at
                FROM {ks}.messages_by_id
                WHERE message_id = ?"
         );
@@ -75,13 +75,13 @@ public class MessageStatements
 
         EditByChannel = session.Prepare(
             $@"UPDATE {ks}.messages_by_channel
-               SET content = ?, is_edited = true, edited_at = ?
+               SET content = ?, mention_ids = ?, is_edited = true, edited_at = ?
                WHERE channel_id = ? AND message_id = ?"
         );
 
         EditById = session.Prepare(
             $@"UPDATE {ks}.messages_by_id
-               SET content = ?, is_edited = true, edited_at = ?
+               SET content = ?, mention_ids = ?, is_edited = true, edited_at = ?
                WHERE message_id = ?"
         );
 

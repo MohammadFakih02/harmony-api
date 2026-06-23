@@ -21,11 +21,12 @@ public interface IMessageRepository
     // Soft delete — sets is_deleted = true in both tables
     Task DeleteAsync(long messageId, long channelId, CancellationToken ct = default);
 
-    // Edit — updates content, is_edited = true, edited_at = now in both tables
+    // Edit — updates content, mention_ids, is_edited = true, edited_at = now in both tables
     Task EditAsync(
         long messageId,
         long channelId,
         string newContent,
+        List<long> mentionIds,
         CancellationToken ct = default
     );
 

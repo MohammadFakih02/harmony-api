@@ -41,6 +41,7 @@ public record MessageEditedEvent(
     long? GuildId,
     long EditedByUserId,
     string NewContent,
+    List<long> MentionIds,
     DateTimeOffset EditedAt
 );
 
