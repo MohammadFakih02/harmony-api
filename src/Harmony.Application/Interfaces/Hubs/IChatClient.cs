@@ -174,7 +174,6 @@ public record MuteExpiredPayload(long TargetId, string TargetType);
 public record FriendUserPayload(
     long Id,
     string Username,
-    string? Discriminator,
     string? AvatarKey,
     string? BannerKey
 );

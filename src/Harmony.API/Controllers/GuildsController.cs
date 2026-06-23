@@ -210,6 +210,6 @@ public class GuildsController : ControllerBase
             g.IsPublic, g.InviteCode, g.MemberCount, g.CreatedAt);
 
     private static GuildMemberResponse ToMemberResponse(GuildMember m) =>
-        new(m.UserId, m.User.UserName!, m.User.Discriminator, m.Nickname,
+        new(m.UserId, m.User.UserName!, m.Nickname,
             m.User.AvatarKey, m.IsOwner, m.JoinedAt);
 }

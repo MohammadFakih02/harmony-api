@@ -216,7 +216,7 @@ public class DirectMessagesController : ControllerBase
         Harmony.Domain.Domain.Entities.User peer,
         long lastReadId
     ) =>
-        new(channelId, peer.Id, peer.UserName!, peer.Discriminator, peer.AvatarKey, lastReadId);
+        new(channelId, peer.Id, peer.UserName!, peer.AvatarKey, lastReadId);
 
     private long GetUserId() => long.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
 }

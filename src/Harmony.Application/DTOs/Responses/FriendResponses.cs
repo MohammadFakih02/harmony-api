@@ -5,7 +5,6 @@ namespace Harmony.Application.DTOs.Responses;
 public record FriendResponse(
     long Id,
     string Username,
-    string? Discriminator,
     string? AvatarKey,
     string? BannerKey,
     long Since
@@ -16,7 +15,6 @@ public record FriendResponse(
 public record PendingFriendResponse(
     long Id,
     string Username,
-    string? Discriminator,
     string? AvatarKey,
     string? BannerKey,
     string Direction, // "incoming" | "outgoing"
