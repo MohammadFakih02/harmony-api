@@ -83,11 +83,11 @@ public class UserStatusTests : ApiTestBase, IClassFixture<HarmonyWebApplicationF
 
         var resp = await Client.GetAsync($"/api/users/presence?ids={idA},{idB}");
         resp.EnsureSuccessStatusCode();
-        var map = await resp.Content.ReadFromJsonAsync<Dictionary<string, string>>();
+        var map = await resp.Content.ReadFromJsonAsync<Dictionary<string, PresenceDto>>();
 
         map.Should().NotBeNull();
-        map![idA.ToString()].Should().Be("offline"); // not connected → no public status key
-        map[idB.ToString()].Should().Be("offline");
+        map![idA.ToString()].Status.Should().Be("offline"); // not connected → no public status key
+        map[idB.ToString()].Status.Should().Be("offline");
     }
 
     private record AuthResponse(string AccessToken, UserDto User);
@@ -95,4 +95,6 @@ public class UserStatusTests : ApiTestBase, IClassFixture<HarmonyWebApplicationF
     private record UserDto(long Id);
 
     private record ProfileDto(long Id, string Username, string PreferredStatus);
+
+    private record PresenceDto(string Status, string? StatusMessage);
 }

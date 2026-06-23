@@ -4,7 +4,6 @@ namespace Harmony.Application.DTOs.Responses;
 public record UserProfileResponse(
     long Id,
     string Username,
-    string? Discriminator,
     string Email,
     string? AvatarKey,
     string? BannerKey,
@@ -24,7 +23,6 @@ public record UserPresenceResponse(string Status, string? StatusMessage);
 public record PublicUserResponse(
     long Id,
     string Username,
-    string? Discriminator,
     string? AvatarKey,
     string? BannerKey,
     string? Bio,
@@ -35,7 +33,6 @@ public record PublicUserResponse(
 public record BlockResponse(
     long Id,
     string Username,
-    string? Discriminator,
     string? AvatarKey,
     string? BannerKey,
     long CreatedAt

@@ -11,7 +11,6 @@ public class UserConfiguration : IEntityTypeConfiguration<User>
         builder.ToTable("Users");
 
         // Identity maps Id as PK automatically. We just configure our extra columns.
-        builder.Property(u => u.Discriminator).HasMaxLength(4);
         builder.Property(u => u.AvatarKey).HasColumnName("avatar_key");
         builder.Property(u => u.BannerKey).HasColumnName("banner_key");
         builder.Property(u => u.StatusMessage).HasMaxLength(128);

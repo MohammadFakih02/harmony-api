@@ -7,7 +7,6 @@ public class User : IdentityUser<long>
     // IdentityUser<long> provides: Id, UserName, Email, PasswordHash, etc.
     // We map UserName → username, Email → email in configuration.
 
-    public string? Discriminator { get; set; } // 4-char tag e.g. "4269"
     public string? AvatarKey { get; set; }
     public string? BannerKey { get; set; }
     public string? Bio { get; set; }

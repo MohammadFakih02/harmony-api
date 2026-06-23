@@ -74,7 +74,6 @@ public class FriendsController : ControllerBase
                 return new FriendResponse(
                     u.Id,
                     u.UserName!,
-                    u.Discriminator,
                     u.AvatarKey,
                     u.BannerKey,
                     r.UpdatedAt
@@ -102,7 +101,6 @@ public class FriendsController : ControllerBase
                 return new PendingFriendResponse(
                     u.Id,
                     u.UserName!,
-                    u.Discriminator,
                     u.AvatarKey,
                     u.BannerKey,
                     r.RequesterId == me ? "outgoing" : "incoming",
@@ -182,7 +180,6 @@ public class FriendsController : ControllerBase
             new PendingFriendResponse(
                 target.Id,
                 target.UserName!,
-                target.Discriminator,
                 target.AvatarKey,
                 target.BannerKey,
                 "outgoing",
@@ -248,7 +245,6 @@ public class FriendsController : ControllerBase
                 new FriendResponse(
                     friend.Id,
                     friend.UserName!,
-                    friend.Discriminator,
                     friend.AvatarKey,
                     friend.BannerKey,
                     row.UpdatedAt
@@ -261,7 +257,7 @@ public class FriendsController : ControllerBase
     private static long Other(Friend f, long me) => f.RequesterId == me ? f.AddresseeId : f.RequesterId;
 
     private static FriendUserPayload ToPayload(User u) =>
-        new(u.Id, u.UserName!, u.Discriminator, u.AvatarKey, u.BannerKey);
+        new(u.Id, u.UserName!, u.AvatarKey, u.BannerKey);
 
     private long GetUserId() => long.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
 }
