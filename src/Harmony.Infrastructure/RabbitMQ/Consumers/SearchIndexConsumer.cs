@@ -71,7 +71,10 @@ public class SearchIndexConsumer : BackgroundService
     {
         _stoppingToken = stoppingToken;
         _channel = await _connection.CreateChannelAsync();
-        await _channel.BasicQosAsync(prefetchSize: 0, prefetchCount: 1, global: false);
+        // Higher prefetch than the Scylla consumer: FTS writes are idempotent and the consumer
+        // already tolerates reordering via its ServiceUnavailableException requeue, so it benefits
+        // most from buffering. Ordering still holds — dispatch concurrency stays at the default 1.
+        await _channel.BasicQosAsync(prefetchSize: 0, prefetchCount: 20, global: false);
 
         var consumer = new AsyncEventingBasicConsumer(_channel);
         consumer.ReceivedAsync += OnMessageReceivedAsync;

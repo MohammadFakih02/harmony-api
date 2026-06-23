@@ -47,4 +47,25 @@ public interface IMessageDeduplicator
     /// <param name="messageId">The Snowflake message ID from the event.</param>
     /// <param name="ct">Cancellation token.</param>
     Task ClearAsync(string eventType, long messageId, CancellationToken ct = default);
+
+    /// <summary>
+    /// Atomically increments and returns the out-of-order requeue attempt count for an event.
+    ///
+    /// Used by the consumer to DLQ an event after a bounded number of requeues rather than
+    /// looping forever against a MessageSent that will never land (e.g. one that permanently
+    /// failed and was itself DLQ'd). Backed by a short-TTL Redis counter
+    /// (key: <c>requeue:msg:{eventType}:{messageId}</c>).
+    ///
+    /// Fails open returning <c>0</c> (keep requeuing) when Redis is unavailable — losing the
+    /// bound briefly is preferable to wrongly DLQ-ing a recoverable event, and RabbitMQ's
+    /// queue-level message TTL remains the ultimate backstop.
+    /// </summary>
+    /// <param name="eventType">Use the constants on this interface: Sent, Deleted, Edited.</param>
+    /// <param name="messageId">The Snowflake message ID from the event.</param>
+    /// <param name="ct">Cancellation token.</param>
+    Task<long> IncrementRequeueCountAsync(
+        string eventType,
+        long messageId,
+        CancellationToken ct = default
+    );
 }

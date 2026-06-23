@@ -24,6 +24,12 @@ namespace Harmony.Infrastructure.Redis;
 public sealed class RedisMessageDeduplicator : IMessageDeduplicator
 {
     private static readonly TimeSpan Ttl = TimeSpan.FromSeconds(60);
+
+    // Short-lived counter for bounding out-of-order requeues. Comfortably outlives the
+    // requeue budget (MaxOutOfOrderRequeues × backoff ≈ 16s) without lingering long enough
+    // to interfere with a genuinely distinct later edit of the same message.
+    private static readonly TimeSpan RequeueCountTtl = TimeSpan.FromMinutes(2);
+
     private readonly IRedisConnectionProvider _redisProvider;
 
     private readonly ILogger<RedisMessageDeduplicator> _logger;
@@ -116,10 +122,54 @@ public sealed class RedisMessageDeduplicator : IMessageDeduplicator
         }
     }
 
+    /// <inheritdoc/>
+    public async Task<long> IncrementRequeueCountAsync(
+        string eventType,
+        long messageId,
+        CancellationToken ct = default
+    )
+    {
+        // Fail open: without Redis we can't bound, so return 0 → caller keeps requeuing.
+        // RabbitMQ's queue x-message-ttl remains the ultimate backstop in that case.
+        if (!_redisProvider.IsConnected)
+            return 0;
+
+        var key = BuildRequeueKey(eventType, messageId);
+        try
+        {
+            var db = _redisProvider.Connection!.GetDatabase();
+            var count = await db.StringIncrementAsync(key);
+
+            // Set the TTL only on the first increment so the window doesn't keep extending
+            // with each requeue.
+            if (count == 1)
+                await db.KeyExpireAsync(key, RequeueCountTtl);
+
+            return count;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Deduplicator: requeue-count increment failed for {EventType}:{MessageId} — failing open (0)",
+                eventType,
+                messageId
+            );
+            return 0;
+        }
+    }
+
     /// <summary>
     /// Builds the Redis key for a given event type and message ID.
     /// Format: <c>dedup:msg:{eventType}:{messageId}</c>
     /// </summary>
     public static string BuildKey(string eventType, long messageId) =>
         $"dedup:msg:{eventType}:{messageId}";
+
+    /// <summary>
+    /// Builds the Redis key for the out-of-order requeue counter.
+    /// Format: <c>requeue:msg:{eventType}:{messageId}</c>
+    /// </summary>
+    public static string BuildRequeueKey(string eventType, long messageId) =>
+        $"requeue:msg:{eventType}:{messageId}";
 }
