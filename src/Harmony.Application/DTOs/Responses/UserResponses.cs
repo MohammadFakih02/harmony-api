@@ -10,10 +10,15 @@ public record UserProfileResponse(
     string? BannerKey,
     string? Bio,
     string? StatusMessage,
+    long? StatusMessageExpiresAt,
     string PreferredStatus,
+    long? PreferredStatusExpiresAt,
     string AccountStatus,
     long CreatedAt
 );
+
+// Returned per user from /api/users/presence — effective status + (when visible) custom message
+public record UserPresenceResponse(string Status, string? StatusMessage);
 
 // Returned for /api/users/{id} — public fields only, no email
 public record PublicUserResponse(

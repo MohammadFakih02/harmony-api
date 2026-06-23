@@ -42,6 +42,10 @@ public record MessageEditedEvent(
     long EditedByUserId,
     string NewContent,
     List<long> MentionIds,
+    // The mention set BEFORE this edit, captured by MessageService before it writes the new
+    // one to Scylla — the consumer diffs against this to notify only newly-added mentions.
+    // (It can't re-read the "old" set itself: the synchronous edit has already overwritten it.)
+    List<long> OldMentionIds,
     DateTimeOffset EditedAt
 );
 

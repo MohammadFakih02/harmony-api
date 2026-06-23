@@ -127,15 +127,14 @@ public class MessageConsumerHandler : IMessageConsumerHandler
             return;
         }
 
-        var oldMentionIds = existing.MentionIds;
-
         await _messageRepository.EditAsync(evt.MessageId, evt.ChannelId, evt.NewContent, evt.MentionIds, ct);
 
         // Re-detection notifies only NEWLY added mentions — an already-mentioned user is not
-        // re-notified, and removing a mention never un-notifies. Best-effort, same as the
-        // send-path: the Scylla edit is already persisted, so a notification failure must not
-        // bubble into the retry pipeline.
-        var newlyMentioned = evt.MentionIds.Except(oldMentionIds).ToList();
+        // re-notified, and removing a mention never un-notifies. The "old" set comes from the
+        // event (captured by MessageService before its synchronous edit); re-reading it here
+        // would return the already-overwritten new set. Best-effort, same as the send-path:
+        // the Scylla edit is already persisted, so a notification failure must not bubble.
+        var newlyMentioned = evt.MentionIds.Except(evt.OldMentionIds).ToList();
         if (newlyMentioned.Count > 0)
         {
             try

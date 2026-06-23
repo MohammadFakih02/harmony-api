@@ -12,7 +12,13 @@ public class User : IdentityUser<long>
     public string? BannerKey { get; set; }
     public string? Bio { get; set; }
     public string? StatusMessage { get; set; }
+
+    /// <summary>Unix-ms when the custom <see cref="StatusMessage"/> auto-clears; null = never.</summary>
+    public long? StatusMessageExpiresAt { get; set; }
     public string PreferredStatus { get; set; } = "online"; // online | away | dnd | invisible
+
+    /// <summary>Unix-ms when <see cref="PreferredStatus"/> auto-reverts to online; null = never.</summary>
+    public long? PreferredStatusExpiresAt { get; set; }
     public string AccountStatus { get; set; } = "active";
     public long CreatedAt { get; set; }
 

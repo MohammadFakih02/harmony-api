@@ -96,6 +96,13 @@ public class UsersController : ControllerBase
             return NotFound();
 
         user.PreferredStatus = request.Status;
+        // Expiry only applies to a non-default status — "online" is already the revert
+        // target, so an expiry on it is meaningless and is cleared.
+        user.PreferredStatusExpiresAt =
+            request.Status != PresenceStatus.Online && request.ExpiresInMinutes is > 0
+                ? DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+                    + (long)request.ExpiresInMinutes.Value * 60_000
+                : null;
         await _users.SaveChangesAsync(); // Postgres is the source of truth
 
         // Update the Redis cache + recompute the effective status + broadcast StatusChanged.
@@ -104,12 +111,38 @@ public class UsersController : ControllerBase
         return Ok(ToProfileResponse(user));
     }
 
-    // GET /api/users/presence?ids=1,2,3 — public effective statuses for the member-list dots
+    // PATCH /api/users/me/custom-status — the free-text custom status message + clear-after.
+    [HttpPatch("me/custom-status")]
+    public async Task<IActionResult> UpdateCustomStatus(
+        [FromBody] UpdateCustomStatusRequest request
+    )
+    {
+        var user = await _users.GetByIdAsync(GetUserId());
+        if (user is null)
+            return NotFound();
+
+        var message = string.IsNullOrWhiteSpace(request.Message) ? null : request.Message.Trim();
+        user.StatusMessage = message;
+        // No message ⇒ no expiry; otherwise honour the optional clear-after.
+        user.StatusMessageExpiresAt =
+            message is not null && request.ExpiresInMinutes is > 0
+                ? DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+                    + (long)request.ExpiresInMinutes.Value * 60_000
+                : null;
+        await _users.SaveChangesAsync();
+
+        // Live half: cache the message + broadcast StatusChanged to friends/own tabs.
+        await _presence.SetCustomStatusAsync(user.Id, message);
+
+        return Ok(ToProfileResponse(user));
+    }
+
+    // GET /api/users/presence?ids=1,2,3 — effective status + custom message for the member list
     [HttpGet("presence")]
     public async Task<IActionResult> GetPresence([FromQuery] string? ids)
     {
         if (string.IsNullOrWhiteSpace(ids))
-            return Ok(new Dictionary<string, string>());
+            return Ok(new Dictionary<string, UserPresenceResponse>());
 
         var userIds = ids.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Select(s => long.TryParse(s, out var id) ? id : (long?)null)
@@ -118,9 +151,19 @@ public class UsersController : ControllerBase
             .ToList();
 
         var statuses = await _presence.GetStatusesAsync(userIds);
+        var messages = await _presence.GetStatusMessagesAsync(userIds);
 
         // Serialize ids as strings to match the Snowflake-as-string convention everywhere else.
-        return Ok(statuses.ToDictionary(kv => kv.Key.ToString(), kv => kv.Value));
+        // A user who appears offline never exposes their custom message.
+        return Ok(
+            statuses.ToDictionary(
+                kv => kv.Key.ToString(),
+                kv => new UserPresenceResponse(
+                    kv.Value,
+                    kv.Value == "offline" ? null : messages.GetValueOrDefault(kv.Key)
+                )
+            )
+        );
     }
 
     // GET /api/users/{id}
@@ -261,7 +304,9 @@ public class UsersController : ControllerBase
             u.BannerKey,
             u.Bio,
             u.StatusMessage,
+            u.StatusMessageExpiresAt,
             u.PreferredStatus,
+            u.PreferredStatusExpiresAt,
             u.AccountStatus,
             u.CreatedAt
         );

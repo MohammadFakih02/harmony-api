@@ -24,5 +24,13 @@ public class UserRepository : IUserRepository
             .ToDictionaryAsync(u => u.Id);
     }
 
+    public async Task<List<User>> GetUsersWithExpiredStatusAsync(long now) =>
+        await _db.Users
+            .Where(u =>
+                (u.PreferredStatusExpiresAt != null && u.PreferredStatusExpiresAt <= now)
+                || (u.StatusMessageExpiresAt != null && u.StatusMessageExpiresAt <= now)
+            )
+            .ToListAsync();
+
     public async Task SaveChangesAsync() => await _db.SaveChangesAsync();
 }

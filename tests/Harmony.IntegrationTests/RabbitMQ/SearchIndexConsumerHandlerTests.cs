@@ -140,6 +140,7 @@ public class SearchIndexConsumerHandlerTests : ScyllaAndPostgresTestBase
             EditedByUserId: 99,
             NewContent: "updated content",
             MentionIds: [],
+            OldMentionIds: [],
             EditedAt: DateTimeOffset.UtcNow
         );
 
@@ -162,6 +163,7 @@ public class SearchIndexConsumerHandlerTests : ScyllaAndPostgresTestBase
             EditedByUserId: 99,
             NewContent: "final content",
             MentionIds: [],
+            OldMentionIds: [],
             EditedAt: DateTimeOffset.UtcNow
         );
 
@@ -183,6 +185,7 @@ public class SearchIndexConsumerHandlerTests : ScyllaAndPostgresTestBase
             EditedByUserId: 99,
             NewContent: "should requeue",
             MentionIds: [],
+            OldMentionIds: [],
             EditedAt: DateTimeOffset.UtcNow
         );
 

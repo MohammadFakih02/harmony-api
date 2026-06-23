@@ -25,6 +25,14 @@ public interface INotificationRepository
     /// </summary>
     Task MarkAllReadAsync(long userId);
 
+    /// <summary>
+    /// Deletes the notification scoped to its owner. Returns true if a row was removed,
+    /// false when the id doesn't exist or belongs to someone else — same owner-baked-into-
+    /// the-query approach as GetByIdForUserAsync, so a caller can 404 without leaking
+    /// whether another user's id is valid.
+    /// </summary>
+    Task<bool> DeleteForUserAsync(long notificationId, long userId);
+
     Task AddAsync(Notification notification);
 
     Task SaveChangesAsync();
