@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Harmony.Application.Interfaces.Services;
@@ -126,7 +127,38 @@ public class MessageConsumerHandler : IMessageConsumerHandler
             return;
         }
 
-        await _messageRepository.EditAsync(evt.MessageId, evt.ChannelId, evt.NewContent, ct);
+        var oldMentionIds = existing.MentionIds;
+
+        await _messageRepository.EditAsync(evt.MessageId, evt.ChannelId, evt.NewContent, evt.MentionIds, ct);
+
+        // Re-detection notifies only NEWLY added mentions — an already-mentioned user is not
+        // re-notified, and removing a mention never un-notifies. Best-effort, same as the
+        // send-path: the Scylla edit is already persisted, so a notification failure must not
+        // bubble into the retry pipeline.
+        var newlyMentioned = evt.MentionIds.Except(oldMentionIds).ToList();
+        if (newlyMentioned.Count > 0)
+        {
+            try
+            {
+                await _notificationService.CreateMentionNotificationsAsync(
+                    newlyMentioned,
+                    evt.EditedByUserId,
+                    evt.GuildId,
+                    evt.ChannelId,
+                    evt.MessageId,
+                    evt.EditedAt.ToUnixTimeMilliseconds(),
+                    ct
+                );
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "MessageEdited: mention-notification creation failed for MessageId {MessageId} — message persisted, continuing",
+                    evt.MessageId
+                );
+            }
+        }
 
         _logger.LogInformation(
             "MessageEdited handled (Scylla) — MessageId: {MessageId}",

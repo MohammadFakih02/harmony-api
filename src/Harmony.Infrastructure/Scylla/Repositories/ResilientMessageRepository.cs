@@ -61,8 +61,9 @@ public sealed class ResilientMessageRepository : IMessageRepository
         long messageId,
         long channelId,
         string newContent,
+        List<long> mentionIds,
         CancellationToken ct = default
-    ) => _inner.EditAsync(messageId, channelId, newContent, ct);
+    ) => _inner.EditAsync(messageId, channelId, newContent, mentionIds, ct);
 
     public Task PinAsync(
         long channelId,

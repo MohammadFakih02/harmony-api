@@ -158,16 +158,18 @@ public class MessageRepositoryTests : ScyllaTestBase
         var message = BuildMessage(channelId: 7, messageId: 7001, content: "original");
 
         await repo.SaveAsync(message);
-        await repo.EditAsync(messageId: 7001, channelId: 7, newContent: "edited");
+        await repo.EditAsync(messageId: 7001, channelId: 7, newContent: "edited", mentionIds: [42]);
 
         var byChannel = (await repo.GetChannelMessagesAsync(channelId: 7, limit: 10)).First();
         byChannel.Content.Should().Be("edited");
         byChannel.IsEdited.Should().BeTrue();
         byChannel.EditedAt.Should().NotBeNull();
+        byChannel.MentionIds.Should().BeEquivalentTo(new List<long> { 42 });
 
         var byId = await repo.GetByIdAsync(7001);
         byId!.Content.Should().Be("edited");
         byId.IsEdited.Should().BeTrue();
+        byId.MentionIds.Should().BeEquivalentTo(new List<long> { 42 });
     }
 
     // --- PinAsync + GetPinnedAsync + UnpinAsync ---
