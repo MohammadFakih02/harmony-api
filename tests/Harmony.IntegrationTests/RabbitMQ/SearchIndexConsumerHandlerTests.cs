@@ -223,7 +223,6 @@ public class SearchIndexConsumerHandlerTests : ScyllaAndPostgresTestBase
             NormalizedEmail = "OWNER@TEST.COM",
             SecurityStamp = Guid.NewGuid().ToString(),
             ConcurrencyStamp = Guid.NewGuid().ToString(),
-            Discriminator = "0001",
             AccountStatus = "active",
             CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
         };

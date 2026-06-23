@@ -359,7 +359,6 @@ public class MessageConsumerHandlerTests : ScyllaAndPostgresTestBase
             NormalizedEmail = "OWNER@TEST.COM",
             SecurityStamp = Guid.NewGuid().ToString(),
             ConcurrencyStamp = Guid.NewGuid().ToString(),
-            Discriminator = "0001",
             AccountStatus = "active",
             CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
         };
@@ -400,7 +399,6 @@ public class MessageConsumerHandlerTests : ScyllaAndPostgresTestBase
             NormalizedEmail = $"{username}@test.com".ToUpper(),
             SecurityStamp = Guid.NewGuid().ToString(),
             ConcurrencyStamp = Guid.NewGuid().ToString(),
-            Discriminator = "0001",
             AccountStatus = "active",
             CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
         };

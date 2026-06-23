@@ -7,7 +7,6 @@ public record DirectMessageChannelResponse(
     long ChannelId,
     long PeerId,
     string PeerUsername,
-    string? PeerDiscriminator,
     string? PeerAvatarKey,
     long LastReadId
 );

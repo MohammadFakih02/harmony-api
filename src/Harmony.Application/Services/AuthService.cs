@@ -54,7 +54,6 @@ public class AuthService : IAuthService
             Id = _snowflake.NextId(),
             UserName = request.Username,
             Email = request.Email,
-            Discriminator = GenerateDiscriminator(),
             AccountStatus = "active",
             CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
         };
@@ -212,13 +211,10 @@ public class AuthService : IAuthService
         await _tokenRepository.SaveChangesAsync(ct);
     }
 
-    private static string GenerateDiscriminator() => Random.Shared.Next(0, 10000).ToString("D4");
-
     private static UserResponse ToUserResponse(User user) =>
         new(
             user.Id,
             user.UserName!,
-            user.Discriminator,
             user.Email!,
             user.AvatarKey,
             user.AccountStatus

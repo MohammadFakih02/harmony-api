@@ -8,7 +8,6 @@ public record AuthResponse(
 public record UserResponse(
     long Id,
     string Username,
-    string? Discriminator,
     string Email,
     string? AvatarKey,
     string AccountStatus

@@ -16,7 +16,6 @@ public record GuildResponse(
 public record GuildMemberResponse(
     long UserId,
     string Username,
-    string? Discriminator,
     string? Nickname,
     string? AvatarKey,
     bool IsOwner,

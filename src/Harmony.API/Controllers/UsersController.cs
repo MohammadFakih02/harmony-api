@@ -278,7 +278,6 @@ public class UsersController : ControllerBase
                 return new BlockResponse(
                     u.Id,
                     u.UserName!,
-                    u.Discriminator,
                     u.AvatarKey,
                     u.BannerKey,
                     b.CreatedAt
@@ -298,7 +297,6 @@ public class UsersController : ControllerBase
         new(
             u.Id,
             u.UserName!,
-            u.Discriminator,
             u.Email!,
             u.AvatarKey,
             u.BannerKey,
@@ -312,5 +310,5 @@ public class UsersController : ControllerBase
         );
 
     private static PublicUserResponse ToPublicResponse(User u) =>
-        new(u.Id, u.UserName!, u.Discriminator, u.AvatarKey, u.BannerKey, u.Bio, u.StatusMessage);
+        new(u.Id, u.UserName!, u.AvatarKey, u.BannerKey, u.Bio, u.StatusMessage);
 }
