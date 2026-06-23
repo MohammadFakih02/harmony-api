@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using Harmony.Application.DTOs.Responses;
+using Harmony.Application.Exceptions;
 using Harmony.Application.Hubs;
 using Harmony.Application.Interfaces.Services;
 using Harmony.Domain.Interfaces;
@@ -45,6 +46,12 @@ public class ScyllaMessageConsumer : BackgroundService
     private string? _consumerTag;
     private CancellationToken _stoppingToken;
 
+    // Out-of-order edit handling: a MessageEdited whose MessageSent hasn't landed yet is
+    // requeued with a short backoff, up to a bounded number of times before being DLQ'd — so a
+    // permanently-failed Sent (already on the DLQ) can't make the edit requeue forever.
+    private const int MaxOutOfOrderRequeues = 8;
+    private static readonly TimeSpan OutOfOrderRequeueDelay = TimeSpan.FromSeconds(2);
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -70,6 +77,9 @@ public class ScyllaMessageConsumer : BackgroundService
                 {
                     ShouldHandle = new PredicateBuilder().Handle<Exception>(ex =>
                         ex is not JsonException
+                        // Out-of-order edit signal — not retried on the ladder; handled by a
+                        // dedicated catch that backs off and requeues (see OnMessageReceivedAsync).
+                        && ex is not ServiceUnavailableException
                         // Symmetry + safety net: constraint-violation poison fast-fails to the DLQ
                         // instead of laddering. The Scylla write itself can't throw a PostgresException;
                         // the one Postgres touch (mention notifications) is best-effort in the handler,
@@ -102,7 +112,12 @@ public class ScyllaMessageConsumer : BackgroundService
     {
         _stoppingToken = stoppingToken;
         _channel = await _connection.CreateChannelAsync();
-        await _channel.BasicQosAsync(prefetchSize: 0, prefetchCount: 1, global: false);
+        // prefetchCount > 1 buffers deliveries client-side to remove the per-message ack
+        // round-trip stall. Ordering is preserved because consumer dispatch concurrency stays
+        // at the default of 1 (set on the connection, not here) — a single dispatch thread
+        // processes deliveries serially. Raising dispatch concurrency would reintroduce
+        // reordering; the out-of-order edit requeue path below is the safety net if it ever is.
+        await _channel.BasicQosAsync(prefetchSize: 0, prefetchCount: 10, global: false);
 
         var consumer = new AsyncEventingBasicConsumer(_channel);
         consumer.ReceivedAsync += OnMessageReceivedAsync;
@@ -163,6 +178,68 @@ public class ScyllaMessageConsumer : BackgroundService
             );
 
             await _channel!.BasicAckAsync(ea.DeliveryTag, multiple: false);
+        }
+        catch (ServiceUnavailableException ex)
+        {
+            // Out-of-order edit: its MessageSent hasn't been persisted yet. Back off and requeue
+            // so the insert lands first — mirrors SearchIndexConsumer. Bounded by a Redis attempt
+            // counter so a permanently-failed Sent doesn't loop the edit forever.
+            _logger.LogWarning(
+                "ScyllaConsumer: out-of-order edit — {Message}. Throttling and requeuing.",
+                ex.Message
+            );
+
+            // The dedup key was claimed on this first delivery (in HandleMessageEditedAsync, before
+            // the handler threw). Clear it so the requeued delivery re-processes instead of being
+            // swallowed as a duplicate (Decision D). The handler throws before the broadcast, so
+            // there is no double-broadcast/double-unread risk from relaxing dedup here.
+            long messageId = 0;
+            try
+            {
+                var evt = JsonSerializer.Deserialize<MessageEditedEvent>(body, JsonOptions);
+                if (evt is not null)
+                {
+                    messageId = evt.MessageId;
+                    await _deduplicator.ClearAsync(IMessageDeduplicator.Edited, evt.MessageId);
+                }
+            }
+            catch (Exception clearEx)
+            {
+                _logger.LogWarning(
+                    clearEx,
+                    "ScyllaConsumer: failed to clear dedup key on out-of-order requeue — continuing"
+                );
+            }
+
+            // Backoff so we don't hot-loop at low queue depth (the delay runs on the single
+            // dispatch thread, so it also throttles the queue — acceptable for this rare path).
+            await Task.Delay(OutOfOrderRequeueDelay, _stoppingToken);
+
+            if (_channel!.IsOpen)
+            {
+                var attempts = await _deduplicator.IncrementRequeueCountAsync(
+                    IMessageDeduplicator.Edited,
+                    messageId
+                );
+
+                // In the Test env, requeue at most once (then DLQ) so a stuck edit can't burn the
+                // full backoff budget inside a test run — mirrors SearchIndexConsumer. (Reuses the
+                // xunit env-detection that §18 flags for cleanup; kept for consistency.)
+                var shouldRequeue =
+                    attempts < MaxOutOfOrderRequeues && (!IsTestEnv() || !ea.Redelivered);
+
+                if (!shouldRequeue)
+                    _logger.LogError(
+                        "ScyllaConsumer: out-of-order edit exceeded requeue budget ({Attempts}) — routing to DLQ",
+                        attempts
+                    );
+
+                await _channel.BasicNackAsync(
+                    ea.DeliveryTag,
+                    multiple: false,
+                    requeue: shouldRequeue
+                );
+            }
         }
         catch (Exception ex)
         {
@@ -385,6 +462,18 @@ public class ScyllaMessageConsumer : BackgroundService
             evt.ChannelId
         );
     }
+
+    // Detects the integration-test environment so the out-of-order requeue can DLQ after a
+    // single redelivery rather than burning the full backoff budget. Mirrors SearchIndexConsumer.
+    private static bool IsTestEnv() =>
+        string.Equals(
+            Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT"),
+            "Test",
+            StringComparison.OrdinalIgnoreCase
+        )
+        || AppDomain
+            .CurrentDomain.GetAssemblies()
+            .Any(a => a.FullName!.Contains("xunit", StringComparison.OrdinalIgnoreCase));
 
     // -------------------------------------------------------------------------
     // Graceful shutdown

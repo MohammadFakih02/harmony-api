@@ -181,6 +181,58 @@ public class MessageDeduplicationTests : IAsyncLifetime
     }
 
     // -------------------------------------------------------------------------
+    // Out-of-order requeue counter — bounds edit-before-sent requeues
+    // -------------------------------------------------------------------------
+
+    [Fact]
+    public async Task IncrementRequeueCount_FirstCall_Returns1_AndSetsTtl()
+    {
+        var messageId = UniqueId();
+        var key = RedisMessageDeduplicator.BuildRequeueKey(IMessageDeduplicator.Edited, messageId);
+        _keysToCleanup.Add(key);
+
+        var count = await _sut.IncrementRequeueCountAsync(IMessageDeduplicator.Edited, messageId);
+
+        count.Should().Be(1, "first requeue attempt");
+
+        var ttl = await _db.KeyTimeToLiveAsync(key);
+        ttl.Should().NotBeNull("the counter must expire so it can't bias a later distinct edit");
+        ttl!.Value.Should().BeCloseTo(TimeSpan.FromMinutes(2), precision: TimeSpan.FromSeconds(10));
+    }
+
+    [Fact]
+    public async Task IncrementRequeueCount_Accumulates_AcrossCalls()
+    {
+        var messageId = UniqueId();
+        _keysToCleanup.Add(
+            RedisMessageDeduplicator.BuildRequeueKey(IMessageDeduplicator.Edited, messageId)
+        );
+
+        var first = await _sut.IncrementRequeueCountAsync(IMessageDeduplicator.Edited, messageId);
+        var second = await _sut.IncrementRequeueCountAsync(IMessageDeduplicator.Edited, messageId);
+        var third = await _sut.IncrementRequeueCountAsync(IMessageDeduplicator.Edited, messageId);
+
+        first.Should().Be(1);
+        second.Should().Be(2);
+        third.Should().Be(3);
+    }
+
+    [Fact]
+    public async Task IncrementRequeueCount_IsIndependent_PerMessage()
+    {
+        var idA = UniqueId();
+        var idB = UniqueId();
+        _keysToCleanup.Add(RedisMessageDeduplicator.BuildRequeueKey(IMessageDeduplicator.Edited, idA));
+        _keysToCleanup.Add(RedisMessageDeduplicator.BuildRequeueKey(IMessageDeduplicator.Edited, idB));
+
+        await _sut.IncrementRequeueCountAsync(IMessageDeduplicator.Edited, idA);
+        await _sut.IncrementRequeueCountAsync(IMessageDeduplicator.Edited, idA);
+        var bCount = await _sut.IncrementRequeueCountAsync(IMessageDeduplicator.Edited, idB);
+
+        bCount.Should().Be(1, "a different message's counter is not affected");
+    }
+
+    // -------------------------------------------------------------------------
     // Concurrency — simulates two consumer instances racing on the same message
     // -------------------------------------------------------------------------
 

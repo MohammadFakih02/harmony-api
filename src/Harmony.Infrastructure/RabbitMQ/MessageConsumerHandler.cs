@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Harmony.Application.Exceptions;
 using Harmony.Application.Interfaces.Services;
 using Harmony.Domain.Domain.Entities;
 using Harmony.Domain.Interfaces;
@@ -118,10 +119,22 @@ public class MessageConsumerHandler : IMessageConsumerHandler
         _logger.LogDebug("Handling MessageEdited — MessageId: {MessageId}", evt.MessageId);
 
         var existing = await _messageRepository.GetByIdAsync(evt.MessageId, ct);
-        if (existing is null || existing.IsDeleted)
+        if (existing is null)
+        {
+            // Out-of-order: the MessageSent event hasn't been persisted yet (broker reordering,
+            // or Sent is still mid-retry). Signal the consumer to back off and requeue so the
+            // insert lands first — same pattern as SearchIndexConsumer. A blind upsert here would
+            // create a partial row (no user_id/type/attachments) AND be clobbered by the
+            // later-arriving Sent, because Scylla LWW uses wall-clock write time, not the logical
+            // event time.
+            throw new ServiceUnavailableException(
+                $"MessageEdited {evt.MessageId} arrived before its MessageSent — requeuing"
+            );
+        }
+        if (existing.IsDeleted)
         {
             _logger.LogDebug(
-                "MessageEdited skipped — deleted or not found: {MessageId}",
+                "MessageEdited skipped — message already deleted: {MessageId}",
                 evt.MessageId
             );
             return;

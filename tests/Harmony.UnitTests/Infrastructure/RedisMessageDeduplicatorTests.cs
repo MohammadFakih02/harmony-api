@@ -279,6 +279,20 @@ public class RedisMessageDeduplicatorTests
     }
 
     // -------------------------------------------------------------------------
+    // Out-of-order requeue counter — fail-open
+    // -------------------------------------------------------------------------
+
+    [Fact]
+    public async Task IncrementRequeueCountAsync_ShouldReturn0_WhenRedisIsDisconnected()
+    {
+        var (sut, _) = BuildSut(redisConnected: false);
+
+        var count = await sut.IncrementRequeueCountAsync(IMessageDeduplicator.Edited, 11001L);
+
+        count.Should().Be(0, "fail-open: can't bound without Redis, so keep requeuing (return 0)");
+    }
+
+    // -------------------------------------------------------------------------
     // SET NX uses correct TTL
     // -------------------------------------------------------------------------
 

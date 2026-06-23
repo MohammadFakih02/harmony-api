@@ -1,4 +1,5 @@
 using FluentAssertions;
+using Harmony.Application.Exceptions;
 using Harmony.Application.Hubs;
 using Harmony.Application.Interfaces.Services;
 using Harmony.Application.Services; // <- Ensure this is imported for SnowflakeIdGenerator
@@ -199,6 +200,28 @@ public class MessageConsumerHandlerTests : ScyllaAndPostgresTestBase
 
         editedMessages.First().Content.Should().Be("edited content");
         editedMessages.First().IsEdited.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task HandleMessageEditedAsync_ShouldThrowServiceUnavailable_WhenMessageNotYetPersisted()
+    {
+        // Out-of-order: edit a message whose MessageSent never landed. The handler must signal
+        // the consumer (via ServiceUnavailableException) to back off and requeue, rather than
+        // silently skipping (which would lose the edit) or blindly upserting a partial row.
+        var editedEvt = new MessageEditedEvent(
+            MessageId: 5959, // never sent
+            ChannelId: 1,
+            GuildId: 1,
+            EditedByUserId: 99,
+            NewContent: "edit before insert",
+            MentionIds: [],
+            OldMentionIds: [],
+            EditedAt: DateTimeOffset.UtcNow
+        );
+
+        var act = async () => await _handler.HandleMessageEditedAsync(editedEvt);
+
+        await act.Should().ThrowAsync<ServiceUnavailableException>();
     }
 
     [Fact]
