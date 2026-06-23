@@ -22,6 +22,7 @@ public class MessageService : IMessageService
     private readonly IFileAttachmentRepository _attachments;
     private readonly IDirectMessageRepository _dms;
     private readonly IUserBlockRepository _blocks;
+    private readonly IPresenceService _presence;
 
     /// <summary>Max attachments per message (Discord parity).</summary>
     public const int MaxAttachments = 10;
@@ -36,7 +37,8 @@ public class MessageService : IMessageService
         IPermissionService permissions,
         IFileAttachmentRepository attachments,
         IDirectMessageRepository dms,
-        IUserBlockRepository blocks
+        IUserBlockRepository blocks,
+        IPresenceService presence
     )
     {
         _channelRepository = channelRepository;
@@ -49,6 +51,67 @@ public class MessageService : IMessageService
         _attachments = attachments;
         _dms = dms;
         _blocks = blocks;
+        _presence = presence;
+    }
+
+    /// <summary>
+    /// Server-side `@mention` detection (NON-NEGOTIABLE #8 — never trust client-provided ids).
+    /// Resolves candidates scoped to the channel's actual participants (guild members, or the
+    /// DM peer), parses the content, and — for a guild channel — expands `@everyone`/`@here`
+    /// into the member-id set if the actor holds `MentionEveryone`. If the actor lacks the
+    /// permission, the literal text is simply not expanded; mentions are a notification side
+    /// effect and must never block the send.
+    /// </summary>
+    private async Task<List<long>> ResolveMentionsAsync(
+        string content,
+        long? guildId,
+        long channelId,
+        long actorId,
+        CancellationToken ct
+    )
+    {
+        var guildContext = guildId.HasValue;
+        var candidateIds = guildContext
+            ? await _guildRepository.GetMemberIdsAsync(guildId!.Value)
+            : await _dms.GetParticipantIdsAsync(channelId);
+
+        var users = await _userRepository.GetByIdsAsync(candidateIds);
+        var usersByUsernameLower = users.Values
+            .Where(u => u.UserName is not null)
+            .GroupBy(u => u.UserName!.ToLowerInvariant())
+            .ToDictionary(g => g.Key, g => g.First().Id);
+
+        var parsed = MentionParser.Parse(content, usersByUsernameLower, guildContext);
+        var mentionIds = parsed.UserIds;
+
+        if (guildContext && (parsed.Everyone || parsed.Here))
+        {
+            var canMentionEveryone = await _permissions.HasAsync(
+                actorId,
+                guildId!.Value,
+                Permission.MentionEveryone,
+                channelId,
+                ct
+            );
+
+            if (canMentionEveryone)
+            {
+                if (parsed.Everyone)
+                {
+                    foreach (var id in candidateIds)
+                        mentionIds.Add(id);
+                }
+                else if (parsed.Here)
+                {
+                    var statuses = await _presence.GetStatusesAsync(candidateIds, ct);
+                    foreach (var id in candidateIds)
+                        if (statuses.TryGetValue(id, out var status) && status != "offline")
+                            mentionIds.Add(id);
+                }
+            }
+        }
+
+        return mentionIds.ToList();
     }
 
     public async Task<SendMessageResponse> SendMessageAsync(
@@ -118,6 +181,7 @@ public class MessageService : IMessageService
 
         var messageId = _snowflake.NextId();
         var sentAt = DateTimeOffset.UtcNow;
+        var mentionIds = await ResolveMentionsAsync(content, guildId, channelId, userId, ct);
 
         await _publisher.PublishMessageSentAsync(
             new MessageSentEvent(
@@ -128,7 +192,7 @@ public class MessageService : IMessageService
                 Content: content,
                 MessageType: request.MessageType ?? "text",
                 AttachmentIds: attachmentIds,
-                MentionIds: request.MentionIds ?? [],
+                MentionIds: mentionIds,
                 ReplyToId: request.ReplyToId,
                 SentAt: sentAt
             ),
@@ -147,7 +211,7 @@ public class MessageService : IMessageService
             Content: content,
             MessageType: request.MessageType ?? "text",
             ReplyToId: request.ReplyToId,
-            MentionIds: request.MentionIds ?? [],
+            MentionIds: mentionIds,
             AttachmentIds: attachmentIds,
             SentAt: sentAt.ToUnixTimeMilliseconds()
         );
@@ -243,8 +307,12 @@ public class MessageService : IMessageService
         if (message.UserId != userId)
             throw new UnauthorizedAccessException("You can only edit your own messages.");
 
+        // Mentions are re-detected on every edit (not diffed here — the consumer has both the
+        // old and new mention sets and only notifies users newly added to the mention set).
+        var mentionIds = await ResolveMentionsAsync(request.Content, guildId, channelId, userId, ct);
+
         // 1. Synchronously update ScyllaDB
-        await _messageRepository.EditAsync(messageId, channelId, request.Content, ct);
+        await _messageRepository.EditAsync(messageId, channelId, request.Content, mentionIds, ct);
 
         // 2. Publish event to background queues (search index update)
         await _publisher.PublishMessageEditedAsync(
@@ -254,6 +322,7 @@ public class MessageService : IMessageService
                 GuildId: guildId,
                 EditedByUserId: userId,
                 NewContent: request.Content,
+                MentionIds: mentionIds,
                 EditedAt: DateTimeOffset.UtcNow
             ),
             ct

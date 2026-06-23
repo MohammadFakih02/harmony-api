@@ -133,8 +133,8 @@ public abstract class ScyllaTestBase : IAsyncLifetime
         session.Execute(
             @"CREATE TABLE IF NOT EXISTS messages_by_id (
                 message_id bigint PRIMARY KEY, channel_id bigint, user_id bigint,
-                content text, attachment_ids list<bigint>, reply_to_id bigint,
-                is_deleted boolean, is_edited boolean, edited_at timestamp)"
+                content text, attachment_ids list<bigint>, mention_ids list<bigint>,
+                reply_to_id bigint, is_deleted boolean, is_edited boolean, edited_at timestamp)"
         );
 
         session.Execute(

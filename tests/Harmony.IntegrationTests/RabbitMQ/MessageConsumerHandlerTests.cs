@@ -175,6 +175,7 @@ public class MessageConsumerHandlerTests : ScyllaAndPostgresTestBase
             GuildId: 1,
             EditedByUserId: 99,
             NewContent: "edited content",
+            MentionIds: [],
             EditedAt: DateTimeOffset.UtcNow
         );
 
@@ -189,6 +190,76 @@ public class MessageConsumerHandlerTests : ScyllaAndPostgresTestBase
 
         editedMessages.First().Content.Should().Be("edited content");
         editedMessages.First().IsEdited.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task HandleMessageEditedAsync_ShouldCreateNotification_ForNewlyAddedMention()
+    {
+        // Arrange — send a mention-free message, then edit it to add a mention.
+        await CreateUserAsync(id: 600, username: "newlymentioned");
+        await CreateNotificationPreferenceAsync(userId: 600, mentionsEnabled: true);
+
+        var sentEvt = BuildMessageSentEvent(messageId: 4001);
+        await _handler.HandleMessageSentAsync(sentEvt);
+        await Eventually.GetAsync(
+            () => _messageRepository.GetByIdAsync(4001),
+            m => m is not null
+        );
+
+        var editedEvt = new MessageEditedEvent(
+            MessageId: 4001,
+            ChannelId: 1,
+            GuildId: 1,
+            EditedByUserId: 99,
+            NewContent: "edited to mention someone",
+            MentionIds: [600],
+            EditedAt: DateTimeOffset.UtcNow
+        );
+
+        // Act
+        await _handler.HandleMessageEditedAsync(editedEvt);
+
+        // Assert
+        var notification = await Db.Notifications.FirstOrDefaultAsync(n =>
+            n.UserId == 600 && n.Type == "mention"
+        );
+        notification.Should().NotBeNull();
+        notification!.MessageId.Should().Be(4001);
+    }
+
+    [Fact]
+    public async Task HandleMessageEditedAsync_ShouldNotReNotify_AlreadyMentionedUser()
+    {
+        // Arrange — send WITH a mention already present, then edit while keeping the same mention.
+        await CreateUserAsync(id: 601, username: "alreadymentioned");
+        await CreateNotificationPreferenceAsync(userId: 601, mentionsEnabled: true);
+
+        var sentEvt = BuildMessageSentEvent(messageId: 4002, mentionIds: [601]);
+        await _handler.HandleMessageSentAsync(sentEvt);
+        await Eventually.GetAsync(
+            () => _messageRepository.GetByIdAsync(4002),
+            m => m is not null
+        );
+
+        var firstCount = await Db.Notifications.CountAsync(n => n.UserId == 601);
+        firstCount.Should().Be(1);
+
+        var editedEvt = new MessageEditedEvent(
+            MessageId: 4002,
+            ChannelId: 1,
+            GuildId: 1,
+            EditedByUserId: 99,
+            NewContent: "edited content, same mention",
+            MentionIds: [601],
+            EditedAt: DateTimeOffset.UtcNow
+        );
+
+        // Act
+        await _handler.HandleMessageEditedAsync(editedEvt);
+
+        // Assert — no second notification for a mention that was already present at send time.
+        var secondCount = await Db.Notifications.CountAsync(n => n.UserId == 601);
+        secondCount.Should().Be(1);
     }
 
     [Fact]

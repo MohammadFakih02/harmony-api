@@ -249,9 +249,11 @@ public class NotificationTests : ApiTestBase, IClassFixture<HarmonyWebApplicatio
         try
         {
             Authorize(ownerToken);
+            // Mentions are now detected server-side from the @username literal in the content —
+            // there is no client-supplied mentionIds field anymore (NON-NEGOTIABLE #8).
             var send = await Client.PostAsJsonAsync(
                 $"/api/guilds/{guild.Id}/channels/{channel!.Id}/messages",
-                new { content = "hey @notif_member6", mentionIds = new[] { memberId.ToString() } }
+                new { content = "hey @notif_member6" }
             );
             send.EnsureSuccessStatusCode();
             var sent = await send.Content.ReadFromJsonAsync<SendMessageResponse>();
@@ -285,6 +287,80 @@ public class NotificationTests : ApiTestBase, IClassFixture<HarmonyWebApplicatio
             await memberConn.StopAsync();
             await memberConn.DisposeAsync();
         }
+    }
+
+    [Fact]
+    public async Task EveryoneMention_ByOwner_NotifiesAllOtherMembers()
+    {
+        var (ownerToken, ownerId) = await RegisterAsync("notif_owner7", "notif_owner7@test.com");
+        Authorize(ownerToken);
+        var g = await Client.PostAsJsonAsync("/api/guilds", new { name = "Everyone Guild" });
+        g.EnsureSuccessStatusCode();
+        var guild = await g.Content.ReadFromJsonAsync<GuildResponse>();
+        var c = await Client.PostAsJsonAsync(
+            $"/api/guilds/{guild!.Id}/channels",
+            new { name = "general", type = "text" }
+        );
+        c.EnsureSuccessStatusCode();
+        var channel = await c.Content.ReadFromJsonAsync<IdResponse>();
+
+        var (memberToken, memberId) = await RegisterAsync("notif_member7", "notif_member7@test.com");
+        Authorize(memberToken);
+        (await Client.PostAsJsonAsync($"/api/guilds/join/{guild.InviteCode}", new { }))
+            .EnsureSuccessStatusCode();
+
+        // The owner resolves to all permission bits, including MentionEveryone — @everyone expands.
+        Authorize(ownerToken);
+        var send = await Client.PostAsJsonAsync(
+            $"/api/guilds/{guild.Id}/channels/{channel!.Id}/messages",
+            new { content = "@everyone standup time" }
+        );
+        send.EnsureSuccessStatusCode();
+
+        Authorize(memberToken);
+        var list = await Eventually.GetAsync(
+            action: async () =>
+                (await Client.GetFromJsonAsync<List<NotificationDto>>("/api/notifications"))!,
+            predicate: l => l.Any(n => n.Type == "mention" && n.ActorId == ownerId),
+            retries: 100,
+            intervalMs: 100
+        );
+        list.Should().ContainSingle(n => n.Type == "mention" && n.ActorId == ownerId);
+    }
+
+    [Fact]
+    public async Task EveryoneMention_ByMemberWithoutPermission_StillSends_ButDoesNotExpand()
+    {
+        var (ownerToken, _) = await RegisterAsync("notif_owner8", "notif_owner8@test.com");
+        Authorize(ownerToken);
+        var g = await Client.PostAsJsonAsync("/api/guilds", new { name = "No Everyone Guild" });
+        g.EnsureSuccessStatusCode();
+        var guild = await g.Content.ReadFromJsonAsync<GuildResponse>();
+        var c = await Client.PostAsJsonAsync(
+            $"/api/guilds/{guild!.Id}/channels",
+            new { name = "general", type = "text" }
+        );
+        c.EnsureSuccessStatusCode();
+        var channel = await c.Content.ReadFromJsonAsync<IdResponse>();
+
+        // A plain joined member only has the @everyone default role bits, which do NOT
+        // include MentionEveryone.
+        var (memberToken, memberId) = await RegisterAsync("notif_member8", "notif_member8@test.com");
+        Authorize(memberToken);
+        (await Client.PostAsJsonAsync($"/api/guilds/join/{guild.InviteCode}", new { }))
+            .EnsureSuccessStatusCode();
+
+        var send = await Client.PostAsJsonAsync(
+            $"/api/guilds/{guild.Id}/channels/{channel!.Id}/messages",
+            new { content = "@everyone anyone there?" }
+        );
+        // Mentions are a notification side effect, never a send-blocker — the message still sends.
+        send.EnsureSuccessStatusCode();
+
+        Authorize(ownerToken);
+        await Task.Delay(300);
+        var unreadCount = await Client.GetFromJsonAsync<int>("/api/notifications/unread-count");
+        unreadCount.Should().Be(0);
     }
 
     private record AuthResponse(string AccessToken, UserDto User);

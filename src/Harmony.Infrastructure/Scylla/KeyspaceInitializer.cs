@@ -71,6 +71,7 @@ public class KeyspaceInitializer : IHostedService
                     user_id bigint,
                     content text,
                     attachment_ids list<bigint>,
+                    mention_ids list<bigint>,
                     reply_to_id bigint,
                     is_deleted boolean,
                     is_edited boolean,
