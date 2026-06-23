@@ -31,6 +31,14 @@ public class NotificationRepository : INotificationRepository
     public async Task<int> GetUnreadCountAsync(long userId) =>
         await _db.Notifications.CountAsync(n => n.UserId == userId && !n.IsRead);
 
+    public async Task<bool> DeleteForUserAsync(long notificationId, long userId)
+    {
+        var deleted = await _db
+            .Notifications.Where(n => n.Id == notificationId && n.UserId == userId)
+            .ExecuteDeleteAsync();
+        return deleted > 0;
+    }
+
     public async Task MarkAllReadAsync(long userId) =>
         await _db
             .Notifications.Where(n => n.UserId == userId && !n.IsRead)

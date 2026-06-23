@@ -48,6 +48,24 @@ public interface IPresenceService
     );
 
     /// <summary>
+    /// Reads several users' custom status messages in one round-trip. Returns null for a
+    /// user with no message (or whose cache is cold). The caller hides the message of a
+    /// user who appears offline.
+    /// </summary>
+    Task<IReadOnlyDictionary<long, string?>> GetStatusMessagesAsync(
+        IEnumerable<long> userIds,
+        CancellationToken ct = default
+    );
+
+    /// <summary>
+    /// Caches the user's new custom status <paramref name="message"/> (null = none) and,
+    /// if they're connected, broadcasts StatusChanged carrying it — to friends (masked to
+    /// no message when they appear offline) and to the user's own tabs. The durable copy
+    /// lives in Postgres (the caller persists it); this is the live-presence half.
+    /// </summary>
+    Task SetCustomStatusAsync(long userId, string? message, CancellationToken ct = default);
+
+    /// <summary>
     /// Sets the user's durable preferred status (online/away/dnd/invisible). The
     /// caller persists it to Postgres; this updates the Redis cache, recomputes
     /// the effective status if the user is connected, and broadcasts StatusChanged

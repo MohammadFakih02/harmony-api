@@ -53,12 +53,20 @@ public class MessageConsumerHandlerTests : ScyllaAndPostgresTestBase
         // suppression chain runs for real; only the live SignalR push is mocked — there's
         // no hub context in this lower-level fixture, and HubBroadcaster failures are
         // already fail-open / try-caught inside NotificationService itself.
+        // Presence reads "online" so the DnD push-suppression branch never fires here
+        // (this fixture exercises row creation, not the live push, which is mocked above).
+        var presence = new Mock<IPresenceService>();
+        presence
+            .Setup(p => p.GetStatusAsync(It.IsAny<long>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync("online");
+
         var notificationService = new NotificationService(
             new NotificationRepository(Db),
             new UserBlockRepository(Db),
             new UserMuteRepository(Db),
             Mock.Of<IHubBroadcaster>(),
             new NotificationPreferenceRepository(Db),
+            presence.Object,
             new SnowflakeIdGenerator(0, 0),
             NullLogger<NotificationService>.Instance
         );
@@ -176,6 +184,7 @@ public class MessageConsumerHandlerTests : ScyllaAndPostgresTestBase
             EditedByUserId: 99,
             NewContent: "edited content",
             MentionIds: [],
+            OldMentionIds: [],
             EditedAt: DateTimeOffset.UtcNow
         );
 
@@ -213,6 +222,7 @@ public class MessageConsumerHandlerTests : ScyllaAndPostgresTestBase
             EditedByUserId: 99,
             NewContent: "edited to mention someone",
             MentionIds: [600],
+            OldMentionIds: [],
             EditedAt: DateTimeOffset.UtcNow
         );
 
@@ -251,6 +261,7 @@ public class MessageConsumerHandlerTests : ScyllaAndPostgresTestBase
             EditedByUserId: 99,
             NewContent: "edited content, same mention",
             MentionIds: [601],
+            OldMentionIds: [601],
             EditedAt: DateTimeOffset.UtcNow
         );
 

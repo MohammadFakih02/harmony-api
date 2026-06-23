@@ -83,7 +83,7 @@ public class RabbitMQPublisherTests : IAsyncLifetime
     [Fact]
     public async Task PublishMessageEditedAsync_ShouldDeliverToMessagePersistQueue()
     {
-        var evt = new MessageEditedEvent(3001, 100, 1, 99, "edited content", [], DateTimeOffset.UtcNow);
+        var evt = new MessageEditedEvent(3001, 100, 1, 99, "edited content", [], [], DateTimeOffset.UtcNow);
 
         await _publisher.PublishMessageEditedAsync(evt);
 

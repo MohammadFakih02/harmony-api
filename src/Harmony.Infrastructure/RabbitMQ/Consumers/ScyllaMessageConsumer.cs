@@ -65,30 +65,36 @@ public class ScyllaMessageConsumer : BackgroundService
         _logger = logger;
 
         _retryPipeline = new ResiliencePipelineBuilder()
-            .AddRetry(new RetryStrategyOptions
-            {
-                ShouldHandle = new PredicateBuilder().Handle<Exception>(ex =>
-                    ex is not JsonException
-                    // Symmetry + safety net: constraint-violation poison fast-fails to the DLQ
-                    // instead of laddering. The Scylla write itself can't throw a PostgresException;
-                    // the one Postgres touch (mention notifications) is best-effort in the handler,
-                    // so in practice nothing constraint-shaped reaches this predicate here.
-                    && !ConsumerRetryPredicate.IsConstraintViolation(ex)),
-                MaxRetryAttempts = 3,
-                DelayGenerator = args =>
+            .AddRetry(
+                new RetryStrategyOptions
                 {
-                    // v8 AttemptNumber is 0-based; +1 reproduces the v7 1-based 2s/4s/8s ladder. Cap 30s.
-                    var seconds = Math.Min(Math.Pow(2, args.AttemptNumber + 1), 30);
-                    return new ValueTask<TimeSpan?>(TimeSpan.FromSeconds(seconds));
-                },
-                OnRetry = args =>
-                {
-                    _logger.LogWarning(args.Outcome.Exception,
-                        "ScyllaConsumer: retry {RetryCount} after {Delay:0.0}s",
-                        args.AttemptNumber + 1, args.RetryDelay.TotalSeconds);
-                    return default;
-                },
-            })
+                    ShouldHandle = new PredicateBuilder().Handle<Exception>(ex =>
+                        ex is not JsonException
+                        // Symmetry + safety net: constraint-violation poison fast-fails to the DLQ
+                        // instead of laddering. The Scylla write itself can't throw a PostgresException;
+                        // the one Postgres touch (mention notifications) is best-effort in the handler,
+                        // so in practice nothing constraint-shaped reaches this predicate here.
+                        && !ConsumerRetryPredicate.IsConstraintViolation(ex)
+                    ),
+                    MaxRetryAttempts = 3,
+                    DelayGenerator = args =>
+                    {
+                        // v8 AttemptNumber is 0-based; +1 reproduces the v7 1-based 2s/4s/8s ladder. Cap 30s.
+                        var seconds = Math.Min(Math.Pow(2, args.AttemptNumber + 1), 30);
+                        return new ValueTask<TimeSpan?>(TimeSpan.FromSeconds(seconds));
+                    },
+                    OnRetry = args =>
+                    {
+                        _logger.LogWarning(
+                            args.Outcome.Exception,
+                            "ScyllaConsumer: retry {RetryCount} after {Delay:0.0}s",
+                            args.AttemptNumber + 1,
+                            args.RetryDelay.TotalSeconds
+                        );
+                        return default;
+                    },
+                }
+            )
             .Build();
     }
 
@@ -124,33 +130,37 @@ public class ScyllaMessageConsumer : BackgroundService
 
         try
         {
-            await _retryPipeline.ExecuteAsync(async ct =>
-            {
-                using var scope = _scopeFactory.CreateScope();
-                var handler = scope.ServiceProvider.GetRequiredService<IMessageConsumerHandler>();
-
-                switch (routingKey)
+            await _retryPipeline.ExecuteAsync(
+                async ct =>
                 {
-                    case Topology.MessageSentKey:
-                        await HandleMessageSentAsync(scope.ServiceProvider, handler, body);
-                        break;
-                    case Topology.MessageDeletedKey:
-                        await HandleMessageDeletedAsync(handler, body);
-                        break;
-                    case Topology.MessageEditedKey:
-                        await HandleMessageEditedAsync(handler, body);
-                        break;
-                    case Topology.ChannelDeletedKey:
-                        await HandleChannelDeletedAsync(handler, body);
-                        break;
-                    default:
-                        _logger.LogWarning(
-                            "ScyllaConsumer — unrecognised routing key: {RoutingKey}",
-                            routingKey
-                        );
-                        break;
-                }
-            }, _stoppingToken);
+                    using var scope = _scopeFactory.CreateScope();
+                    var handler =
+                        scope.ServiceProvider.GetRequiredService<IMessageConsumerHandler>();
+
+                    switch (routingKey)
+                    {
+                        case Topology.MessageSentKey:
+                            await HandleMessageSentAsync(scope.ServiceProvider, handler, body);
+                            break;
+                        case Topology.MessageDeletedKey:
+                            await HandleMessageDeletedAsync(handler, body);
+                            break;
+                        case Topology.MessageEditedKey:
+                            await HandleMessageEditedAsync(handler, body);
+                            break;
+                        case Topology.ChannelDeletedKey:
+                            await HandleChannelDeletedAsync(handler, body);
+                            break;
+                        default:
+                            _logger.LogWarning(
+                                "ScyllaConsumer — unrecognised routing key: {RoutingKey}",
+                                routingKey
+                            );
+                            break;
+                    }
+                },
+                _stoppingToken
+            );
 
             await _channel!.BasicAckAsync(ea.DeliveryTag, multiple: false);
         }
@@ -235,7 +245,11 @@ public class ScyllaMessageConsumer : BackgroundService
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "ScyllaConsumer: could not fetch sender info for {UserId}", evt.UserId);
+            _logger.LogWarning(
+                ex,
+                "ScyllaConsumer: could not fetch sender info for {UserId}",
+                evt.UserId
+            );
         }
 
         await _hubBroadcaster.BroadcastMessageReceivedAsync(

@@ -290,6 +290,56 @@ public class NotificationTests : ApiTestBase, IClassFixture<HarmonyWebApplicatio
     }
 
     [Fact]
+    public async Task EveryoneMention_PushesLive_ToConnectedMember()
+    {
+        var (ownerToken, ownerId) = await RegisterAsync("notif_owner9", "notif_owner9@test.com");
+        Authorize(ownerToken);
+        var g = await Client.PostAsJsonAsync("/api/guilds", new { name = "Everyone Live Guild" });
+        g.EnsureSuccessStatusCode();
+        var guild = await g.Content.ReadFromJsonAsync<GuildResponse>();
+        var c = await Client.PostAsJsonAsync(
+            $"/api/guilds/{guild!.Id}/channels",
+            new { name = "general", type = "text" }
+        );
+        c.EnsureSuccessStatusCode();
+        var channel = await c.Content.ReadFromJsonAsync<IdResponse>();
+
+        var (memberToken, _) = await RegisterAsync("notif_member9", "notif_member9@test.com");
+        Authorize(memberToken);
+        (await Client.PostAsJsonAsync($"/api/guilds/join/{guild.InviteCode}", new { }))
+            .EnsureSuccessStatusCode();
+
+        var memberConn = BuildConnection(memberToken);
+        var received = new List<NotificationPayload>();
+        memberConn.On<NotificationPayload>("NotificationReceived", p => received.Add(p));
+        await memberConn.StartAsync();
+
+        try
+        {
+            Authorize(ownerToken);
+            var send = await Client.PostAsJsonAsync(
+                $"/api/guilds/{guild.Id}/channels/{channel!.Id}/messages",
+                new { content = "@everyone standup!" }
+            );
+            send.EnsureSuccessStatusCode();
+
+            await Eventually.GetAsync(
+                action: () => Task.FromResult(received),
+                predicate: r => r.Any(p => p.Type == "mention" && p.ActorId == ownerId),
+                retries: 100,
+                intervalMs: 100
+            );
+
+            received.Should().ContainSingle(p => p.Type == "mention" && p.ActorId == ownerId);
+        }
+        finally
+        {
+            await memberConn.StopAsync();
+            await memberConn.DisposeAsync();
+        }
+    }
+
+    [Fact]
     public async Task EveryoneMention_ByOwner_NotifiesAllOtherMembers()
     {
         var (ownerToken, ownerId) = await RegisterAsync("notif_owner7", "notif_owner7@test.com");

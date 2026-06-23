@@ -74,12 +74,38 @@ public sealed class EditMessageRequestValidator : AbstractValidator<EditMessageR
 
 public sealed class UpdateStatusRequestValidator : AbstractValidator<UpdateStatusRequest>
 {
+    // Cap an expiry at 24h — the longest "clear after" option the UI offers.
+    private const int MaxExpiryMinutes = 24 * 60;
+
     public UpdateStatusRequestValidator()
     {
         RuleFor(x => x.Status)
             .NotEmpty().WithMessage("Status is required.")
             .Must(PresenceStatus.IsValidPreferred)
             .WithMessage("Status must be one of: online, away, dnd, invisible.");
+
+        RuleFor(x => x.ExpiresInMinutes!.Value)
+            .InclusiveBetween(1, MaxExpiryMinutes)
+            .When(x => x.ExpiresInMinutes.HasValue)
+            .WithMessage($"Expiry must be between 1 and {MaxExpiryMinutes} minutes.");
+    }
+}
+
+public sealed class UpdateCustomStatusRequestValidator
+    : AbstractValidator<UpdateCustomStatusRequest>
+{
+    private const int MaxExpiryMinutes = 24 * 60;
+
+    public UpdateCustomStatusRequestValidator()
+    {
+        RuleFor(x => x.Message!)
+            .MaximumLength(128).WithMessage("Custom status must be 128 characters or fewer.")
+            .When(x => x.Message is not null);
+
+        RuleFor(x => x.ExpiresInMinutes!.Value)
+            .InclusiveBetween(1, MaxExpiryMinutes)
+            .When(x => x.ExpiresInMinutes.HasValue)
+            .WithMessage($"Expiry must be between 1 and {MaxExpiryMinutes} minutes.");
     }
 }
 

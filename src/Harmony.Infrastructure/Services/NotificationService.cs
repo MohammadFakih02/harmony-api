@@ -22,6 +22,7 @@ public class NotificationService : INotificationService
     private readonly IUserMuteRepository _userMute;
     private readonly IHubBroadcaster _broadcaster;
     private readonly INotificationPreferenceRepository _notificationPreferences;
+    private readonly IPresenceService _presence;
     private readonly ISnowflakeIdGenerator _snowflake;
     private readonly ILogger<NotificationService> _logger;
 
@@ -31,6 +32,7 @@ public class NotificationService : INotificationService
         IUserMuteRepository userMuteRepository,
         IHubBroadcaster hubBroadcaster,
         INotificationPreferenceRepository notificationPreferenceRepository,
+        IPresenceService presence,
         ISnowflakeIdGenerator snowflake,
         ILogger<NotificationService> logger
     )
@@ -40,8 +42,49 @@ public class NotificationService : INotificationService
         _userMute = userMuteRepository;
         _broadcaster = hubBroadcaster;
         _notificationPreferences = notificationPreferenceRepository;
+        _presence = presence;
         _snowflake = snowflake;
         _logger = logger;
+    }
+
+    /// <summary>
+    /// Pushes the live NotificationReceived event unless the recipient is currently in
+    /// Do-Not-Disturb. DnD suppresses the real-time interruption only — the row is still
+    /// persisted by the caller, so the user sees what they missed once they leave DnD.
+    /// Any other status (online/away/offline) gets the live push as normal. Effective
+    /// status is read fresh from presence; a DnD user who has since disconnected reads as
+    /// "offline" and so is not suppressed.
+    /// </summary>
+    private async Task PushUnlessDndAsync(Notification notification, CancellationToken ct)
+    {
+        try
+        {
+            var status = await _presence.GetStatusAsync(notification.UserId, ct);
+            if (string.Equals(status, "dnd", StringComparison.OrdinalIgnoreCase))
+                return;
+
+            await _broadcaster.BroadcastNotificationReceivedAsync(
+                notification.UserId,
+                new NotificationPayload(
+                    notification.Id,
+                    notification.Type,
+                    notification.ActorId,
+                    notification.GuildId,
+                    notification.ChannelId,
+                    notification.MessageId,
+                    notification.CreatedAt
+                ),
+                ct
+            );
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Failed to push NotificationReceived for UserId {UserId}",
+                notification.UserId
+            );
+        }
     }
 
     /// <inheritdoc />
@@ -90,30 +133,7 @@ public class NotificationService : INotificationService
         await _notifications.AddAsync(notification);
         await _notifications.SaveChangesAsync();
 
-        try
-        {
-            await _broadcaster.BroadcastNotificationReceivedAsync(
-                notification.UserId,
-                new NotificationPayload(
-                    notification.Id,
-                    notification.Type,
-                    notification.ActorId,
-                    notification.GuildId,
-                    notification.ChannelId,
-                    notification.MessageId,
-                    notification.CreatedAt
-                ),
-                ct
-            );
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(
-                ex,
-                "Failed to push NotificationReceived for UserId {UserId}",
-                notification.UserId
-            );
-        }
+        await PushUnlessDndAsync(notification, ct);
     }
 
     /// <inheritdoc />
@@ -197,31 +217,6 @@ public class NotificationService : INotificationService
         await _notifications.SaveChangesAsync();
 
         foreach (var notification in toNotify)
-        {
-            try
-            {
-                await _broadcaster.BroadcastNotificationReceivedAsync(
-                    notification.UserId,
-                    new NotificationPayload(
-                        notification.Id,
-                        notification.Type,
-                        notification.ActorId,
-                        notification.GuildId,
-                        notification.ChannelId,
-                        notification.MessageId,
-                        notification.CreatedAt
-                    ),
-                    ct
-                );
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(
-                    ex,
-                    "Failed to push NotificationReceived for UserId {UserId}",
-                    notification.UserId
-                );
-            }
-        }
+            await PushUnlessDndAsync(notification, ct);
     }
 }

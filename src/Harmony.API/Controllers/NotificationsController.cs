@@ -90,6 +90,19 @@ public class NotificationsController : ControllerBase
         return NoContent();
     }
 
+    // DELETE /api/notifications/{id} — removes one notification. NotFound covers both
+    // "doesn't exist" and "isn't yours" (the delete is scoped to the owner), so it never
+    // leaks whether someone else's notification id is valid.
+    [HttpDelete("{id}")]
+    public async Task<IActionResult> Delete(long id)
+    {
+        var userId = GetUserId();
+        if (userId is null)
+            return Unauthorized();
+        var deleted = await _notifications.DeleteForUserAsync(id, userId.Value);
+        return deleted ? NoContent() : NotFound();
+    }
+
     private long? GetUserId()
     {
         var claim = User.FindFirst(ClaimTypes.NameIdentifier) ?? User.FindFirst("sub");

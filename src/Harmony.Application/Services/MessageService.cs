@@ -307,8 +307,12 @@ public class MessageService : IMessageService
         if (message.UserId != userId)
             throw new UnauthorizedAccessException("You can only edit your own messages.");
 
-        // Mentions are re-detected on every edit (not diffed here — the consumer has both the
-        // old and new mention sets and only notifies users newly added to the mention set).
+        // Capture the pre-edit mention set BEFORE overwriting Scylla — the consumer diffs
+        // against this to notify only newly-added mentions. (It can't read the old set
+        // itself: by the time it runs, the synchronous EditAsync below has replaced it.)
+        var oldMentionIds = message.MentionIds.ToList();
+
+        // Mentions are re-detected on every edit; the consumer notifies users newly added.
         var mentionIds = await ResolveMentionsAsync(request.Content, guildId, channelId, userId, ct);
 
         // 1. Synchronously update ScyllaDB
@@ -323,6 +327,7 @@ public class MessageService : IMessageService
                 EditedByUserId: userId,
                 NewContent: request.Content,
                 MentionIds: mentionIds,
+                OldMentionIds: oldMentionIds,
                 EditedAt: DateTimeOffset.UtcNow
             ),
             ct
