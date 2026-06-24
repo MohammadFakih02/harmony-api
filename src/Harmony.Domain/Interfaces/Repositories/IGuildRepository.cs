@@ -5,7 +5,6 @@ namespace Harmony.Domain.Interfaces.Repositories;
 public interface IGuildRepository
 {
     Task<Guild?> GetByIdAsync(long guildId);
-    Task<Guild?> GetByInviteCodeAsync(string inviteCode);
     Task<List<Guild>> GetByUserIdAsync(long userId);
     Task<bool> IsMemberAsync(long guildId, long userId);
     Task<GuildMember?> GetMemberAsync(long guildId, long userId);

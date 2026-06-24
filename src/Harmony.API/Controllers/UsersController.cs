@@ -191,7 +191,6 @@ public class UsersController : ControllerBase
                 g.IconKey,
                 g.BannerKey,
                 g.IsPublic,
-                g.InviteCode,
                 g.MemberCount,
                 g.CreatedAt
             ))

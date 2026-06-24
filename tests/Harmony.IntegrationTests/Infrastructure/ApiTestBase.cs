@@ -1,4 +1,5 @@
 using System.Data.Common;
+using System.Net.Http.Json;
 using Harmony.Infrastructure.Postgres;
 using Harmony.Infrastructure.RabbitMQ; // Added for Topology names
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -123,4 +124,19 @@ public abstract class ApiTestBase : IAsyncLifetime
             // on their own assertions, and fail-open paths are unaffected.
         }
     }
+
+    /// <summary>
+    /// Mints a guild-level invite code via the API using the current Authorization header
+    /// (must be a member with CreateInvite — the owner always qualifies). Replaces the old
+    /// per-guild permanent invite_code that tests used to read off the create response.
+    /// </summary>
+    protected async Task<string> CreateInviteCodeAsync(long guildId)
+    {
+        var resp = await Client.PostAsJsonAsync($"/api/guilds/{guildId}/invites", new { });
+        resp.EnsureSuccessStatusCode();
+        var body = await resp.Content.ReadFromJsonAsync<InviteCodeResponse>();
+        return body!.Code;
+    }
+
+    private record InviteCodeResponse(string Code);
 }

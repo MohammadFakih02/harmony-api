@@ -9,7 +9,6 @@ public class Guild
     public string? IconKey { get; set; }
     public string? BannerKey { get; set; }
     public bool IsPublic { get; set; }
-    public string? InviteCode { get; set; }
     public int MemberCount { get; set; }
     public long CreatedAt { get; set; }
 

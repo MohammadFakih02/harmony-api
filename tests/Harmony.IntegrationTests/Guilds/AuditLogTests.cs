@@ -41,13 +41,13 @@ public class AuditLogTests : ApiTestBase, IClassFixture<HarmonyWebApplicationFac
         var resp = await Client.PostAsJsonAsync("/api/guilds", new { name = "Audit Guild" });
         resp.EnsureSuccessStatusCode();
         var guild = await resp.Content.ReadFromJsonAsync<GuildResponse>();
-        return (guild!.Id, guild.InviteCode!);
+        return (guild!.Id, await CreateInviteCodeAsync(guild.Id));
     }
 
     private async Task<long> JoinAndGetMemberIdAsync(string memberToken, string invite, long guildId, long ownerId)
     {
         Auth(memberToken);
-        var joinResp = await Client.PostAsJsonAsync($"/api/guilds/join/{invite}", new { });
+        var joinResp = await Client.PostAsJsonAsync($"/api/invites/{invite}/join", new { });
         joinResp.EnsureSuccessStatusCode();
 
         using var scope = Factory.Services.CreateScope();
@@ -97,11 +97,11 @@ public class AuditLogTests : ApiTestBase, IClassFixture<HarmonyWebApplicationFac
             $"/api/guilds/{guildId}/audit-log"
         );
 
-        entries.Should().ContainSingle();
-        var entry = entries!.Single();
+        // The test helper also mints an invite (→ an InviteCreate entry), so assert the
+        // specific MemberKick entry rather than the whole list being a single row.
+        var entry = entries!.Single(e => e.ActionType == AuditLogAction.MemberKick);
         entry.ActorId.Should().Be(ownerId);
         entry.ActorUsername.Should().Be("auditowner1");
-        entry.ActionType.Should().Be(AuditLogAction.MemberKick);
         entry.TargetId.Should().Be(42);
         entry.Reason.Should().Be("spamming");
         entry.Changes.Should().Contain("reasonCode");
@@ -158,7 +158,7 @@ public class AuditLogTests : ApiTestBase, IClassFixture<HarmonyWebApplicationFac
 
     private record AuthResponse(string AccessToken);
 
-    private record GuildResponse(long Id, string Name, string? InviteCode);
+    private record GuildResponse(long Id, string Name);
 
     private record AuditLogEntryResponse(
         long Id,

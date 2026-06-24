@@ -154,7 +154,7 @@ public class HubBroadcastFlowTests : ApiTestBase, IClassFixture<HarmonyWebApplic
         Client.DefaultRequestHeaders.Authorization =
             new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", receiverToken);
         var joinResponse = await Client.PostAsJsonAsync(
-            $"/api/guilds/join/{inviteCode}",
+            $"/api/invites/{inviteCode}/join",
             new { }
         );
         joinResponse.EnsureSuccessStatusCode();
@@ -329,15 +329,12 @@ public class HubBroadcastFlowTests : ApiTestBase, IClassFixture<HarmonyWebApplic
     {
         Client.DefaultRequestHeaders.Authorization =
             new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
-        var response = await Client.GetAsync($"/api/guilds/{guildId}");
-        response.EnsureSuccessStatusCode();
-        var body = await response.Content.ReadFromJsonAsync<GuildResponse>();
-        return body!.InviteCode!;
+        return await CreateInviteCodeAsync(guildId);
     }
 
     private record AuthResponse(string AccessToken);
 
     private record IdResponse(long Id);
 
-    private record GuildResponse(long Id, string Name, string? InviteCode);
+    private record GuildResponse(long Id, string Name);
 }

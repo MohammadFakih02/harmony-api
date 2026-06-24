@@ -8,7 +8,6 @@ public record GuildResponse(
     string? IconKey,
     string? BannerKey,
     bool IsPublic,
-    string? InviteCode,
     int MemberCount,
     long CreatedAt
 );

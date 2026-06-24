@@ -236,9 +236,10 @@ public class NotificationTests : ApiTestBase, IClassFixture<HarmonyWebApplicatio
             "notif_member6",
             "notif_member6@test.com"
         );
+        var inviteCode = await CreateInviteCodeAsync(guild!.Id);
         Authorize(memberToken);
         (
-            await Client.PostAsJsonAsync($"/api/guilds/join/{guild.InviteCode}", new { })
+            await Client.PostAsJsonAsync($"/api/invites/{inviteCode}/join", new { })
         ).EnsureSuccessStatusCode();
 
         var memberConn = BuildConnection(memberToken);
@@ -305,8 +306,9 @@ public class NotificationTests : ApiTestBase, IClassFixture<HarmonyWebApplicatio
         var channel = await c.Content.ReadFromJsonAsync<IdResponse>();
 
         var (memberToken, _) = await RegisterAsync("notif_member9", "notif_member9@test.com");
+        var inviteCode = await CreateInviteCodeAsync(guild!.Id);
         Authorize(memberToken);
-        (await Client.PostAsJsonAsync($"/api/guilds/join/{guild.InviteCode}", new { }))
+        (await Client.PostAsJsonAsync($"/api/invites/{inviteCode}/join", new { }))
             .EnsureSuccessStatusCode();
 
         var memberConn = BuildConnection(memberToken);
@@ -355,8 +357,9 @@ public class NotificationTests : ApiTestBase, IClassFixture<HarmonyWebApplicatio
         var channel = await c.Content.ReadFromJsonAsync<IdResponse>();
 
         var (memberToken, memberId) = await RegisterAsync("notif_member7", "notif_member7@test.com");
+        var inviteCode = await CreateInviteCodeAsync(guild!.Id);
         Authorize(memberToken);
-        (await Client.PostAsJsonAsync($"/api/guilds/join/{guild.InviteCode}", new { }))
+        (await Client.PostAsJsonAsync($"/api/invites/{inviteCode}/join", new { }))
             .EnsureSuccessStatusCode();
 
         // The owner resolves to all permission bits, including MentionEveryone — @everyone expands.
@@ -396,8 +399,9 @@ public class NotificationTests : ApiTestBase, IClassFixture<HarmonyWebApplicatio
         // A plain joined member only has the @everyone default role bits, which do NOT
         // include MentionEveryone.
         var (memberToken, memberId) = await RegisterAsync("notif_member8", "notif_member8@test.com");
+        var inviteCode = await CreateInviteCodeAsync(guild!.Id);
         Authorize(memberToken);
-        (await Client.PostAsJsonAsync($"/api/guilds/join/{guild.InviteCode}", new { }))
+        (await Client.PostAsJsonAsync($"/api/invites/{inviteCode}/join", new { }))
             .EnsureSuccessStatusCode();
 
         var send = await Client.PostAsJsonAsync(
@@ -417,7 +421,7 @@ public class NotificationTests : ApiTestBase, IClassFixture<HarmonyWebApplicatio
 
     private record UserDto(long Id);
 
-    private record GuildResponse(long Id, string Name, string? InviteCode);
+    private record GuildResponse(long Id, string Name);
 
     private record IdResponse(long Id);
 

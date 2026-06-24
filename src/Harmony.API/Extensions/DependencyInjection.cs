@@ -160,6 +160,7 @@ public static class DependencyInjection
         services.AddScoped<INotificationRepository, NotificationRepository>();
         services.AddScoped<INotificationPreferenceRepository, NotificationPreferenceRepository>();
         services.AddScoped<IAuditLogRepository, AuditLogRepository>();
+        services.AddScoped<IGuildInviteRepository, GuildInviteRepository>();
 
         // Application & infrastructure services
         services.AddScoped<IIdentityService, IdentityService>();

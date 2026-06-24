@@ -67,7 +67,7 @@ public class GuildInvite
 {
     public string Code { get; set; } = null!;
     public long GuildId { get; set; }
-    public long ChannelId { get; set; }
+    public long? ChannelId { get; set; } // null = guild-level invite (no specific landing channel)
     public long CreatorId { get; set; }
     public int? MaxUses { get; set; }
     public int UseCount { get; set; }
@@ -76,7 +76,7 @@ public class GuildInvite
 
     // Navigation
     public Guild Guild { get; set; } = null!;
-    public Channel Channel { get; set; } = null!;
+    public Channel? Channel { get; set; }
     public User Creator { get; set; } = null!;
 }
 
