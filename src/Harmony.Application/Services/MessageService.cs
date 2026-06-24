@@ -23,6 +23,7 @@ public class MessageService : IMessageService
     private readonly IDirectMessageRepository _dms;
     private readonly IUserBlockRepository _blocks;
     private readonly IPresenceService _presence;
+    private readonly IAuditLogService _auditLog;
 
     /// <summary>Max attachments per message (Discord parity).</summary>
     public const int MaxAttachments = 10;
@@ -38,7 +39,8 @@ public class MessageService : IMessageService
         IFileAttachmentRepository attachments,
         IDirectMessageRepository dms,
         IUserBlockRepository blocks,
-        IPresenceService presence
+        IPresenceService presence,
+        IAuditLogService auditLog
     )
     {
         _channelRepository = channelRepository;
@@ -52,6 +54,7 @@ public class MessageService : IMessageService
         _dms = dms;
         _blocks = blocks;
         _presence = presence;
+        _auditLog = auditLog;
     }
 
     /// <summary>
@@ -249,12 +252,14 @@ public class MessageService : IMessageService
         // You may always delete your own message. In a guild, deleting another's requires
         // ManageMessages (owners/administrators resolve to all bits). A DM has no moderators,
         // so only the author may delete — and only a participant could own a message anyway.
+        var isModeratorDelete = false;
         if (message.UserId != userId)
         {
             if (guildId is { } mgid
                 && await _permissions.HasAsync(userId, mgid, Permission.ManageMessages, channelId, ct))
             {
                 // moderator delete — allowed
+                isModeratorDelete = true;
             }
             else
             {
@@ -278,6 +283,20 @@ public class MessageService : IMessageService
             ),
             ct
         );
+
+        // 3. Audit only a *moderator* deleting someone else's message (flow #12). Own-message
+        //    deletes and DMs (no guild, no moderators) write nothing. Best-effort by contract.
+        if (isModeratorDelete && guildId is { } agid)
+        {
+            await _auditLog.LogAsync(
+                agid,
+                userId,
+                AuditLogAction.MessageDelete,
+                targetId: messageId,
+                changes: new { channelId, authorId = message.UserId },
+                ct: ct
+            );
+        }
     }
 
     public async Task EditMessageAsync(
