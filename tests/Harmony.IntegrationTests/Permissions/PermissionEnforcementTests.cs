@@ -39,7 +39,7 @@ public class PermissionEnforcementTests : ApiTestBase, IClassFixture<HarmonyWebA
         var resp = await Client.PostAsJsonAsync("/api/guilds", new { name = "Enforce Guild" });
         resp.EnsureSuccessStatusCode();
         var guild = await resp.Content.ReadFromJsonAsync<GuildResponse>();
-        return (guild!.Id, guild.InviteCode!);
+        return (guild!.Id, await CreateInviteCodeAsync(guild.Id));
     }
 
     private async Task<long> CreateChannelAsync(string ownerToken, long guildId)
@@ -56,7 +56,7 @@ public class PermissionEnforcementTests : ApiTestBase, IClassFixture<HarmonyWebA
     private async Task<long> JoinAsync(string memberToken, string invite, long guildId, long ownerId)
     {
         Auth(memberToken);
-        (await Client.PostAsJsonAsync($"/api/guilds/join/{invite}", new { })).EnsureSuccessStatusCode();
+        (await Client.PostAsJsonAsync($"/api/invites/{invite}/join", new { })).EnsureSuccessStatusCode();
 
         using var scope = Factory.Services.CreateScope();
         var guilds = scope.ServiceProvider.GetRequiredService<IGuildRepository>();
@@ -264,7 +264,7 @@ public class PermissionEnforcementTests : ApiTestBase, IClassFixture<HarmonyWebA
 
     private record AuthResponse(string AccessToken);
 
-    private record GuildResponse(long Id, string Name, string? InviteCode);
+    private record GuildResponse(long Id, string Name);
 
     private record ChannelResponse(long Id, long? GuildId, string Name, string Type);
 

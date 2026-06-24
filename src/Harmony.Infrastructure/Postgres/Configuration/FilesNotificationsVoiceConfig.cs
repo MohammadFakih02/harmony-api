@@ -151,11 +151,13 @@ public class GuildInviteConfiguration : IEntityTypeConfiguration<GuildInvite>
             .HasForeignKey(i => i.GuildId)
             .OnDelete(DeleteBehavior.Cascade);
 
+        // Channel is optional (null = guild-level invite). Deleting the landing channel nulls
+        // the invite's target rather than blocking the channel delete.
         builder
             .HasOne(i => i.Channel)
             .WithMany(c => c.Invites)
             .HasForeignKey(i => i.ChannelId)
-            .OnDelete(DeleteBehavior.Restrict);
+            .OnDelete(DeleteBehavior.SetNull);
 
         builder
             .HasOne(i => i.Creator)

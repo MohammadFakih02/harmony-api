@@ -98,8 +98,11 @@ async Task SeedAsync()
     ) ?? throw new Exception("guild create returned no body");
     var guildId = guild.Id;
 
+    // Invites are now managed rows (no permanent guild code): mint one, join members by redeeming it.
+    var invite = await Post<InviteRef>($"/api/guilds/{guildId}/invites", new { }, owner.Token)
+        ?? throw new Exception("invite create returned no body");
     foreach (var u in new[] { admin, member, muted, restricted })
-        await PostRaw($"/api/guilds/join/{guild.InviteCode}", new { }, u.Token);
+        await PostRaw($"/api/invites/{invite.Code}/join", new { }, u.Token);
     Console.WriteLine($"✓ Guild '{GuildName}' created, 4 members joined");
 
     // Channels (owner has ManageChannels).
@@ -320,5 +323,6 @@ void PrintCheatSheet(long guildId)
 // ---------------------------------------------------------------------------
 file record AuthResp(string AccessToken, UserRef User);
 file record UserRef(long Id);
-file record GuildRef(long Id, string Name, string? InviteCode);
+file record GuildRef(long Id, string Name);
+file record InviteRef(string Code);
 file record ChannelRef(long Id, string Name, string Type);

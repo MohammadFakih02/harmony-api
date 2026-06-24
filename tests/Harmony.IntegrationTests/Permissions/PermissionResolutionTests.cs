@@ -39,7 +39,7 @@ public class PermissionResolutionTests : ApiTestBase, IClassFixture<HarmonyWebAp
         var resp = await Client.PostAsJsonAsync("/api/guilds", new { name = "Perm Guild" });
         resp.EnsureSuccessStatusCode();
         var guild = await resp.Content.ReadFromJsonAsync<GuildResponse>();
-        return (guild!.Id, guild.InviteCode!);
+        return (guild!.Id, await CreateInviteCodeAsync(guild.Id));
     }
 
     [Fact]
@@ -86,7 +86,7 @@ public class PermissionResolutionTests : ApiTestBase, IClassFixture<HarmonyWebAp
         var memberToken = await RegisterAsync("permmember3", "permmember3@test.com");
         Client.DefaultRequestHeaders.Authorization =
             new AuthenticationHeaderValue("Bearer", memberToken);
-        var joinResp = await Client.PostAsJsonAsync($"/api/guilds/join/{invite}", new { });
+        var joinResp = await Client.PostAsJsonAsync($"/api/invites/{invite}/join", new { });
         joinResp.EnsureSuccessStatusCode();
 
         using var scope = Factory.Services.CreateScope();
@@ -143,5 +143,5 @@ public class PermissionResolutionTests : ApiTestBase, IClassFixture<HarmonyWebAp
 
     private record AuthResponse(string AccessToken);
 
-    private record GuildResponse(long Id, string Name, string? InviteCode);
+    private record GuildResponse(long Id, string Name);
 }
