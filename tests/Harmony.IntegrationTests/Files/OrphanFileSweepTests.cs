@@ -123,7 +123,7 @@ public class OrphanFileSweepTests : ApiTestBase, IClassFixture<HarmonyWebApplica
         var resp = await Client.PostAsJsonAsync("/api/guilds", new { name = "Sweep Guild" });
         resp.EnsureSuccessStatusCode();
         var guild = await resp.Content.ReadFromJsonAsync<GuildDto>();
-        return (guild!.Id, guild.InviteCode!);
+        return (guild!.Id, await CreateInviteCodeAsync(guild.Id));
     }
 
     private async Task<long> CreateChannelAsync(string ownerToken, long guildId)
@@ -140,7 +140,7 @@ public class OrphanFileSweepTests : ApiTestBase, IClassFixture<HarmonyWebApplica
 
     private record AuthResponse(string AccessToken);
 
-    private record GuildDto(long Id, string Name, string? InviteCode);
+    private record GuildDto(long Id, string Name);
 
     private record ChannelDto(long Id, long? GuildId, string Name, string Type);
 }

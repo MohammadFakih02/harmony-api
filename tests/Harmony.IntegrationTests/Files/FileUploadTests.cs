@@ -308,7 +308,7 @@ public class FileUploadTests : ApiTestBase, IClassFixture<HarmonyWebApplicationF
         var resp = await Client.PostAsJsonAsync("/api/guilds", new { name = "File Guild" });
         resp.EnsureSuccessStatusCode();
         var guild = await resp.Content.ReadFromJsonAsync<GuildResponse>();
-        return (guild!.Id, guild.InviteCode!);
+        return (guild!.Id, await CreateInviteCodeAsync(guild.Id));
     }
 
     private async Task<long> CreateChannelAsync(string ownerToken, long guildId)
@@ -326,7 +326,7 @@ public class FileUploadTests : ApiTestBase, IClassFixture<HarmonyWebApplicationF
     private async Task JoinAsync(string memberToken, string invite)
     {
         Auth(memberToken);
-        var joinResp = await Client.PostAsJsonAsync($"/api/guilds/join/{invite}", new { });
+        var joinResp = await Client.PostAsJsonAsync($"/api/invites/{invite}/join", new { });
         joinResp.EnsureSuccessStatusCode();
     }
 
@@ -342,7 +342,7 @@ public class FileUploadTests : ApiTestBase, IClassFixture<HarmonyWebApplicationF
 
     private record AuthResponse(string AccessToken);
 
-    private record GuildResponse(long Id, string Name, string? InviteCode);
+    private record GuildResponse(long Id, string Name);
 
     private record ChannelResponse(long Id, long? GuildId, string Name, string Type);
 

@@ -162,3 +162,23 @@ public sealed class SendFriendRequestRequestValidator : AbstractValidator<SendFr
             .Length(2, 32).WithMessage("Username must be between 2 and 32 characters.");
     }
 }
+
+public sealed class CreateInviteRequestValidator : AbstractValidator<CreateInviteRequest>
+{
+    public CreateInviteRequestValidator()
+    {
+        // Shape only — that the channel (when given) actually belongs to the guild is semantic
+        // and lives in GuildInvitesController. ChannelId is optional (null = guild-level invite).
+        RuleFor(x => x.ChannelId!.Value)
+            .GreaterThan(0).WithMessage("ChannelId must be a valid id.")
+            .When(x => x.ChannelId.HasValue);
+
+        RuleFor(x => x.MaxUses!.Value)
+            .InclusiveBetween(1, 1000).WithMessage("Max uses must be between 1 and 1000.")
+            .When(x => x.MaxUses.HasValue);
+
+        RuleFor(x => x.ExpiresInSeconds!.Value)
+            .InclusiveBetween(1, 2592000).WithMessage("Expiry must be between 1 second and 30 days.")
+            .When(x => x.ExpiresInSeconds.HasValue);
+    }
+}

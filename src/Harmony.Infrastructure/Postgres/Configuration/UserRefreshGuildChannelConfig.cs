@@ -80,7 +80,6 @@ public class GuildConfiguration : IEntityTypeConfiguration<Guild>
         builder.Property(g => g.IconKey).HasColumnName("icon_key");
         builder.Property(g => g.BannerKey).HasColumnName("banner_key");
         builder.Property(g => g.IsPublic).HasColumnName("is_public");
-        builder.Property(g => g.InviteCode).HasColumnName("invite_code").HasMaxLength(16);
         builder.Property(g => g.MemberCount).HasColumnName("member_count");
         builder.Property(g => g.CreatedAt).HasColumnName("created_at");
 
@@ -90,7 +89,6 @@ public class GuildConfiguration : IEntityTypeConfiguration<Guild>
             .HasForeignKey(g => g.OwnerId)
             .OnDelete(DeleteBehavior.Restrict);
 
-        builder.HasIndex(g => g.InviteCode).IsUnique();
         builder.HasIndex(g => g.OwnerId);
     }
 }

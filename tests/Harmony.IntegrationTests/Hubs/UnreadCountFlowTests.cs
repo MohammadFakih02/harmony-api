@@ -73,14 +73,14 @@ public class UnreadCountFlowTests : ApiTestBase, IClassFixture<HarmonyWebApplica
         c.EnsureSuccessStatusCode();
         var channel = await c.Content.ReadFromJsonAsync<IdResponse>();
 
-        return (guild.Id, channel!.Id, guild.InviteCode!);
+        return (guild.Id, channel!.Id, await CreateInviteCodeAsync(guild.Id));
     }
 
     private async Task JoinGuildAsync(string token, string inviteCode)
     {
         Client.DefaultRequestHeaders.Authorization =
             new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
-        var resp = await Client.PostAsJsonAsync($"/api/guilds/join/{inviteCode}", new { });
+        var resp = await Client.PostAsJsonAsync($"/api/invites/{inviteCode}/join", new { });
         resp.EnsureSuccessStatusCode();
     }
 
@@ -239,7 +239,7 @@ public class UnreadCountFlowTests : ApiTestBase, IClassFixture<HarmonyWebApplica
 
     private record UserDto(long Id);
 
-    private record GuildResponse(long Id, string Name, string? InviteCode);
+    private record GuildResponse(long Id, string Name);
 
     private record IdResponse(long Id);
 

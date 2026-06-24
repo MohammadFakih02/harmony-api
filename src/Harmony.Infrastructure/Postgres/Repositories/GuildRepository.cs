@@ -19,9 +19,6 @@ public class GuildRepository : IGuildRepository
             .Include(g => g.Roles)
             .FirstOrDefaultAsync(g => g.Id == guildId);
 
-    public async Task<Guild?> GetByInviteCodeAsync(string inviteCode) =>
-        await _db.Guilds.FirstOrDefaultAsync(g => g.InviteCode == inviteCode);
-
     public async Task<List<Guild>> GetByUserIdAsync(long userId) =>
         await _db
             .GuildMembers.Where(m => m.UserId == userId)

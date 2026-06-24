@@ -46,7 +46,6 @@ public class GuildsController : ControllerBase
             Description = request.Description,
             OwnerId = userId,
             IsPublic = false,
-            InviteCode = GenerateInviteCode(),
             MemberCount = 1,
             CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
         };
@@ -134,31 +133,8 @@ public class GuildsController : ControllerBase
         return NoContent();
     }
 
-    // POST /api/guilds/join/{inviteCode}
-    [HttpPost("join/{inviteCode}")]
-    public async Task<IActionResult> Join(string inviteCode)
-    {
-        var userId = GetUserId();
-        var guild = await _guilds.GetByInviteCodeAsync(inviteCode);
-        if (guild is null) return NotFound(new { error = "Invalid invite code." });
-
-        if (await _guilds.IsMemberAsync(guild.Id, userId))
-            return Conflict(new { error = "Already a member of this guild." });
-
-        var member = new GuildMember
-        {
-            UserId = userId,
-            GuildId = guild.Id,
-            IsOwner = false,
-            JoinedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
-        };
-
-        await _guilds.AddMemberAsync(member);
-        guild.MemberCount++;
-        await _guilds.SaveChangesAsync();
-
-        return Ok(ToResponse(guild));
-    }
+    // Joining a guild is now done by redeeming an invite — see InvitesController
+    // (POST /api/invites/{code}/join).
 
     // DELETE /api/guilds/{id}/leave
     [HttpDelete("{id:long}/leave")]
@@ -199,15 +175,9 @@ public class GuildsController : ControllerBase
     private long GetUserId() =>
         long.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
 
-    private static string GenerateInviteCode() =>
-        Convert.ToBase64String(Guid.NewGuid().ToByteArray())
-            .Replace("/", "")
-            .Replace("+", "")
-            .Replace("=", "")[..8];
-
     private static GuildResponse ToResponse(Guild g) =>
         new(g.Id, g.Name, g.Description, g.OwnerId, g.IconKey, g.BannerKey,
-            g.IsPublic, g.InviteCode, g.MemberCount, g.CreatedAt);
+            g.IsPublic, g.MemberCount, g.CreatedAt);
 
     private static GuildMemberResponse ToMemberResponse(GuildMember m) =>
         new(m.UserId, m.User.UserName!, m.Nickname,
