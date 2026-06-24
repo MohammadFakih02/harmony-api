@@ -38,6 +38,7 @@ public class MessageServiceMentionTests
         public Mock<IDirectMessageRepository> Dms { get; } = new();
         public Mock<IUserBlockRepository> Blocks { get; } = new();
         public Mock<IPresenceService> Presence { get; } = new();
+        public Mock<IAuditLogService> AuditLog { get; } = new();
 
         public MessageSentEvent? PublishedEvent { get; private set; }
         public MessageEditedEvent? PublishedEditEvent { get; private set; }
@@ -57,7 +58,7 @@ public class MessageServiceMentionTests
             return new MessageService(
                 Channels.Object, Guilds.Object, Publisher.Object, Snowflake.Object,
                 Messages.Object, Users.Object, Permissions.Object, Files.Object,
-                Dms.Object, Blocks.Object, Presence.Object
+                Dms.Object, Blocks.Object, Presence.Object, AuditLog.Object
             );
         }
 
