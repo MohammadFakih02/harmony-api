@@ -5,6 +5,7 @@ using Harmony.Application.DTOs.Responses;
 using Harmony.Domain.Domain.Entities;
 using Harmony.Domain.Domain.Enums;
 using Harmony.Domain.Interfaces.Repositories;
+using Harmony.Application.Interfaces.Services;
 using Harmony.Application.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -21,16 +22,19 @@ public class GuildsController : ControllerBase
     private readonly IGuildRepository _guilds;
     private readonly IRoleRepository _roles;
     private readonly ISnowflakeIdGenerator _snowflake;
+    private readonly IPermissionService _permissions;
 
     public GuildsController(
         IGuildRepository guilds,
         IRoleRepository roles,
-        ISnowflakeIdGenerator snowflake
+        ISnowflakeIdGenerator snowflake,
+        IPermissionService permissions
     )
     {
         _guilds = guilds;
         _roles = roles;
         _snowflake = snowflake;
+        _permissions = permissions;
     }
 
     // POST /api/guilds
@@ -168,6 +172,29 @@ public class GuildsController : ControllerBase
         return Ok(members.Select(ToMemberResponse));
     }
 
+    // GET /api/guilds/{id}/permissions
+    // The caller's guild-level capabilities (resolved bits → booleans) so the client can show/hide
+    // moderation + management UI without ever reasoning about permission bits. Guild-scoped (no
+    // channel overrides applied); the per-channel endpoint stays on ChannelsController.
+    [HttpGet("{id:long}/permissions")]
+    public async Task<IActionResult> GetMyGuildCapabilities(long id)
+    {
+        var bits = await _permissions.ResolveAsync(GetUserId(), id);
+        bool Has(Permission p) => (bits & (long)p) == (long)p;
+
+        return Ok(new GuildCapabilitiesResponse(
+            CanManageGuild: Has(Permission.ManageGuild),
+            CanManageChannels: Has(Permission.ManageChannels),
+            CanManageRoles: Has(Permission.ManageRoles),
+            CanCreateInvite: Has(Permission.CreateInvite),
+            CanManageInvites: Has(Permission.ManageInvites),
+            CanKick: Has(Permission.KickMembers),
+            CanBan: Has(Permission.BanMembers),
+            CanTimeout: Has(Permission.TimeoutMembers),
+            CanViewAuditLog: Has(Permission.ViewAuditLog)
+        ));
+    }
+
     // -------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------
@@ -181,5 +208,5 @@ public class GuildsController : ControllerBase
 
     private static GuildMemberResponse ToMemberResponse(GuildMember m) =>
         new(m.UserId, m.User.UserName!, m.Nickname,
-            m.User.AvatarKey, m.IsOwner, m.JoinedAt);
+            m.User.AvatarKey, m.IsOwner, m.JoinedAt, m.CommunicationDisabledUntil);
 }
