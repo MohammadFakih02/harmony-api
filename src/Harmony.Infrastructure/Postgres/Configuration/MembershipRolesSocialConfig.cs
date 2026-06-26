@@ -29,6 +29,37 @@ public class GuildMemberConfiguration : IEntityTypeConfiguration<GuildMember>
     }
 }
 
+public class GuildBanConfiguration : IEntityTypeConfiguration<GuildBan>
+{
+    public void Configure(EntityTypeBuilder<GuildBan> builder)
+    {
+        builder.ToTable("GuildBans");
+        builder.HasKey(b => new { b.GuildId, b.UserId });
+        builder.Property(b => b.GuildId).HasColumnName("guild_id");
+        builder.Property(b => b.UserId).HasColumnName("user_id");
+        builder.Property(b => b.BannedBy).HasColumnName("banned_by");
+        builder.Property(b => b.Reason).HasColumnName("reason").HasMaxLength(512);
+        builder.Property(b => b.CreatedAt).HasColumnName("created_at");
+
+        builder.HasOne(b => b.Guild)
+            .WithMany()
+            .HasForeignKey(b => b.GuildId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        builder.HasOne(b => b.User)
+            .WithMany()
+            .HasForeignKey(b => b.UserId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        // The moderator who issued the ban — kept on record; don't cascade-delete the ban row
+        // if that moderator's account is later removed.
+        builder.HasOne(b => b.BannedByUser)
+            .WithMany()
+            .HasForeignKey(b => b.BannedBy)
+            .OnDelete(DeleteBehavior.Restrict);
+    }
+}
+
 public class RoleConfiguration : IEntityTypeConfiguration<Role>
 {
     public void Configure(EntityTypeBuilder<Role> builder)

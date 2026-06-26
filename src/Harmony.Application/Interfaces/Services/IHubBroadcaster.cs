@@ -149,4 +149,28 @@ public interface IHubBroadcaster
         NotificationPayload payload,
         CancellationToken ct = default
     );
+
+    /// <summary>
+    /// Broadcasts a member removal (kick / ban / leave) to the guild group so every connected
+    /// member updates their member list.
+    /// </summary>
+    Task BroadcastMemberRemovedAsync(
+        long guildId,
+        MemberRemovedPayload payload,
+        CancellationToken ct = default
+    );
+
+    /// <summary>
+    /// Notifies the affected user (all their tabs) that they were kicked or banned from a guild.
+    /// </summary>
+    Task BroadcastKickedAsync(long userId, KickedPayload payload, CancellationToken ct = default);
+
+    /// <summary>
+    /// Broadcasts a member moderation-state change (timeout set/cleared) to the guild group.
+    /// </summary>
+    Task BroadcastMemberUpdatedAsync(
+        long guildId,
+        MemberUpdatedPayload payload,
+        CancellationToken ct = default
+    );
 }
