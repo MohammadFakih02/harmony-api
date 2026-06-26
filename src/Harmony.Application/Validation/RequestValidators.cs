@@ -163,6 +163,19 @@ public sealed class SendFriendRequestRequestValidator : AbstractValidator<SendFr
     }
 }
 
+public sealed class TimeoutMemberRequestValidator : AbstractValidator<TimeoutMemberRequest>
+{
+    // Discord's hard cap on a member timeout.
+    public const long MaxTimeoutSeconds = 28L * 24 * 60 * 60;
+
+    public TimeoutMemberRequestValidator()
+    {
+        RuleFor(x => x.DurationSeconds)
+            .InclusiveBetween(1, MaxTimeoutSeconds)
+            .WithMessage($"Timeout duration must be between 1 second and {MaxTimeoutSeconds} seconds (28 days).");
+    }
+}
+
 public sealed class CreateInviteRequestValidator : AbstractValidator<CreateInviteRequest>
 {
     public CreateInviteRequestValidator()

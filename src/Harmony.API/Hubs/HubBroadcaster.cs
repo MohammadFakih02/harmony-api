@@ -119,4 +119,22 @@ public class HubBroadcaster : IHubBroadcaster
         NotificationPayload payload,
         CancellationToken ct = default
     ) => _hubContext.Clients.User(userId.ToString()).NotificationReceived(payload);
+
+    public Task BroadcastMemberRemovedAsync(
+        long guildId,
+        MemberRemovedPayload payload,
+        CancellationToken ct = default
+    ) => _hubContext.Clients.Group(ChatHub.GuildGroup(guildId)).MemberRemoved(payload);
+
+    public Task BroadcastKickedAsync(
+        long userId,
+        KickedPayload payload,
+        CancellationToken ct = default
+    ) => _hubContext.Clients.User(userId.ToString()).Kicked(payload);
+
+    public Task BroadcastMemberUpdatedAsync(
+        long guildId,
+        MemberUpdatedPayload payload,
+        CancellationToken ct = default
+    ) => _hubContext.Clients.Group(ChatHub.GuildGroup(guildId)).MemberUpdated(payload);
 }

@@ -161,6 +161,7 @@ public static class DependencyInjection
         services.AddScoped<INotificationPreferenceRepository, NotificationPreferenceRepository>();
         services.AddScoped<IAuditLogRepository, AuditLogRepository>();
         services.AddScoped<IGuildInviteRepository, GuildInviteRepository>();
+        services.AddScoped<IGuildBanRepository, GuildBanRepository>();
 
         // Application & infrastructure services
         services.AddScoped<IIdentityService, IdentityService>();
@@ -173,6 +174,7 @@ public static class DependencyInjection
         services.AddScoped<IFileService, FileService>();
         services.AddScoped<INotificationService, NotificationService>();
         services.AddScoped<IAuditLogService, AuditLogService>();
+        services.AddScoped<IGuildMemberService, GuildMemberService>();
 
         // File storage — S3FileStorageService builds its own IAmazonS3 from config (ObjectStorage
         // section), so the AWS SDK types stay confined to Infrastructure (not referenced here).

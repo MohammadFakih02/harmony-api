@@ -20,3 +20,13 @@ public record GuildMemberResponse(
     bool IsOwner,
     long JoinedAt
 );
+
+public record GuildBanResponse(
+    long UserId,
+    string? Username,
+    string? AvatarKey,
+    long BannedBy,
+    string? BannedByUsername,
+    string? Reason,
+    long CreatedAt
+);

@@ -118,6 +118,26 @@ public interface IChatClient
     /// load via GET /api/notifications instead.
     /// </summary>
     Task NotificationReceived(NotificationPayload payload);
+
+    /// <summary>
+    /// Fired when a member is removed from a guild (kicked, banned, or left). Broadcast to the
+    /// guild group so every connected member prunes them from the member list.
+    /// </summary>
+    Task MemberRemoved(MemberRemovedPayload payload);
+
+    /// <summary>
+    /// Fired to the affected user when they are kicked or banned. Sent via Clients.User so all
+    /// their tabs drop the guild from local state and navigate away. <see cref="KickedPayload.Banned"/>
+    /// distinguishes a ban (cannot rejoin) from a kick.
+    /// </summary>
+    Task Kicked(KickedPayload payload);
+
+    /// <summary>
+    /// Fired when a member's moderation state changes (currently: timeout set or cleared).
+    /// Broadcast to the guild group so clients update the member's timed-out indicator and the
+    /// affected user's own tabs grey/un-grey the composer.
+    /// </summary>
+    Task MemberUpdated(MemberUpdatedPayload payload);
 }
 
 /// <summary>Minimal delete notification — no content, just identity. GuildId is null for DMs.</summary>
@@ -195,3 +215,13 @@ public record NotificationPayload(
     long? MessageId,
     long CreatedAt
 );
+
+/// <summary>A member was removed from a guild (kick / ban / leave). Sent to the guild group.</summary>
+public record MemberRemovedPayload(long GuildId, long UserId);
+
+/// <summary>Sent to the user who was kicked or banned. <see cref="Banned"/> = true means a ban.</summary>
+public record KickedPayload(long GuildId, string? Reason, bool Banned);
+
+/// <summary>A member's moderation state changed. <see cref="CommunicationDisabledUntil"/> is the
+/// unix-ms timeout expiry, or null when the timeout was cleared.</summary>
+public record MemberUpdatedPayload(long GuildId, long UserId, long? CommunicationDisabledUntil);
