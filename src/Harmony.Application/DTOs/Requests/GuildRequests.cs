@@ -10,3 +10,9 @@ public record UpdateGuildRequest(
     string? Description,
     bool? IsPublic
 );
+
+/// <summary>Timeout a member for <see cref="DurationSeconds"/> seconds from now (max 28 days).</summary>
+public record TimeoutMemberRequest(long DurationSeconds);
+
+/// <summary>Ban a member, with an optional moderator-supplied reason recorded in the audit log.</summary>
+public record BanMemberRequest(string? Reason);

@@ -29,6 +29,7 @@ public class HarmonyDbContext
     public DbSet<Guild> Guilds => Set<Guild>();
     public DbSet<Channel> Channels => Set<Channel>();
     public DbSet<GuildMember> GuildMembers => Set<GuildMember>();
+    public DbSet<GuildBan> GuildBans => Set<GuildBan>();
     public DbSet<Role> GuildRoles => Set<Role>();
     public DbSet<RoleAssignment> RoleAssignments => Set<RoleAssignment>();
     public DbSet<ChannelPermissionOverride> ChannelPermissionOverrides =>

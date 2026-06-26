@@ -28,18 +28,21 @@ public class GuildInvitesController : ControllerBase
     private readonly IChannelRepository _channels;
     private readonly IUserRepository _users;
     private readonly IAuditLogService _audit;
+    private readonly IPermissionService _permissions;
 
     public GuildInvitesController(
         IGuildInviteRepository invites,
         IChannelRepository channels,
         IUserRepository users,
-        IAuditLogService audit
+        IAuditLogService audit,
+        IPermissionService permissions
     )
     {
         _invites = invites;
         _channels = channels;
         _users = users;
         _audit = audit;
+        _permissions = permissions;
     }
 
     // POST /api/guilds/{guildId}/invites
@@ -109,16 +112,25 @@ public class GuildInvitesController : ControllerBase
     }
 
     // DELETE /api/guilds/{guildId}/invites/{code}
+    // No [RequirePermission] — revoke is authorized in-body as "you created it OR you hold
+    // ManageInvites", so a CreateInvite-only member can revoke their own invite (mirrors
+    // own-message delete). ManageInvites lets a moderator revoke anyone's.
     [HttpDelete("{code}")]
-    [RequirePermission(Permission.ManageInvites)]
     public async Task<IActionResult> Delete(long guildId, string code)
     {
         var invite = await _invites.GetByCodeAsync(code);
 
-        // Scope the delete to this guild: holding ManageInvites here must not let you revoke an
-        // invite that belongs to a different guild (codes are globally unique, the route isn't).
+        // Scope the delete to this guild: a code is globally unique but the route isn't, so an
+        // invite from another guild must not be revocable through this guild's route.
         if (invite is null || invite.GuildId != guildId)
             return NotFound();
+
+        var userId = GetUserId();
+        if (
+            invite.CreatorId != userId
+            && !await _permissions.HasAsync(userId, guildId, Permission.ManageInvites)
+        )
+            return Forbid();
 
         _invites.Remove(invite);
         await _invites.SaveChangesAsync();

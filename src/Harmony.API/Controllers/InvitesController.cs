@@ -22,11 +22,17 @@ public class InvitesController : ControllerBase
 {
     private readonly IGuildInviteRepository _invites;
     private readonly IGuildRepository _guilds;
+    private readonly IGuildBanRepository _bans;
 
-    public InvitesController(IGuildInviteRepository invites, IGuildRepository guilds)
+    public InvitesController(
+        IGuildInviteRepository invites,
+        IGuildRepository guilds,
+        IGuildBanRepository bans
+    )
     {
         _invites = invites;
         _guilds = guilds;
+        _bans = bans;
     }
 
     // GET /api/invites/{code} — preview before joining.
@@ -66,6 +72,12 @@ public class InvitesController : ControllerBase
 
         if (await _guilds.IsMemberAsync(guild.Id, userId))
             return Conflict(new { error = "Already a member of this guild." });
+
+        if (await _bans.IsBannedAsync(guild.Id, userId))
+            return StatusCode(
+                StatusCodes.Status403Forbidden,
+                new { error = "You are banned from this guild." }
+            );
 
         var member = new GuildMember
         {

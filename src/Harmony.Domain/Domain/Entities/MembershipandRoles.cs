@@ -14,6 +14,20 @@ public class GuildMember
     public Guild Guild { get; set; } = null!;
 }
 
+public class GuildBan
+{
+    public long GuildId { get; set; }
+    public long UserId { get; set; }
+    public long BannedBy { get; set; }
+    public string? Reason { get; set; }
+    public long CreatedAt { get; set; }
+
+    // Navigation
+    public Guild Guild { get; set; } = null!;
+    public User User { get; set; } = null!;
+    public User BannedByUser { get; set; } = null!;
+}
+
 public class Role
 {
     public long Id { get; set; }
