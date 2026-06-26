@@ -18,7 +18,22 @@ public record GuildMemberResponse(
     string? Nickname,
     string? AvatarKey,
     bool IsOwner,
-    long JoinedAt
+    long JoinedAt,
+    long? CommunicationDisabledUntil
+);
+
+/// <summary>The caller's guild-level capabilities (resolved bits → booleans), so the client can
+/// show/hide management + moderation UI without reasoning about permission bits.</summary>
+public record GuildCapabilitiesResponse(
+    bool CanManageGuild,
+    bool CanManageChannels,
+    bool CanManageRoles,
+    bool CanCreateInvite,
+    bool CanManageInvites,
+    bool CanKick,
+    bool CanBan,
+    bool CanTimeout,
+    bool CanViewAuditLog
 );
 
 public record GuildBanResponse(

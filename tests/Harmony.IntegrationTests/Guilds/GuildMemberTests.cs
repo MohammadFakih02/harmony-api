@@ -213,8 +213,46 @@ public class GuildMemberTests : ApiTestBase, IClassFixture<HarmonyWebApplication
         revokeOthers.StatusCode.Should().Be(HttpStatusCode.Forbidden);
     }
 
+    [Fact]
+    public async Task GuildCapabilities_OwnerSeesAll_PlainMemberSeesNoModBits()
+    {
+        var s = await SetupGuildWithMemberAsync("caps");
+
+        Auth(s.ownerToken);
+        var ownerCaps = await Client.GetFromJsonAsync<GuildCapabilitiesDto>(
+            $"/api/guilds/{s.guildId}/permissions"
+        );
+        ownerCaps!.CanKick.Should().BeTrue();
+        ownerCaps.CanBan.Should().BeTrue();
+        ownerCaps.CanTimeout.Should().BeTrue();
+        ownerCaps.CanManageInvites.Should().BeTrue();
+
+        Auth(s.memberToken);
+        var memberCaps = await Client.GetFromJsonAsync<GuildCapabilitiesDto>(
+            $"/api/guilds/{s.guildId}/permissions"
+        );
+        memberCaps!.CanKick.Should().BeFalse();
+        memberCaps.CanBan.Should().BeFalse();
+        memberCaps.CanTimeout.Should().BeFalse();
+        memberCaps.CanManageInvites.Should().BeFalse();
+        // CreateInvite is in the @everyone default set.
+        memberCaps.CanCreateInvite.Should().BeTrue();
+    }
+
     // ---- response shapes (local to this fixture) ----
     private record AuthResponse(string AccessToken, UserDto User);
+
+    private record GuildCapabilitiesDto(
+        bool CanManageGuild,
+        bool CanManageChannels,
+        bool CanManageRoles,
+        bool CanCreateInvite,
+        bool CanManageInvites,
+        bool CanKick,
+        bool CanBan,
+        bool CanTimeout,
+        bool CanViewAuditLog
+    );
 
     private record UserDto(long Id);
 
