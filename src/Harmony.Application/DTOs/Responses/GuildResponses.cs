@@ -19,7 +19,8 @@ public record GuildMemberResponse(
     string? AvatarKey,
     bool IsOwner,
     long JoinedAt,
-    long? CommunicationDisabledUntil
+    long? CommunicationDisabledUntil,
+    IEnumerable<long> RoleIds
 );
 
 /// <summary>The caller's guild-level capabilities (resolved bits → booleans), so the client can

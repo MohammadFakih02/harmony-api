@@ -173,4 +173,23 @@ public interface IHubBroadcaster
         MemberUpdatedPayload payload,
         CancellationToken ct = default
     );
+
+    /// <summary>Broadcasts a role create/update to the guild group.</summary>
+    Task BroadcastRoleCreatedAsync(long guildId, RoleResponse role, CancellationToken ct = default);
+
+    Task BroadcastRoleUpdatedAsync(long guildId, RoleResponse role, CancellationToken ct = default);
+
+    /// <summary>Broadcasts a role deletion to the guild group.</summary>
+    Task BroadcastRoleDeletedAsync(
+        long guildId,
+        RoleDeletedPayload payload,
+        CancellationToken ct = default
+    );
+
+    /// <summary>Broadcasts a member's role-assignment change to the guild group.</summary>
+    Task BroadcastMemberRoleUpdatedAsync(
+        long guildId,
+        MemberRoleUpdatedPayload payload,
+        CancellationToken ct = default
+    );
 }
