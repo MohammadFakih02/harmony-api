@@ -39,6 +39,9 @@ public class NotificationRepository : INotificationRepository
         return deleted > 0;
     }
 
+    public async Task DeleteAllForUserAsync(long userId) =>
+        await _db.Notifications.Where(n => n.UserId == userId).ExecuteDeleteAsync();
+
     public async Task MarkAllReadAsync(long userId) =>
         await _db
             .Notifications.Where(n => n.UserId == userId && !n.IsRead)

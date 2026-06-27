@@ -189,6 +189,38 @@ public class ChannelOverrideTests : ApiTestBase, IClassFixture<HarmonyWebApplica
     }
 
     [Fact]
+    public async Task Viewers_ExcludeMembersDeniedViewChannel_ButKeepOwner()
+    {
+        var ownerToken = await RegisterAsync("ovowner8", "ovowner8@test.com");
+        var (guildId, invite) = await CreateGuildAsync(ownerToken);
+        var channelId = await CreateChannelAsync(ownerToken, guildId);
+        var (ownerId, everyoneId) = GuildFacts(Factory, guildId);
+
+        var memberId = await JoinAndGetMemberIdAsync(
+            await RegisterAsync("ovmember8", "ovmember8@test.com"), invite, guildId, ownerId
+        );
+
+        // Both can view the channel to start with.
+        Auth(ownerToken);
+        var before = await Client.GetFromJsonAsync<List<long>>(
+            $"/api/guilds/{guildId}/channels/{channelId}/viewers"
+        );
+        before.Should().Contain(new[] { ownerId, memberId });
+
+        // Deny ViewChannel to @everyone (the #staff pattern). The owner bypasses overrides.
+        var put = await Client.PutAsJsonAsync(
+            $"/api/guilds/{guildId}/channels/{channelId}/overrides/{everyoneId}",
+            new { targetType = "role", allowBits = 0L, denyBits = (long)Permission.ViewChannel }
+        );
+        put.EnsureSuccessStatusCode();
+
+        var after = await Client.GetFromJsonAsync<List<long>>(
+            $"/api/guilds/{guildId}/channels/{channelId}/viewers"
+        );
+        after.Should().Contain(ownerId).And.NotContain(memberId);
+    }
+
+    [Fact]
     public async Task NonManageRolesMember_IsForbidden()
     {
         var ownerToken = await RegisterAsync("ovowner5", "ovowner5@test.com");

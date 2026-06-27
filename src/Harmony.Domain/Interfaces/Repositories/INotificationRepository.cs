@@ -33,6 +33,9 @@ public interface INotificationRepository
     /// </summary>
     Task<bool> DeleteForUserAsync(long notificationId, long userId);
 
+    /// <summary>Deletes every notification belonging to the user ("clear all").</summary>
+    Task DeleteAllForUserAsync(long userId);
+
     Task AddAsync(Notification notification);
 
     Task SaveChangesAsync();

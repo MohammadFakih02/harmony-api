@@ -103,6 +103,18 @@ public class NotificationsController : ControllerBase
         return deleted ? NoContent() : NotFound();
     }
 
+    // DELETE /api/notifications — clears every notification for the caller ("clear all").
+    // Owner-scoped; idempotent (no-op when there's nothing to clear).
+    [HttpDelete]
+    public async Task<IActionResult> DeleteAll()
+    {
+        var userId = GetUserId();
+        if (userId is null)
+            return Unauthorized();
+        await _notifications.DeleteAllForUserAsync(userId.Value);
+        return NoContent();
+    }
+
     private long? GetUserId()
     {
         var claim = User.FindFirst(ClaimTypes.NameIdentifier) ?? User.FindFirst("sub");
