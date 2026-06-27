@@ -193,6 +193,35 @@ public class NotificationTests : ApiTestBase, IClassFixture<HarmonyWebApplicatio
     }
 
     [Fact]
+    public async Task DeleteAll_RemovesEveryNotification_ForTheCaller()
+    {
+        var (tokenA, _) = await RegisterAsync("notif_a6", "notif_a6@test.com");
+        var (tokenC, _) = await RegisterAsync("notif_c6", "notif_c6@test.com");
+        var (tokenB, _) = await RegisterAsync("notif_b6", "notif_b6@test.com");
+
+        Authorize(tokenA);
+        (await SendFriendRequestAsync("notif_b6")).EnsureSuccessStatusCode();
+        Authorize(tokenC);
+        (await SendFriendRequestAsync("notif_b6")).EnsureSuccessStatusCode();
+
+        Authorize(tokenB);
+        await Eventually.GetAsync(
+            action: async () => await Client.GetFromJsonAsync<int>("/api/notifications/unread-count"),
+            predicate: count => count == 2,
+            retries: 100,
+            intervalMs: 100
+        );
+
+        var clearResp = await Client.DeleteAsync("/api/notifications");
+        clearResp.StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        var list = await Client.GetFromJsonAsync<List<NotificationDto>>("/api/notifications");
+        list!.Should().BeEmpty();
+        var unreadCount = await Client.GetFromJsonAsync<int>("/api/notifications/unread-count");
+        unreadCount.Should().Be(0);
+    }
+
+    [Fact]
     public async Task MarkAsRead_ForSomeoneElsesNotification_Returns404()
     {
         var (tokenA, idA) = await RegisterAsync("notif_a5", "notif_a5@test.com");
