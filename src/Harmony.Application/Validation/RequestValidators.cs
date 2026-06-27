@@ -176,6 +176,27 @@ public sealed class TimeoutMemberRequestValidator : AbstractValidator<TimeoutMem
     }
 }
 
+public sealed class CreateRoleRequestValidator : AbstractValidator<CreateRoleRequest>
+{
+    public CreateRoleRequestValidator()
+    {
+        RuleFor(x => x.Name)
+            .NotEmpty().WithMessage("Role name is required.")
+            .MaximumLength(100).WithMessage("Role name must be 100 characters or fewer.");
+    }
+}
+
+public sealed class UpdateRoleRequestValidator : AbstractValidator<UpdateRoleRequest>
+{
+    public UpdateRoleRequestValidator()
+    {
+        RuleFor(x => x.Name!)
+            .NotEmpty().WithMessage("Role name must not be empty.")
+            .MaximumLength(100).WithMessage("Role name must be 100 characters or fewer.")
+            .When(x => x.Name is not null);
+    }
+}
+
 public sealed class CreateInviteRequestValidator : AbstractValidator<CreateInviteRequest>
 {
     public CreateInviteRequestValidator()
