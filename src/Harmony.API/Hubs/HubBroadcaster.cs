@@ -137,4 +137,28 @@ public class HubBroadcaster : IHubBroadcaster
         MemberUpdatedPayload payload,
         CancellationToken ct = default
     ) => _hubContext.Clients.Group(ChatHub.GuildGroup(guildId)).MemberUpdated(payload);
+
+    public Task BroadcastRoleCreatedAsync(
+        long guildId,
+        RoleResponse role,
+        CancellationToken ct = default
+    ) => _hubContext.Clients.Group(ChatHub.GuildGroup(guildId)).RoleCreated(role);
+
+    public Task BroadcastRoleUpdatedAsync(
+        long guildId,
+        RoleResponse role,
+        CancellationToken ct = default
+    ) => _hubContext.Clients.Group(ChatHub.GuildGroup(guildId)).RoleUpdated(role);
+
+    public Task BroadcastRoleDeletedAsync(
+        long guildId,
+        RoleDeletedPayload payload,
+        CancellationToken ct = default
+    ) => _hubContext.Clients.Group(ChatHub.GuildGroup(guildId)).RoleDeleted(payload);
+
+    public Task BroadcastMemberRoleUpdatedAsync(
+        long guildId,
+        MemberRoleUpdatedPayload payload,
+        CancellationToken ct = default
+    ) => _hubContext.Clients.Group(ChatHub.GuildGroup(guildId)).MemberRoleUpdated(payload);
 }

@@ -138,6 +138,19 @@ public interface IChatClient
     /// affected user's own tabs grey/un-grey the composer.
     /// </summary>
     Task MemberUpdated(MemberUpdatedPayload payload);
+
+    /// <summary>Fired when a role is created. Broadcast to the guild group so clients add it to the role list.</summary>
+    Task RoleCreated(RoleResponse role);
+
+    /// <summary>Fired when a role's fields change (perms/name/color/position/...). Broadcast to the guild group.</summary>
+    Task RoleUpdated(RoleResponse role);
+
+    /// <summary>Fired when a role is deleted. Broadcast to the guild group so clients drop it.</summary>
+    Task RoleDeleted(RoleDeletedPayload payload);
+
+    /// <summary>Fired when a member's role assignments change. Broadcast to the guild group; carries the
+    /// member's full current role-id set so clients re-render role-derived UI (colors, badges).</summary>
+    Task MemberRoleUpdated(MemberRoleUpdatedPayload payload);
 }
 
 /// <summary>Minimal delete notification — no content, just identity. GuildId is null for DMs.</summary>
@@ -225,3 +238,9 @@ public record KickedPayload(long GuildId, string? Reason, bool Banned);
 /// <summary>A member's moderation state changed. <see cref="CommunicationDisabledUntil"/> is the
 /// unix-ms timeout expiry, or null when the timeout was cleared.</summary>
 public record MemberUpdatedPayload(long GuildId, long UserId, long? CommunicationDisabledUntil);
+
+/// <summary>A role was deleted from a guild.</summary>
+public record RoleDeletedPayload(long GuildId, long RoleId);
+
+/// <summary>A member's role-id set after an assignment change.</summary>
+public record MemberRoleUpdatedPayload(long GuildId, long UserId, IEnumerable<long> RoleIds);

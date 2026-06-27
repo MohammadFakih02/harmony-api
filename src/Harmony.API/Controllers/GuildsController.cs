@@ -169,7 +169,8 @@ public class GuildsController : ControllerBase
             return Forbid();
 
         var members = await _guilds.GetMembersAsync(id);
-        return Ok(members.Select(ToMemberResponse));
+        var rolesByMember = await _roles.GetRoleIdsByMemberAsync(id);
+        return Ok(members.Select(m => ToMemberResponse(m, rolesByMember.GetValueOrDefault(m.UserId) ?? [])));
     }
 
     // GET /api/guilds/{id}/permissions
@@ -206,7 +207,7 @@ public class GuildsController : ControllerBase
         new(g.Id, g.Name, g.Description, g.OwnerId, g.IconKey, g.BannerKey,
             g.IsPublic, g.MemberCount, g.CreatedAt);
 
-    private static GuildMemberResponse ToMemberResponse(GuildMember m) =>
+    private static GuildMemberResponse ToMemberResponse(GuildMember m, IEnumerable<long> roleIds) =>
         new(m.UserId, m.User.UserName!, m.Nickname,
-            m.User.AvatarKey, m.IsOwner, m.JoinedAt, m.CommunicationDisabledUntil);
+            m.User.AvatarKey, m.IsOwner, m.JoinedAt, m.CommunicationDisabledUntil, roleIds);
 }
