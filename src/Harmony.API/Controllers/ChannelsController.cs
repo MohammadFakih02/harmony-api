@@ -236,6 +236,29 @@ public class ChannelsController : ControllerBase
         ));
     }
 
+    // GET /api/guilds/{guildId}/channels/{channelId}/viewers
+    // The member ids that can actually ViewChannel this channel — so the member sidebar can
+    // hide members an override (e.g. a #staff deny) excludes. Same per-member resolution the
+    // unread fan-out uses, cached per (user, channel), so repeated opens are cheap.
+    [HttpGet("{channelId:long}/viewers")]
+    [RequirePermission(Permission.ViewChannel)]
+    public async Task<IActionResult> GetViewers(long guildId, long channelId)
+    {
+        var channel = await _channels.GetByIdAsync(channelId);
+        if (channel is null || channel.GuildId != guildId)
+            return NotFound();
+
+        var memberIds = await _guilds.GetMemberIdsAsync(guildId);
+        var viewers = new List<long>(memberIds.Count);
+        foreach (var id in memberIds)
+        {
+            if (await _permissions.HasAsync(id, guildId, Permission.ViewChannel, channelId))
+                viewers.Add(id);
+        }
+
+        return Ok(viewers);
+    }
+
     // -------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------

@@ -50,7 +50,7 @@ public class InvitesController : ControllerBase
             return NotFound(new { error = "Invalid invite." });
 
         return Ok(
-            new InvitePreviewResponse(invite.Code, guild.Id, guild.Name, guild.MemberCount, invite.ChannelId)
+            new InvitePreviewResponse(invite.Code, guild.Id, guild.Name, guild.IconKey, guild.MemberCount, invite.ChannelId)
         );
     }
 
