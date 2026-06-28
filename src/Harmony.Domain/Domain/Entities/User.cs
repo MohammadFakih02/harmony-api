@@ -12,6 +12,9 @@ public class User : IdentityUser<long>
     public string? Bio { get; set; }
     public string? StatusMessage { get; set; }
 
+    /// <summary>Date of birth (date only, no time). Drives the displayed age + future NSFW gating; null = unset.</summary>
+    public DateOnly? DateOfBirth { get; set; }
+
     /// <summary>Unix-ms when the custom <see cref="StatusMessage"/> auto-clears; null = never.</summary>
     public long? StatusMessageExpiresAt { get; set; }
     public string PreferredStatus { get; set; } = "online"; // online | away | dnd | invisible

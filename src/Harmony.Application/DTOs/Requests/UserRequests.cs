@@ -3,7 +3,9 @@ namespace Harmony.Application.DTOs.Requests;
 public record UpdateUserRequest(
     string? Username,
     string? Bio,
-    string? StatusMessage
+    string? StatusMessage,
+    // ISO date "yyyy-MM-dd". Null = leave unchanged; the empty string clears it.
+    string? DateOfBirth
 );
 
 // PATCH /api/users/me/status — durable preferred status (online|away|dnd|invisible).
