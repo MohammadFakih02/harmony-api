@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Security.Claims;
 using Harmony.Application.DTOs.Requests;
 using Harmony.Application.DTOs.Responses;
@@ -80,6 +81,31 @@ public class UsersController : ControllerBase
             user.Bio = request.Bio;
         if (request.StatusMessage is not null)
             user.StatusMessage = request.StatusMessage;
+
+        if (request.DateOfBirth is not null)
+        {
+            if (request.DateOfBirth.Length == 0)
+            {
+                user.DateOfBirth = null; // empty string clears it
+            }
+            else if (
+                DateOnly.TryParseExact(
+                    request.DateOfBirth,
+                    "yyyy-MM-dd",
+                    CultureInfo.InvariantCulture,
+                    DateTimeStyles.None,
+                    out var dob
+                )
+                && dob <= DateOnly.FromDateTime(DateTime.UtcNow)
+            )
+            {
+                user.DateOfBirth = dob;
+            }
+            else
+            {
+                return BadRequest(new { error = "Invalid date of birth." });
+            }
+        }
 
         await _users.SaveChangesAsync();
 
@@ -305,9 +331,22 @@ public class UsersController : ControllerBase
             u.PreferredStatus,
             u.PreferredStatusExpiresAt,
             u.AccountStatus,
-            u.CreatedAt
+            u.CreatedAt,
+            u.DateOfBirth?.ToString("yyyy-MM-dd")
         );
 
     private static PublicUserResponse ToPublicResponse(User u) =>
-        new(u.Id, u.UserName!, u.AvatarKey, u.BannerKey, u.Bio, u.StatusMessage);
+        new(u.Id, u.UserName!, u.AvatarKey, u.BannerKey, u.Bio, u.StatusMessage, AgeFrom(u.DateOfBirth));
+
+    /// <summary>Whole years between a DOB and today (UTC), or null when DOB is unset.</summary>
+    private static int? AgeFrom(DateOnly? dob)
+    {
+        if (dob is not { } d)
+            return null;
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var age = today.Year - d.Year;
+        if (d > today.AddYears(-age))
+            age--; // birthday hasn't occurred yet this year
+        return age < 0 ? null : age;
+    }
 }
