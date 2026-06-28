@@ -13,7 +13,9 @@ public record UserProfileResponse(
     string PreferredStatus,
     long? PreferredStatusExpiresAt,
     string AccountStatus,
-    long CreatedAt
+    long CreatedAt,
+    // ISO "yyyy-MM-dd" — private; only the owner sees their raw DOB (others see Age below).
+    string? DateOfBirth
 );
 
 // Returned per user from /api/users/presence — effective status + (when visible) custom message
@@ -26,7 +28,9 @@ public record PublicUserResponse(
     string? AvatarKey,
     string? BannerKey,
     string? Bio,
-    string? StatusMessage
+    string? StatusMessage,
+    // Computed years from DOB (not the raw date — others don't see your birthday); null = unset.
+    int? Age
 );
 
 // Returned for /api/users/me/blocks — the blocked user's public identity + when blocked

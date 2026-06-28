@@ -13,6 +13,7 @@ public class UserConfiguration : IEntityTypeConfiguration<User>
         // Identity maps Id as PK automatically. We just configure our extra columns.
         builder.Property(u => u.AvatarKey).HasColumnName("avatar_key");
         builder.Property(u => u.BannerKey).HasColumnName("banner_key");
+        builder.Property(u => u.DateOfBirth).HasColumnName("date_of_birth");
         builder.Property(u => u.StatusMessage).HasMaxLength(128);
         builder.Property(u => u.StatusMessageExpiresAt).HasColumnName("status_message_expires_at");
         builder
