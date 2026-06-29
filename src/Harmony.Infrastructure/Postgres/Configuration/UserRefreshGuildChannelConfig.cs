@@ -88,6 +88,12 @@ public class GuildConfiguration : IEntityTypeConfiguration<Guild>
         builder.Property(g => g.IsPublic).HasColumnName("is_public");
         builder.Property(g => g.MemberCount).HasColumnName("member_count");
         builder.Property(g => g.CreatedAt).HasColumnName("created_at");
+        builder.Property(g => g.WelcomeChannelId).HasColumnName("welcome_channel_id");
+        builder.Property(g => g.WelcomeMessage).HasColumnName("welcome_message").HasMaxLength(2000);
+        builder
+            .Property(g => g.SystemMessagesEnabled)
+            .HasColumnName("system_messages_enabled")
+            .HasDefaultValue(true);
 
         builder
             .HasOne(g => g.Owner)
