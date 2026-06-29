@@ -214,6 +214,63 @@ public class GuildMemberTests : ApiTestBase, IClassFixture<HarmonyWebApplication
     }
 
     [Fact]
+    public async Task Member_SetsOwnNickname_ShowsInMemberList_AndBlankClears()
+    {
+        var s = await SetupGuildWithMemberAsync("ownnick");
+
+        Auth(s.memberToken);
+        var set = await Client.PatchAsJsonAsync(
+            $"/api/guilds/{s.guildId}/members/me/nickname",
+            new { nickname = "  Ace  " }
+        );
+        set.StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        var members = await Client.GetFromJsonAsync<List<GuildMemberDto>>(
+            $"/api/guilds/{s.guildId}/members"
+        );
+        members!.Single(m => m.UserId == s.memberId).Nickname.Should().Be("Ace"); // trimmed
+
+        // Blank clears back to null.
+        var clear = await Client.PatchAsJsonAsync(
+            $"/api/guilds/{s.guildId}/members/me/nickname",
+            new { nickname = "" }
+        );
+        clear.StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        members = await Client.GetFromJsonAsync<List<GuildMemberDto>>(
+            $"/api/guilds/{s.guildId}/members"
+        );
+        members!.Single(m => m.UserId == s.memberId).Nickname.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Owner_RenamesMember_Works_ButPlainMemberCannot_403()
+    {
+        var s = await SetupGuildWithMemberAsync("modnick");
+
+        // Owner has ManageNicknames (all bits) → can rename the member.
+        Auth(s.ownerToken);
+        var ok = await Client.PatchAsJsonAsync(
+            $"/api/guilds/{s.guildId}/members/{s.memberId}/nickname",
+            new { nickname = "Renamed" }
+        );
+        ok.StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        var members = await Client.GetFromJsonAsync<List<GuildMemberDto>>(
+            $"/api/guilds/{s.guildId}/members"
+        );
+        members!.Single(m => m.UserId == s.memberId).Nickname.Should().Be("Renamed");
+
+        // Plain member lacks ManageNicknames → renaming anyone else is forbidden.
+        Auth(s.memberToken);
+        var forbidden = await Client.PatchAsJsonAsync(
+            $"/api/guilds/{s.guildId}/members/{s.ownerId}/nickname",
+            new { nickname = "hax" }
+        );
+        forbidden.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+    }
+
+    [Fact]
     public async Task GuildCapabilities_OwnerSeesAll_PlainMemberSeesNoModBits()
     {
         var s = await SetupGuildWithMemberAsync("caps");
@@ -226,6 +283,7 @@ public class GuildMemberTests : ApiTestBase, IClassFixture<HarmonyWebApplication
         ownerCaps.CanBan.Should().BeTrue();
         ownerCaps.CanTimeout.Should().BeTrue();
         ownerCaps.CanManageInvites.Should().BeTrue();
+        ownerCaps.CanManageNicknames.Should().BeTrue();
 
         Auth(s.memberToken);
         var memberCaps = await Client.GetFromJsonAsync<GuildCapabilitiesDto>(
@@ -235,6 +293,7 @@ public class GuildMemberTests : ApiTestBase, IClassFixture<HarmonyWebApplication
         memberCaps.CanBan.Should().BeFalse();
         memberCaps.CanTimeout.Should().BeFalse();
         memberCaps.CanManageInvites.Should().BeFalse();
+        memberCaps.CanManageNicknames.Should().BeFalse();
         // CreateInvite is in the @everyone default set.
         memberCaps.CanCreateInvite.Should().BeTrue();
     }
@@ -251,14 +310,15 @@ public class GuildMemberTests : ApiTestBase, IClassFixture<HarmonyWebApplication
         bool CanKick,
         bool CanBan,
         bool CanTimeout,
-        bool CanViewAuditLog
+        bool CanViewAuditLog,
+        bool CanManageNicknames
     );
 
     private record UserDto(long Id);
 
     private record GuildResponse(long Id, string Name, int MemberCount);
 
-    private record GuildMemberDto(long UserId, string Username, bool IsOwner);
+    private record GuildMemberDto(long UserId, string Username, string? Nickname, bool IsOwner);
 
     private record GuildBanDto(
         long UserId,

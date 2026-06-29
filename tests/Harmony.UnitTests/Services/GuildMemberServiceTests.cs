@@ -191,4 +191,117 @@ public class GuildMemberServiceTests
             Times.Once
         );
     }
+
+    // ---- Nicknames ----------------------------------------------------------
+
+    [Fact]
+    public async Task SetOwnNickname_Happy_SetsNickname_Broadcasts_NoAudit()
+    {
+        var (sut, guilds, _, _, audit, broadcaster) = BuildSut();
+        var me = new GuildMember { UserId = ActorId, GuildId = GuildId };
+        guilds.Setup(g => g.GetMemberAsync(GuildId, ActorId)).ReturnsAsync(me);
+
+        await sut.SetOwnNicknameAsync(GuildId, ActorId, "  Ace  ");
+
+        me.Nickname.Should().Be("Ace"); // trimmed
+        guilds.Verify(g => g.SaveChangesAsync(), Times.Once);
+        broadcaster.Verify(
+            b => b.BroadcastMemberUpdatedAsync(
+                GuildId,
+                It.Is<MemberUpdatedPayload>(p => p.UserId == ActorId && p.Nickname == "Ace"),
+                It.IsAny<CancellationToken>()
+            ),
+            Times.Once
+        );
+        // Self-service rename is not audited.
+        audit.Verify(
+            a => a.LogAsync(
+                It.IsAny<long>(), It.IsAny<long>(), It.IsAny<string>(),
+                It.IsAny<long?>(), It.IsAny<object?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()
+            ),
+            Times.Never
+        );
+    }
+
+    [Fact]
+    public async Task SetOwnNickname_Blank_ClearsToNull()
+    {
+        var (sut, guilds, _, _, _, broadcaster) = BuildSut();
+        var me = new GuildMember { UserId = ActorId, GuildId = GuildId, Nickname = "Old" };
+        guilds.Setup(g => g.GetMemberAsync(GuildId, ActorId)).ReturnsAsync(me);
+
+        await sut.SetOwnNicknameAsync(GuildId, ActorId, "   ");
+
+        me.Nickname.Should().BeNull();
+        broadcaster.Verify(
+            b => b.BroadcastMemberUpdatedAsync(
+                GuildId,
+                It.Is<MemberUpdatedPayload>(p => p.Nickname == null),
+                It.IsAny<CancellationToken>()
+            ),
+            Times.Once
+        );
+    }
+
+    [Fact]
+    public async Task SetOwnNickname_NonMember_ThrowsNotFound()
+    {
+        var (sut, guilds, _, _, _, _) = BuildSut();
+        guilds.Setup(g => g.GetMemberAsync(GuildId, ActorId)).ReturnsAsync((GuildMember?)null);
+
+        await FluentActions
+            .Invoking(() => sut.SetOwnNicknameAsync(GuildId, ActorId, "Ace"))
+            .Should()
+            .ThrowAsync<KeyNotFoundException>();
+    }
+
+    [Fact]
+    public async Task SetNickname_Mod_SetsNickname_Audits_Broadcasts()
+    {
+        var (sut, guilds, _, _, audit, broadcaster) = BuildSut();
+        var target = new GuildMember { UserId = TargetId, GuildId = GuildId };
+        guilds.Setup(g => g.GetMemberAsync(GuildId, TargetId)).ReturnsAsync(target);
+
+        await sut.SetNicknameAsync(GuildId, ActorId, TargetId, "Troublemaker");
+
+        target.Nickname.Should().Be("Troublemaker");
+        audit.Verify(
+            a => a.LogAsync(
+                GuildId, ActorId, AuditLogAction.MemberNicknameUpdate,
+                It.IsAny<long?>(), It.IsAny<object?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()
+            ),
+            Times.Once
+        );
+        broadcaster.Verify(
+            b => b.BroadcastMemberUpdatedAsync(
+                GuildId,
+                It.Is<MemberUpdatedPayload>(p => p.UserId == TargetId && p.Nickname == "Troublemaker"),
+                It.IsAny<CancellationToken>()
+            ),
+            Times.Once
+        );
+    }
+
+    [Fact]
+    public async Task SetNickname_Self_ThrowsArgument()
+    {
+        var (sut, _, _, _, _, _) = BuildSut();
+
+        await FluentActions
+            .Invoking(() => sut.SetNicknameAsync(GuildId, ActorId, ActorId, "Ace"))
+            .Should()
+            .ThrowAsync<ArgumentException>();
+    }
+
+    [Fact]
+    public async Task SetNickname_OwnerTarget_ThrowsForbidden()
+    {
+        var (sut, guilds, _, _, _, _) = BuildSut();
+        SetupTarget(guilds, isOwner: true);
+
+        await FluentActions
+            .Invoking(() => sut.SetNicknameAsync(GuildId, ActorId, TargetId, "Ace"))
+            .Should()
+            .ThrowAsync<UnauthorizedAccessException>();
+    }
 }

@@ -176,6 +176,21 @@ public sealed class TimeoutMemberRequestValidator : AbstractValidator<TimeoutMem
     }
 }
 
+public sealed class SetNicknameRequestValidator : AbstractValidator<SetNicknameRequest>
+{
+    // Discord's nickname length cap; shared by the friend-nickname endpoint too.
+    public const int MaxNicknameLength = 32;
+
+    public SetNicknameRequestValidator()
+    {
+        // Null/blank is valid — it clears the nickname back to the username.
+        RuleFor(x => x.Nickname!)
+            .MaximumLength(MaxNicknameLength)
+            .WithMessage($"Nickname must be {MaxNicknameLength} characters or fewer.")
+            .When(x => x.Nickname is not null);
+    }
+}
+
 public sealed class CreateRoleRequestValidator : AbstractValidator<CreateRoleRequest>
 {
     public CreateRoleRequestValidator()

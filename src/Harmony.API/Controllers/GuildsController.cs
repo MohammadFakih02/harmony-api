@@ -192,7 +192,8 @@ public class GuildsController : ControllerBase
             CanKick: Has(Permission.KickMembers),
             CanBan: Has(Permission.BanMembers),
             CanTimeout: Has(Permission.TimeoutMembers),
-            CanViewAuditLog: Has(Permission.ViewAuditLog)
+            CanViewAuditLog: Has(Permission.ViewAuditLog),
+            CanManageNicknames: Has(Permission.ManageNicknames)
         ));
     }
 

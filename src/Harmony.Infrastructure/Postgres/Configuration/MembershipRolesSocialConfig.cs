@@ -198,6 +198,31 @@ public class UserMuteConfiguration : IEntityTypeConfiguration<UserMute>
     }
 }
 
+public class UserNicknameConfiguration : IEntityTypeConfiguration<UserNickname>
+{
+    public void Configure(EntityTypeBuilder<UserNickname> builder)
+    {
+        builder.ToTable("UserNicknames");
+        // PK leads with OwnerId, so the bulk "all my nicknames" read is index-covered.
+        builder.HasKey(n => new { n.OwnerId, n.TargetId });
+        builder.Property(n => n.OwnerId).HasColumnName("owner_id");
+        builder.Property(n => n.TargetId).HasColumnName("target_id");
+        builder.Property(n => n.Nickname).HasColumnName("nickname").HasMaxLength(32).IsRequired();
+        builder.Property(n => n.CreatedAt).HasColumnName("created_at");
+        builder.Property(n => n.UpdatedAt).HasColumnName("updated_at");
+
+        builder.HasOne(n => n.Owner)
+            .WithMany()
+            .HasForeignKey(n => n.OwnerId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        builder.HasOne(n => n.Target)
+            .WithMany()
+            .HasForeignKey(n => n.TargetId)
+            .OnDelete(DeleteBehavior.Cascade);
+    }
+}
+
 public class DirectMessageChannelConfiguration : IEntityTypeConfiguration<DirectMessageChannel>
 {
     public void Configure(EntityTypeBuilder<DirectMessageChannel> builder)
