@@ -2,9 +2,11 @@ using System.Security.Claims;
 using Harmony.Application.DTOs.Responses;
 using Harmony.Domain.Domain.Entities;
 using Harmony.Domain.Interfaces.Repositories;
+using Harmony.Domain.Interfaces.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.Extensions.Logging;
 
 namespace Harmony.API.Controllers;
 
@@ -23,16 +25,25 @@ public class InvitesController : ControllerBase
     private readonly IGuildInviteRepository _invites;
     private readonly IGuildRepository _guilds;
     private readonly IGuildBanRepository _bans;
+    private readonly IChannelRepository _channels;
+    private readonly IMessageService _messages;
+    private readonly ILogger<InvitesController> _logger;
 
     public InvitesController(
         IGuildInviteRepository invites,
         IGuildRepository guilds,
-        IGuildBanRepository bans
+        IGuildBanRepository bans,
+        IChannelRepository channels,
+        IMessageService messages,
+        ILogger<InvitesController> logger
     )
     {
         _invites = invites;
         _guilds = guilds;
         _bans = bans;
+        _channels = channels;
+        _messages = messages;
+        _logger = logger;
     }
 
     // GET /api/invites/{code} — preview before joining.
@@ -93,7 +104,58 @@ public class InvitesController : ControllerBase
 
         await _guilds.SaveChangesAsync();
 
+        await PostWelcomeMessageAsync(guild, userId);
+
         return Ok(ToResponse(guild));
+    }
+
+    /// <summary>
+    /// Best-effort member-join system message. Posts to the configured welcome channel (or the
+    /// first text channel by position) when the guild has system messages enabled. A failure here
+    /// must never turn a successful join into an error — the join is already committed.
+    /// </summary>
+    private async Task PostWelcomeMessageAsync(Guild guild, long joinerId)
+    {
+        if (!guild.SystemMessagesEnabled)
+            return;
+
+        try
+        {
+            var targetChannelId = guild.WelcomeChannelId;
+            if (targetChannelId is null)
+            {
+                var channels = await _channels.GetByGuildIdAsync(guild.Id);
+                targetChannelId = channels
+                    .Where(c => c.Type == "text")
+                    .OrderBy(c => c.Position)
+                    .Select(c => (long?)c.Id)
+                    .FirstOrDefault();
+            }
+
+            if (targetChannelId is not { } channelId)
+                return; // no text channel to post into
+
+            // Content carries the admin's greeting (if any); the "member_join" type + author
+            // identity is what the client renders as "X joined". Empty content = plain join notice.
+            var content = guild.WelcomeMessage ?? string.Empty;
+
+            await _messages.PublishSystemMessageAsync(
+                guild.Id,
+                channelId,
+                joinerId,
+                "member_join",
+                content
+            );
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Failed to post welcome message for user {UserId} joining guild {GuildId}",
+                joinerId,
+                guild.Id
+            );
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -113,5 +175,6 @@ public class InvitesController : ControllerBase
     }
 
     private static GuildResponse ToResponse(Guild g) =>
-        new(g.Id, g.Name, g.Description, g.OwnerId, g.IconKey, g.BannerKey, g.IsPublic, g.MemberCount, g.CreatedAt);
+        new(g.Id, g.Name, g.Description, g.OwnerId, g.IconKey, g.BannerKey, g.IsPublic, g.MemberCount, g.CreatedAt,
+            g.WelcomeChannelId, g.WelcomeMessage, g.SystemMessagesEnabled);
 }

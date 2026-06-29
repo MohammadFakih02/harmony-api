@@ -220,6 +220,37 @@ public class MessageService : IMessageService
         );
     }
 
+    /// <inheritdoc />
+    public async Task<long> PublishSystemMessageAsync(
+        long guildId,
+        long channelId,
+        long authorUserId,
+        string messageType,
+        string content,
+        CancellationToken ct = default
+    )
+    {
+        var messageId = _snowflake.NextId();
+
+        await _publisher.PublishMessageSentAsync(
+            new MessageSentEvent(
+                MessageId: messageId,
+                ChannelId: channelId,
+                GuildId: guildId,
+                UserId: authorUserId,
+                Content: content,
+                MessageType: messageType,
+                AttachmentIds: [],
+                MentionIds: [],
+                ReplyToId: null,
+                SentAt: DateTimeOffset.UtcNow
+            ),
+            ct
+        );
+
+        return messageId;
+    }
+
     public async Task DeleteMessageAsync(
         long userId,
         long? guildId,

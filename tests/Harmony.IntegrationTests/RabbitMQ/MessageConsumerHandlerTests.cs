@@ -67,6 +67,7 @@ public class MessageConsumerHandlerTests : ScyllaAndPostgresTestBase
             new UserMuteRepository(Db),
             Mock.Of<IHubBroadcaster>(),
             new NotificationPreferenceRepository(Db),
+            new NotificationSettingRepository(Db),
             presence.Object,
             new SnowflakeIdGenerator(0, 0),
             NullLogger<NotificationService>.Instance

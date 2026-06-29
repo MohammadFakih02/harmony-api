@@ -107,6 +107,31 @@ public class NotificationPreferenceConfiguration : IEntityTypeConfiguration<Noti
     }
 }
 
+public class NotificationSettingConfiguration : IEntityTypeConfiguration<NotificationSetting>
+{
+    public void Configure(EntityTypeBuilder<NotificationSetting> builder)
+    {
+        builder.ToTable("NotificationSettings");
+        // Composite PK: one level per (user, scope) — re-setting upserts the same row.
+        builder.HasKey(s => new
+        {
+            s.UserId,
+            s.ScopeType,
+            s.ScopeId,
+        });
+        builder.Property(s => s.UserId).HasColumnName("user_id");
+        builder.Property(s => s.ScopeType).HasColumnName("scope_type").HasMaxLength(16).IsRequired();
+        builder.Property(s => s.ScopeId).HasColumnName("scope_id");
+        builder.Property(s => s.Level).HasColumnName("level").HasMaxLength(16).IsRequired();
+
+        builder
+            .HasOne(s => s.User)
+            .WithMany()
+            .HasForeignKey(s => s.UserId)
+            .OnDelete(DeleteBehavior.Cascade);
+    }
+}
+
 public class UserPushSubscriptionConfiguration : IEntityTypeConfiguration<UserPushSubscription>
 {
     public void Configure(EntityTypeBuilder<UserPushSubscription> builder)
