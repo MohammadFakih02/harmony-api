@@ -36,6 +36,24 @@ public class UserMute
     public User User { get; set; } = null!;
 }
 
+/// <summary>
+/// A private, one-directional alias the <see cref="OwnerId"/> user has set for another user
+/// (<see cref="TargetId"/>). Visible only to the owner — used as the friend/DM display name.
+/// Independent of guild membership (you can nickname anyone you DM, not just friends).
+/// </summary>
+public class UserNickname
+{
+    public long OwnerId { get; set; }
+    public long TargetId { get; set; }
+    public string Nickname { get; set; } = null!;
+    public long CreatedAt { get; set; }
+    public long UpdatedAt { get; set; }
+
+    // Navigation
+    public User Owner { get; set; } = null!;
+    public User Target { get; set; } = null!;
+}
+
 public class DirectMessageChannel
 {
     public long ChannelId { get; set; }

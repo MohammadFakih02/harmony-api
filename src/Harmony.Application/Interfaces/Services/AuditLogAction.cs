@@ -14,6 +14,7 @@ public static class AuditLogAction
     public const string MemberUnban = "member_unban";
     public const string MemberTimeout = "member_timeout";
     public const string MemberRoleUpdate = "member_role_update";
+    public const string MemberNicknameUpdate = "member_nickname_update";
 
     // Invites
     public const string InviteCreate = "invite_create";

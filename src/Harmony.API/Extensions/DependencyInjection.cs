@@ -156,6 +156,7 @@ public static class DependencyInjection
         services.AddScoped<IUserBlockRepository, UserBlockRepository>();
         services.AddScoped<IUserMuteRepository, UserMuteRepository>();
         services.AddScoped<IFriendRepository, FriendRepository>();
+        services.AddScoped<IUserNicknameRepository, UserNicknameRepository>();
         services.AddScoped<IDirectMessageRepository, DirectMessageRepository>();
         services.AddScoped<INotificationRepository, NotificationRepository>();
         services.AddScoped<INotificationPreferenceRepository, NotificationPreferenceRepository>();

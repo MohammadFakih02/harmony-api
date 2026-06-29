@@ -133,9 +133,9 @@ public interface IChatClient
     Task Kicked(KickedPayload payload);
 
     /// <summary>
-    /// Fired when a member's moderation state changes (currently: timeout set or cleared).
-    /// Broadcast to the guild group so clients update the member's timed-out indicator and the
-    /// affected user's own tabs grey/un-grey the composer.
+    /// Fired when a member's guild-level state changes (timeout set/cleared, or server nickname
+    /// changed). Broadcast to the guild group so clients update the timed-out indicator, the
+    /// affected user's own composer, and the member's displayed name everywhere in the guild.
     /// </summary>
     Task MemberUpdated(MemberUpdatedPayload payload);
 
@@ -235,9 +235,16 @@ public record MemberRemovedPayload(long GuildId, long UserId);
 /// <summary>Sent to the user who was kicked or banned. <see cref="Banned"/> = true means a ban.</summary>
 public record KickedPayload(long GuildId, string? Reason, bool Banned);
 
-/// <summary>A member's moderation state changed. <see cref="CommunicationDisabledUntil"/> is the
-/// unix-ms timeout expiry, or null when the timeout was cleared.</summary>
-public record MemberUpdatedPayload(long GuildId, long UserId, long? CommunicationDisabledUntil);
+/// <summary>A member's guild-level state changed (timeout set/cleared, or nickname changed). Carries
+/// the member's full mutable state so applying it never clobbers an unrelated field:
+/// <see cref="Nickname"/> is the server nickname (null = none/reverted to username);
+/// <see cref="CommunicationDisabledUntil"/> is the unix-ms timeout expiry (null = no active timeout).</summary>
+public record MemberUpdatedPayload(
+    long GuildId,
+    long UserId,
+    string? Nickname,
+    long? CommunicationDisabledUntil
+);
 
 /// <summary>A role was deleted from a guild.</summary>
 public record RoleDeletedPayload(long GuildId, long RoleId);
