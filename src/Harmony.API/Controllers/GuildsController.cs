@@ -21,18 +21,21 @@ public class GuildsController : ControllerBase
 {
     private readonly IGuildRepository _guilds;
     private readonly IRoleRepository _roles;
+    private readonly IChannelRepository _channels;
     private readonly ISnowflakeIdGenerator _snowflake;
     private readonly IPermissionService _permissions;
 
     public GuildsController(
         IGuildRepository guilds,
         IRoleRepository roles,
+        IChannelRepository channels,
         ISnowflakeIdGenerator snowflake,
         IPermissionService permissions
     )
     {
         _guilds = guilds;
         _roles = roles;
+        _channels = channels;
         _snowflake = snowflake;
         _permissions = permissions;
     }
@@ -115,6 +118,32 @@ public class GuildsController : ControllerBase
         if (request.Name is not null) guild.Name = request.Name;
         if (request.Description is not null) guild.Description = request.Description;
         if (request.IsPublic is not null) guild.IsPublic = request.IsPublic.Value;
+
+        await _guilds.SaveChangesAsync();
+
+        return Ok(ToResponse(guild));
+    }
+
+    // PATCH /api/guilds/{id}/welcome — configure the welcome channel + greeting + system-message toggle.
+    [HttpPatch("{id:long}/welcome")]
+    [RequirePermission(Permission.ManageGuild)]
+    public async Task<IActionResult> UpdateWelcome(long id, [FromBody] UpdateGuildWelcomeRequest request)
+    {
+        var guild = await _guilds.GetByIdAsync(id);
+        if (guild is null) return NotFound();
+
+        // A welcome channel (when set) must be a text channel of THIS guild — never trust the id.
+        if (request.WelcomeChannelId is { } channelId)
+        {
+            var channel = await _channels.GetByIdAndGuildIdAsync(channelId, id);
+            if (channel is null || channel.Type != "text")
+                return BadRequest(new { error = "Welcome channel must be a text channel in this guild." });
+        }
+
+        guild.WelcomeChannelId = request.WelcomeChannelId; // null clears → falls back to default channel
+        // Blank message normalizes to null (use the built-in default notice).
+        guild.WelcomeMessage = string.IsNullOrWhiteSpace(request.WelcomeMessage) ? null : request.WelcomeMessage;
+        guild.SystemMessagesEnabled = request.SystemMessagesEnabled;
 
         await _guilds.SaveChangesAsync();
 
@@ -206,7 +235,8 @@ public class GuildsController : ControllerBase
 
     private static GuildResponse ToResponse(Guild g) =>
         new(g.Id, g.Name, g.Description, g.OwnerId, g.IconKey, g.BannerKey,
-            g.IsPublic, g.MemberCount, g.CreatedAt);
+            g.IsPublic, g.MemberCount, g.CreatedAt,
+            g.WelcomeChannelId, g.WelcomeMessage, g.SystemMessagesEnabled);
 
     private static GuildMemberResponse ToMemberResponse(GuildMember m, IEnumerable<long> roleIds) =>
         new(m.UserId, m.User.UserName!, m.Nickname,

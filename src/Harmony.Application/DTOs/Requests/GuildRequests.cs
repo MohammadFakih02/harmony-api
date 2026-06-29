@@ -11,6 +11,17 @@ public record UpdateGuildRequest(
     bool? IsPublic
 );
 
+/// <summary>
+/// Replace a guild's welcome configuration (ManageGuild). <see cref="WelcomeChannelId"/> null = post
+/// joins to the default text channel; <see cref="WelcomeMessage"/> null/blank = built-in greeting;
+/// <see cref="SystemMessagesEnabled"/> false = suppress member-join notices entirely.
+/// </summary>
+public record UpdateGuildWelcomeRequest(
+    long? WelcomeChannelId,
+    string? WelcomeMessage,
+    bool SystemMessagesEnabled
+);
+
 /// <summary>Timeout a member for <see cref="DurationSeconds"/> seconds from now (max 28 days).</summary>
 public record TimeoutMemberRequest(long DurationSeconds);
 

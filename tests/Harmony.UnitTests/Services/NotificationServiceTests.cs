@@ -38,7 +38,8 @@ public class NotificationServiceTests
         Mock<IUserMuteRepository> mutes,
         Mock<IHubBroadcaster> broadcaster,
         Mock<INotificationPreferenceRepository> preferences,
-        Mock<IPresenceService> presence
+        Mock<IPresenceService> presence,
+        Mock<INotificationSettingRepository> settings
     ) BuildSut()
     {
         var notifications = new Mock<INotificationRepository>();
@@ -46,9 +47,19 @@ public class NotificationServiceTests
         var mutes = new Mock<IUserMuteRepository>();
         var broadcaster = new Mock<IHubBroadcaster>();
         var preferences = new Mock<INotificationPreferenceRepository>();
+        var settings = new Mock<INotificationSettingRepository>();
         var presence = new Mock<IPresenceService>();
         var snowflake = new Mock<ISnowflakeIdGenerator>();
         snowflake.Setup(s => s.NextId()).Returns(NotificationId);
+
+        // No per-guild/channel notification overrides by default → every recipient resolves to the
+        // default level ("mentions"), so mentions pass. (A missing List<T> stub returns null, which
+        // the resolver's foreach would NRE on — mirror the GetForUsersAsync empty-list default above.)
+        settings
+            .Setup(s =>
+                s.GetForResolutionAsync(It.IsAny<List<long>>(), It.IsAny<long>(), It.IsAny<long>())
+            )
+            .ReturnsAsync(new List<NotificationSetting>());
 
         // Default the recipient to a non-DnD status so the live push fires (DnD suppression
         // is exercised explicitly in its own test).
@@ -88,18 +99,19 @@ public class NotificationServiceTests
             mutes.Object,
             broadcaster.Object,
             preferences.Object,
+            settings.Object,
             presence.Object,
             snowflake.Object,
             NullLogger<NotificationService>.Instance
         );
 
-        return (sut, notifications, blocks, mutes, broadcaster, preferences, presence);
+        return (sut, notifications, blocks, mutes, broadcaster, preferences, presence, settings);
     }
 
     [Fact]
     public async Task CreateFriendRequestNotificationAsync_HappyPath_PersistsAndBroadcasts()
     {
-        var (sut, notifications, _, _, broadcaster, _, _) = BuildSut();
+        var (sut, notifications, _, _, broadcaster, _, _, _) = BuildSut();
 
         await sut.CreateFriendRequestNotificationAsync(AddresseeId, RequesterId);
 
@@ -123,7 +135,7 @@ public class NotificationServiceTests
     [Fact]
     public async Task CreateFriendRequestNotificationAsync_WhenRecipientInDnd_PersistsButDoesNotBroadcast()
     {
-        var (sut, notifications, _, _, broadcaster, _, presence) = BuildSut();
+        var (sut, notifications, _, _, broadcaster, _, presence, _) = BuildSut();
         // DnD suppresses the live interruption only — the row is still saved so the user
         // can catch up after leaving DnD.
         presence
@@ -148,7 +160,7 @@ public class NotificationServiceTests
     [Fact]
     public async Task CreateFriendRequestNotificationAsync_WhenFriendRequestsDisabled_DoesNotCreate()
     {
-        var (sut, notifications, _, _, broadcaster, preferences, _) = BuildSut();
+        var (sut, notifications, _, _, broadcaster, preferences, _, _) = BuildSut();
         preferences
             .Setup(p => p.GetAsync(AddresseeId))
             .ReturnsAsync(
@@ -172,7 +184,7 @@ public class NotificationServiceTests
     [Fact]
     public async Task CreateFriendRequestNotificationAsync_WhenAddresseeMutesRequester_DoesNotCreate()
     {
-        var (sut, notifications, _, mutes, _, _, _) = BuildSut();
+        var (sut, notifications, _, mutes, _, _, _, _) = BuildSut();
         // The mute check must be addressee-mutes-requester (it's the addressee's own
         // notification being suppressed) — assert that exact direction, not the reverse.
         mutes
@@ -189,7 +201,7 @@ public class NotificationServiceTests
     [Fact]
     public async Task CreateFriendRequestNotificationAsync_WhenBlocked_DoesNotCreate()
     {
-        var (sut, notifications, blocks, _, _, _, _) = BuildSut();
+        var (sut, notifications, blocks, _, _, _, _, _) = BuildSut();
         blocks.Setup(b => b.AreBlockedAsync(AddresseeId, RequesterId)).ReturnsAsync(true);
 
         await sut.CreateFriendRequestNotificationAsync(AddresseeId, RequesterId);
@@ -200,7 +212,7 @@ public class NotificationServiceTests
     [Fact]
     public async Task CreateFriendRequestNotificationAsync_WhenBroadcastFails_StillPersistsAndDoesNotThrow()
     {
-        var (sut, notifications, _, _, broadcaster, _, _) = BuildSut();
+        var (sut, notifications, _, _, broadcaster, _, _, _) = BuildSut();
         broadcaster
             .Setup(b =>
                 b.BroadcastNotificationReceivedAsync(
@@ -221,7 +233,7 @@ public class NotificationServiceTests
     public async Task CreateMentionNotificationAsync_HappyPath_PersistsAndBroadcasts()
     {
         var mentionedUserIds = new List<long> { MentionedUserId };
-        var (sut, notifications, _, _, broadcaster, _, _) = BuildSut();
+        var (sut, notifications, _, _, broadcaster, _, _, _) = BuildSut();
         await sut.CreateMentionNotificationsAsync(
             mentionedUserIds,
             ActorId,
@@ -253,7 +265,7 @@ public class NotificationServiceTests
     [Fact]
     public async Task CreateMentionNotificationsAsync_SelfMention_DoesNotCreate()
     {
-        var (sut, notifications, _, _, _, _, _) = BuildSut();
+        var (sut, notifications, _, _, _, _, _, _) = BuildSut();
         // The actor mentioning themselves must be skipped — there is no "self" guard
         // anywhere else in the pipeline, so this has to be the service's job.
         var mentionedUserIds = new List<long> { ActorId };
@@ -273,7 +285,7 @@ public class NotificationServiceTests
     [Fact]
     public async Task CreateMentionNotificationsAsync_WhenMentionsDisabled_DoesNotCreate()
     {
-        var (sut, notifications, _, _, _, preferences, _) = BuildSut();
+        var (sut, notifications, _, _, _, preferences, _, _) = BuildSut();
         var mentionedUserIds = new List<long> { MentionedUserId };
         preferences
             .Setup(p => p.GetForUsersAsync(mentionedUserIds))
@@ -299,7 +311,7 @@ public class NotificationServiceTests
     [Fact]
     public async Task CreateMentionNotificationsAsync_WhenMutedTheActorAsUser_DoesNotCreate()
     {
-        var (sut, notifications, _, mutes, _, _, _) = BuildSut();
+        var (sut, notifications, _, mutes, _, _, _, _) = BuildSut();
         var mentionedUserIds = new List<long> { MentionedUserId };
         mutes
             .Setup(m =>
@@ -322,7 +334,7 @@ public class NotificationServiceTests
     [Fact]
     public async Task CreateMentionNotificationsAsync_WhenMutedTheChannel_DoesNotCreate()
     {
-        var (sut, notifications, _, mutes, _, _, _) = BuildSut();
+        var (sut, notifications, _, mutes, _, _, _, _) = BuildSut();
         var mentionedUserIds = new List<long> { MentionedUserId };
         mutes
             .Setup(m =>
@@ -350,7 +362,7 @@ public class NotificationServiceTests
     [Fact]
     public async Task CreateMentionNotificationsAsync_WhenMutedTheGuild_DoesNotCreate()
     {
-        var (sut, notifications, _, mutes, _, _, _) = BuildSut();
+        var (sut, notifications, _, mutes, _, _, _, _) = BuildSut();
         var mentionedUserIds = new List<long> { MentionedUserId };
         mutes
             .Setup(m =>
@@ -375,7 +387,7 @@ public class NotificationServiceTests
     {
         // Guild-less (DM) channels have no guild to check — passing guildId: null must
         // not NRE on guildId.Value and must not call IsMutedAsync for MuteTargetType.Guild.
-        var (sut, notifications, _, mutes, _, _, _) = BuildSut();
+        var (sut, notifications, _, mutes, _, _, _, _) = BuildSut();
         var mentionedUserIds = new List<long> { MentionedUserId };
 
         await sut.CreateMentionNotificationsAsync(
@@ -403,7 +415,7 @@ public class NotificationServiceTests
     [Fact]
     public async Task CreateMentionNotificationsAsync_WhenBlocked_DoesNotCreate()
     {
-        var (sut, notifications, blocks, _, _, _, _) = BuildSut();
+        var (sut, notifications, blocks, _, _, _, _, _) = BuildSut();
         var mentionedUserIds = new List<long> { MentionedUserId };
         blocks.Setup(b => b.AreBlockedAsync(ActorId, MentionedUserId)).ReturnsAsync(true);
 
@@ -424,7 +436,7 @@ public class NotificationServiceTests
     {
         // Proves the loop doesn't bail out of the whole batch on the first suppressed
         // recipient — each mentioned user is independently evaluated.
-        var (sut, notifications, blocks, _, broadcaster, _, _) = BuildSut();
+        var (sut, notifications, blocks, _, broadcaster, _, _, _) = BuildSut();
         var mentionedUserIds = new List<long> { MentionedUserId, MentionedUserId2 };
         blocks.Setup(b => b.AreBlockedAsync(ActorId, MentionedUserId)).ReturnsAsync(true);
 
@@ -456,5 +468,77 @@ public class NotificationServiceTests
                 ),
             Times.Never
         );
+    }
+
+    [Fact]
+    public async Task CreateMentionNotificationsAsync_GuildLevelNothing_SuppressesTheMention()
+    {
+        var (sut, notifications, _, _, _, _, _, settings) = BuildSut();
+        // A guild-scope "nothing" with no channel override → the mention is silenced.
+        settings
+            .Setup(s => s.GetForResolutionAsync(It.IsAny<List<long>>(), GuildId, ChannelId))
+            .ReturnsAsync(
+                new List<NotificationSetting>
+                {
+                    new()
+                    {
+                        UserId = MentionedUserId,
+                        ScopeType = NotificationScope.Guild,
+                        ScopeId = GuildId,
+                        Level = NotificationLevel.Nothing,
+                    },
+                }
+            );
+
+        await sut.CreateMentionNotificationsAsync(
+            new List<long> { MentionedUserId },
+            ActorId,
+            GuildId,
+            ChannelId,
+            MessageId,
+            CreatedAt
+        );
+
+        notifications.Verify(n => n.AddAsync(It.IsAny<Notification>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task CreateMentionNotificationsAsync_ChannelLevelOverridesGuildLevel_NotifiesWhenChannelAllows()
+    {
+        var (sut, notifications, _, _, _, _, _, settings) = BuildSut();
+        // Guild scope says "nothing" but a channel-scope override says "mentions" — channel wins,
+        // so the mention goes through.
+        settings
+            .Setup(s => s.GetForResolutionAsync(It.IsAny<List<long>>(), GuildId, ChannelId))
+            .ReturnsAsync(
+                new List<NotificationSetting>
+                {
+                    new()
+                    {
+                        UserId = MentionedUserId,
+                        ScopeType = NotificationScope.Guild,
+                        ScopeId = GuildId,
+                        Level = NotificationLevel.Nothing,
+                    },
+                    new()
+                    {
+                        UserId = MentionedUserId,
+                        ScopeType = NotificationScope.Channel,
+                        ScopeId = ChannelId,
+                        Level = NotificationLevel.Mentions,
+                    },
+                }
+            );
+
+        await sut.CreateMentionNotificationsAsync(
+            new List<long> { MentionedUserId },
+            ActorId,
+            GuildId,
+            ChannelId,
+            MessageId,
+            CreatedAt
+        );
+
+        notifications.Verify(n => n.AddAsync(It.IsAny<Notification>()), Times.Once);
     }
 }

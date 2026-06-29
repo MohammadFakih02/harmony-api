@@ -9,7 +9,10 @@ public record GuildResponse(
     string? BannerKey,
     bool IsPublic,
     int MemberCount,
-    long CreatedAt
+    long CreatedAt,
+    long? WelcomeChannelId,
+    string? WelcomeMessage,
+    bool SystemMessagesEnabled
 );
 
 public record GuildMemberResponse(

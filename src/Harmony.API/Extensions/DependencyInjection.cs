@@ -160,6 +160,7 @@ public static class DependencyInjection
         services.AddScoped<IDirectMessageRepository, DirectMessageRepository>();
         services.AddScoped<INotificationRepository, NotificationRepository>();
         services.AddScoped<INotificationPreferenceRepository, NotificationPreferenceRepository>();
+        services.AddScoped<INotificationSettingRepository, NotificationSettingRepository>();
         services.AddScoped<IAuditLogRepository, AuditLogRepository>();
         services.AddScoped<IGuildInviteRepository, GuildInviteRepository>();
         services.AddScoped<IGuildBanRepository, GuildBanRepository>();

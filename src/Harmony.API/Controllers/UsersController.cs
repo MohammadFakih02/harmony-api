@@ -238,7 +238,10 @@ public class UsersController : ControllerBase
                 g.BannerKey,
                 g.IsPublic,
                 g.MemberCount,
-                g.CreatedAt
+                g.CreatedAt,
+                g.WelcomeChannelId,
+                g.WelcomeMessage,
+                g.SystemMessagesEnabled
             ))
         );
     }

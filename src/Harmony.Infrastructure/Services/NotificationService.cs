@@ -22,6 +22,7 @@ public class NotificationService : INotificationService
     private readonly IUserMuteRepository _userMute;
     private readonly IHubBroadcaster _broadcaster;
     private readonly INotificationPreferenceRepository _notificationPreferences;
+    private readonly INotificationSettingRepository _notificationSettings;
     private readonly IPresenceService _presence;
     private readonly ISnowflakeIdGenerator _snowflake;
     private readonly ILogger<NotificationService> _logger;
@@ -32,6 +33,7 @@ public class NotificationService : INotificationService
         IUserMuteRepository userMuteRepository,
         IHubBroadcaster hubBroadcaster,
         INotificationPreferenceRepository notificationPreferenceRepository,
+        INotificationSettingRepository notificationSettingRepository,
         IPresenceService presence,
         ISnowflakeIdGenerator snowflake,
         ILogger<NotificationService> logger
@@ -42,6 +44,7 @@ public class NotificationService : INotificationService
         _userMute = userMuteRepository;
         _broadcaster = hubBroadcaster;
         _notificationPreferences = notificationPreferenceRepository;
+        _notificationSettings = notificationSettingRepository;
         _presence = presence;
         _snowflake = snowflake;
         _logger = logger;
@@ -149,6 +152,27 @@ public class NotificationService : INotificationService
     {
         var prefRows = await _notificationPreferences.GetForUsersAsync(mentionedUserIds);
         var preferences = prefRows.ToDictionary(p => p.UserId);
+
+        // Per-guild / per-channel notification level (guild messages only — DMs have no such scope).
+        // Fetched once for the whole batch; channel-scope overrides guild-scope, absent = default.
+        var channelLevels = new Dictionary<long, string>();
+        var guildLevels = new Dictionary<long, string>();
+        if (guildId.HasValue)
+        {
+            var settingRows = await _notificationSettings.GetForResolutionAsync(
+                mentionedUserIds,
+                guildId.Value,
+                channelId
+            );
+            foreach (var row in settingRows)
+            {
+                if (row.ScopeType == NotificationScope.Channel)
+                    channelLevels[row.UserId] = row.Level;
+                else
+                    guildLevels[row.UserId] = row.Level;
+            }
+        }
+
         var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         var toNotify = new List<Notification>();
 
@@ -161,6 +185,17 @@ public class NotificationService : INotificationService
             // GetForUsersAsync), not "key not found" — must not throw for that user.
             if (preferences.TryGetValue(mentionedUserId, out var pref) && !pref.MentionsEnabled)
                 continue;
+
+            // Resolved per-guild/channel level: channel-scope wins over guild-scope; absent = default.
+            // "nothing" silences the whole scope (mentions included); "mentions"/"all" let a mention through.
+            if (guildId.HasValue)
+            {
+                var level = channelLevels.TryGetValue(mentionedUserId, out var cl)
+                    ? cl
+                    : guildLevels.GetValueOrDefault(mentionedUserId, NotificationLevel.Default);
+                if (level == NotificationLevel.Nothing)
+                    continue;
+            }
 
             if (await _userMute.IsMutedAsync(mentionedUserId, actorId, MuteTargetType.User, now))
                 continue;

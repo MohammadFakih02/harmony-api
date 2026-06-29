@@ -17,3 +17,15 @@ public record NotificationResponse(
     bool IsRead,
     long CreatedAt
 );
+
+/// <summary>
+/// The caller's notification settings for one guild: the resolved guild-scope level (defaulting to
+/// "mentions" when unset) plus only the channels for which an explicit per-channel override exists.
+/// A channel absent from <see cref="Channels"/> inherits the guild level.
+/// </summary>
+public record GuildNotificationSettingsResponse(
+    string GuildLevel,
+    IEnumerable<ChannelNotificationSettingResponse> Channels
+);
+
+public record ChannelNotificationSettingResponse(long ChannelId, string Level);

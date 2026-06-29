@@ -12,6 +12,13 @@ public class Guild
     public int MemberCount { get; set; }
     public long CreatedAt { get; set; }
 
+    // Welcome / system messages (§5.31, roadmap E#16). welcome_channel_id null = post to the
+    // default text channel; welcome_message null = use a built-in default greeting; system
+    // messages (e.g. member-join notices) are suppressed entirely when SystemMessagesEnabled is false.
+    public long? WelcomeChannelId { get; set; }
+    public string? WelcomeMessage { get; set; }
+    public bool SystemMessagesEnabled { get; set; } = true;
+
     // Navigation
     public User Owner { get; set; } = null!;
     public ICollection<Channel> Channels { get; set; } = [];

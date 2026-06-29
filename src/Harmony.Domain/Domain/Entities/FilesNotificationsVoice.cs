@@ -50,6 +50,23 @@ public class NotificationPreference
     public User User { get; set; } = null!;
 }
 
+/// <summary>
+/// A user's per-guild or per-channel notification level (§5.31, roadmap E#16). Distinct from the
+/// global <see cref="NotificationPreference"/> (which is the master switch) and from
+/// <c>UserMutes</c> (temporary silencing). Resolution for a notification is channel-scope →
+/// guild-scope → default "mentions". A missing row everywhere means the default applies.
+/// </summary>
+public class NotificationSetting
+{
+    public long UserId { get; set; }
+    public string ScopeType { get; set; } = null!; // "guild" | "channel"
+    public long ScopeId { get; set; } // guildId or channelId, per ScopeType
+    public string Level { get; set; } = null!; // "all" | "mentions" | "nothing"
+
+    // Navigation
+    public User User { get; set; } = null!;
+}
+
 public class UserPushSubscription
 {
     public long Id { get; set; }
