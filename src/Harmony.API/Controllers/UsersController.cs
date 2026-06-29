@@ -166,6 +166,23 @@ public class UsersController : ControllerBase
         return Ok(ToProfileResponse(user));
     }
 
+    // PATCH /api/users/me/dm-privacy — who may open a new DM with me ("everyone" | "friends_only").
+    [HttpPatch("me/dm-privacy")]
+    public async Task<IActionResult> UpdateDmPrivacy([FromBody] UpdateDmPrivacyRequest request)
+    {
+        if (!DmPrivacy.IsValid(request.DmPrivacy))
+            return BadRequest(new { error = "Invalid DM privacy value." });
+
+        var user = await _users.GetByIdAsync(GetUserId());
+        if (user is null)
+            return NotFound();
+
+        user.DmPrivacy = request.DmPrivacy;
+        await _users.SaveChangesAsync();
+
+        return Ok(ToProfileResponse(user));
+    }
+
     // GET /api/users/presence?ids=1,2,3 — effective status + custom message for the member list
     [HttpGet("presence")]
     public async Task<IActionResult> GetPresence([FromQuery] string? ids)
@@ -410,7 +427,8 @@ public class UsersController : ControllerBase
             u.PreferredStatusExpiresAt,
             u.AccountStatus,
             u.CreatedAt,
-            u.DateOfBirth?.ToString("yyyy-MM-dd")
+            u.DateOfBirth?.ToString("yyyy-MM-dd"),
+            u.DmPrivacy
         );
 
     private static PublicUserResponse ToPublicResponse(User u) =>

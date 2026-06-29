@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using Harmony.Application.DTOs.Requests;
 using Harmony.Application.DTOs.Responses;
 using Harmony.Domain.Domain.Entities;
 using Harmony.Domain.Interfaces.Repositories;
@@ -22,10 +23,15 @@ namespace Harmony.API.Controllers;
 public class NotificationsController : ControllerBase
 {
     private readonly INotificationRepository _notifications;
+    private readonly INotificationPreferenceRepository _preferences;
 
-    public NotificationsController(INotificationRepository notifications)
+    public NotificationsController(
+        INotificationRepository notifications,
+        INotificationPreferenceRepository preferences
+    )
     {
         _notifications = notifications;
+        _preferences = preferences;
     }
 
     // GET /api/notifications?limit=20 — most recent first.
@@ -114,6 +120,63 @@ public class NotificationsController : ControllerBase
         await _notifications.DeleteAllForUserAsync(userId.Value);
         return NoContent();
     }
+
+    // GET /api/notifications/preferences — the caller's toggles. A user with no row yet reads
+    // all-true defaults (the same null-means-default contract the repository documents).
+    [HttpGet("preferences")]
+    public async Task<IActionResult> GetPreferences()
+    {
+        var userId = GetUserId();
+        if (userId is null)
+            return Unauthorized();
+        var pref = await _preferences.GetAsync(userId.Value);
+        return Ok(ToResponse(pref));
+    }
+
+    // PATCH /api/notifications/preferences — partial update; null flags are left unchanged.
+    // Creates the row on first save (pre-feature users have none), mirroring the registration seed.
+    [HttpPatch("preferences")]
+    public async Task<IActionResult> UpdatePreferences(
+        [FromBody] UpdateNotificationPreferenceRequest request
+    )
+    {
+        var userId = GetUserId();
+        if (userId is null)
+            return Unauthorized();
+
+        var pref = await _preferences.GetAsync(userId.Value);
+        if (pref is null)
+        {
+            pref = new NotificationPreference { UserId = userId.Value };
+            await _preferences.AddAsync(pref);
+        }
+
+        if (request.MentionsEnabled is { } mentions)
+            pref.MentionsEnabled = mentions;
+        if (request.RepliesEnabled is { } replies)
+            pref.RepliesEnabled = replies;
+        if (request.FriendRequests is { } friends)
+            pref.FriendRequests = friends;
+        if (request.GuildInvites is { } invites)
+            pref.GuildInvites = invites;
+        if (request.PushEnabled is { } push)
+            pref.PushEnabled = push;
+
+        await _preferences.SaveChangesAsync();
+        return Ok(ToResponse(pref));
+    }
+
+    // A null row means "every preference at its default (enabled)".
+    private static NotificationPreferenceResponse ToResponse(NotificationPreference? p) =>
+        p is null
+            ? new NotificationPreferenceResponse(true, true, true, true, true)
+            : new NotificationPreferenceResponse(
+                p.MentionsEnabled,
+                p.RepliesEnabled,
+                p.FriendRequests,
+                p.GuildInvites,
+                p.PushEnabled
+            );
 
     private long? GetUserId()
     {

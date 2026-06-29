@@ -26,6 +26,7 @@ public class DirectMessagesController : ControllerBase
     private readonly IDirectMessageRepository _dms;
     private readonly IUserRepository _users;
     private readonly IUserBlockRepository _blocks;
+    private readonly IFriendRepository _friends;
     private readonly ISnowflakeIdGenerator _snowflake;
     private readonly IMessageService _messageService;
     private readonly IUnreadCountService _unread;
@@ -35,6 +36,7 @@ public class DirectMessagesController : ControllerBase
         IDirectMessageRepository dms,
         IUserRepository users,
         IUserBlockRepository blocks,
+        IFriendRepository friends,
         ISnowflakeIdGenerator snowflake,
         IMessageService messageService,
         IUnreadCountService unread,
@@ -44,6 +46,7 @@ public class DirectMessagesController : ControllerBase
         _dms = dms;
         _users = users;
         _blocks = blocks;
+        _friends = friends;
         _snowflake = snowflake;
         _messageService = messageService;
         _unread = unread;
@@ -75,6 +78,19 @@ public class DirectMessagesController : ControllerBase
         }
         else
         {
+            // Opening a *new* conversation: honour the target's DM-privacy. "friends_only"
+            // blocks strangers; an accepted friendship (either direction) always passes.
+            // Existing conversations above are exempt — this only gates first contact.
+            if (target.DmPrivacy == DmPrivacy.FriendsOnly)
+            {
+                var friendship = await _friends.GetBetweenAsync(me, request.TargetUserId);
+                if (friendship is not { Status: "accepted" })
+                    return StatusCode(
+                        StatusCodes.Status403Forbidden,
+                        new { error = "This user only accepts direct messages from friends." }
+                    );
+            }
+
             channelId = _snowflake.NextId();
             await _dms.CreateAsync(
                 channelId,
