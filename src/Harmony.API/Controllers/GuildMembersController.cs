@@ -87,5 +87,30 @@ public class GuildMembersController : ControllerBase
         return NoContent();
     }
 
+    // PATCH /api/guilds/{guildId}/members/me/nickname — set your OWN server nickname (any member).
+    // ("me" can't match the {userId:long} routes, so this stays unambiguous.)
+    [HttpPatch("me/nickname")]
+    public async Task<IActionResult> SetOwnNickname(
+        long guildId,
+        [FromBody] SetNicknameRequest request
+    )
+    {
+        await _members.SetOwnNicknameAsync(guildId, GetUserId(), request.Nickname);
+        return NoContent();
+    }
+
+    // PATCH /api/guilds/{guildId}/members/{userId}/nickname — rename another member (ManageNicknames).
+    [HttpPatch("{userId:long}/nickname")]
+    [RequirePermission(Permission.ManageNicknames)]
+    public async Task<IActionResult> SetNickname(
+        long guildId,
+        long userId,
+        [FromBody] SetNicknameRequest request
+    )
+    {
+        await _members.SetNicknameAsync(guildId, GetUserId(), userId, request.Nickname);
+        return NoContent();
+    }
+
     private long GetUserId() => long.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
 }

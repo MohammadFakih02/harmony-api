@@ -146,7 +146,7 @@ public class GuildMemberService : IGuildMemberService
             changes: new { until },
             ct: ct
         );
-        await BroadcastMemberUpdatedAsync(guildId, targetId, until);
+        await BroadcastMemberUpdatedAsync(guildId, target);
     }
 
     public async Task ClearTimeoutAsync(
@@ -169,7 +169,7 @@ public class GuildMemberService : IGuildMemberService
             changes: new { until = (long?)null },
             ct: ct
         );
-        await BroadcastMemberUpdatedAsync(guildId, targetId, null);
+        await BroadcastMemberUpdatedAsync(guildId, target);
     }
 
     public async Task<IReadOnlyList<GuildBanResponse>> GetBansAsync(
@@ -202,9 +202,61 @@ public class GuildMemberService : IGuildMemberService
             .ToList();
     }
 
+    public async Task SetOwnNicknameAsync(
+        long guildId,
+        long userId,
+        string? nickname,
+        CancellationToken ct = default
+    )
+    {
+        var member = await _guilds.GetMemberAsync(guildId, userId);
+        if (member is null)
+            throw new KeyNotFoundException("You are not a member of this guild.");
+
+        member.Nickname = Normalize(nickname);
+        await _guilds.SaveChangesAsync();
+
+        // Self-service rename — no audit entry (would flood the log); members can already see it.
+        await BroadcastMemberUpdatedAsync(guildId, member);
+    }
+
+    public async Task SetNicknameAsync(
+        long guildId,
+        long actorId,
+        long targetId,
+        string? nickname,
+        CancellationToken ct = default
+    )
+    {
+        // A moderator renaming themselves goes through SetOwnNicknameAsync; this path is for others,
+        // so the shared guard (not-self / not-owner / exists) applies as-is.
+        var target = await GuardTargetAsync(guildId, actorId, targetId);
+
+        var normalized = Normalize(nickname);
+        target.Nickname = normalized;
+        await _guilds.SaveChangesAsync();
+
+        await _audit.LogAsync(
+            guildId,
+            actorId,
+            AuditLogAction.MemberNicknameUpdate,
+            targetId: targetId,
+            changes: new { nickname = normalized },
+            ct: ct
+        );
+        await BroadcastMemberUpdatedAsync(guildId, target);
+    }
+
     // -------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------
+
+    /// <summary>Trims a nickname and collapses blank to null (clears back to the username).</summary>
+    private static string? Normalize(string? nickname)
+    {
+        var trimmed = nickname?.Trim();
+        return string.IsNullOrEmpty(trimmed) ? null : trimmed;
+    }
 
     /// <summary>Hierarchy guard shared by kick/ban/timeout. Returns the tracked target member.</summary>
     private async Task<GuildMember> GuardTargetAsync(long guildId, long actorId, long targetId)
@@ -254,13 +306,20 @@ public class GuildMemberService : IGuildMemberService
         }
     }
 
-    private async Task BroadcastMemberUpdatedAsync(long guildId, long targetId, long? until)
+    /// <summary>Broadcasts the member's full mutable state (nickname + timeout) so a client applying
+    /// one change never clobbers the other.</summary>
+    private async Task BroadcastMemberUpdatedAsync(long guildId, GuildMember member)
     {
         try
         {
             await _broadcaster.BroadcastMemberUpdatedAsync(
                 guildId,
-                new MemberUpdatedPayload(guildId, targetId, until)
+                new MemberUpdatedPayload(
+                    guildId,
+                    member.UserId,
+                    member.Nickname,
+                    member.CommunicationDisabledUntil
+                )
             );
         }
         catch (Exception ex)
@@ -269,7 +328,7 @@ public class GuildMemberService : IGuildMemberService
                 ex,
                 "Failed to broadcast member update: guild={GuildId} target={TargetId}",
                 guildId,
-                targetId
+                member.UserId
             );
         }
     }

@@ -25,6 +25,7 @@ public class UsersController : ControllerBase
     private readonly IPresenceService _presence;
     private readonly IUserBlockRepository _blocks;
     private readonly IFriendRepository _friends;
+    private readonly IUserNicknameRepository _nicknames;
     private readonly IHubBroadcaster _broadcaster;
 
     public UsersController(
@@ -34,6 +35,7 @@ public class UsersController : ControllerBase
         IPresenceService presence,
         IUserBlockRepository blocks,
         IFriendRepository friends,
+        IUserNicknameRepository nicknames,
         IHubBroadcaster broadcaster
     )
     {
@@ -43,6 +45,7 @@ public class UsersController : ControllerBase
         _presence = presence;
         _blocks = blocks;
         _friends = friends;
+        _nicknames = nicknames;
         _broadcaster = broadcaster;
     }
 
@@ -310,6 +313,81 @@ public class UsersController : ControllerBase
             });
 
         return Ok(result);
+    }
+
+    // -------------------------------------------------------------------------
+    // Friend nicknames — a private, one-directional alias only the caller sees. Independent of
+    // friendship/guild membership; used as the friend/DM display name. (Server nicknames are a
+    // separate, guild-scoped thing on GuildMembersController.)
+    // -------------------------------------------------------------------------
+
+    // GET /api/users/me/nicknames — the caller's whole personal nickname map (targetId → nickname).
+    [HttpGet("me/nicknames")]
+    public async Task<IActionResult> GetMyNicknames()
+    {
+        var rows = await _nicknames.GetByOwnerAsync(GetUserId());
+        return Ok(rows.ToDictionary(n => n.TargetId.ToString(CultureInfo.InvariantCulture), n => n.Nickname));
+    }
+
+    // PUT /api/users/{userId}/nickname — set (or, when blank, clear) my private alias for {userId}.
+    [HttpPut("{userId:long}/nickname")]
+    public async Task<IActionResult> SetNickname(long userId, [FromBody] SetNicknameRequest request)
+    {
+        var me = GetUserId();
+        if (userId == me)
+            return BadRequest(new { error = "You cannot set a nickname for yourself." });
+
+        var nickname = string.IsNullOrWhiteSpace(request.Nickname) ? null : request.Nickname.Trim();
+        var existing = await _nicknames.GetAsync(me, userId);
+
+        if (nickname is null)
+        {
+            // Blank PUT clears, mirroring DELETE — keeps the client's set/clear path uniform.
+            if (existing is not null)
+            {
+                _nicknames.Remove(existing);
+                await _nicknames.SaveChangesAsync();
+            }
+            return NoContent();
+        }
+
+        if (await _users.GetByIdAsync(userId) is null)
+            return NotFound(new { error = "User not found." });
+
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        if (existing is null)
+        {
+            await _nicknames.AddAsync(
+                new UserNickname
+                {
+                    OwnerId = me,
+                    TargetId = userId,
+                    Nickname = nickname,
+                    CreatedAt = now,
+                    UpdatedAt = now,
+                }
+            );
+        }
+        else
+        {
+            existing.Nickname = nickname;
+            existing.UpdatedAt = now;
+        }
+        await _nicknames.SaveChangesAsync();
+        return NoContent();
+    }
+
+    // DELETE /api/users/{userId}/nickname — idempotent clear.
+    [HttpDelete("{userId:long}/nickname")]
+    public async Task<IActionResult> ClearNickname(long userId)
+    {
+        var existing = await _nicknames.GetAsync(GetUserId(), userId);
+        if (existing is not null)
+        {
+            _nicknames.Remove(existing);
+            await _nicknames.SaveChangesAsync();
+        }
+        return NoContent();
     }
 
     // -------------------------------------------------------------------------

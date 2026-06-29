@@ -38,6 +38,7 @@ public class HarmonyDbContext
     public DbSet<UserBlock> UserBlocks => Set<UserBlock>();
     public DbSet<UserMute> UserMutes => Set<UserMute>();
     public DbSet<DirectMessageChannel> DirectMessageChannels => Set<DirectMessageChannel>();
+    public DbSet<UserNickname> UserNicknames => Set<UserNickname>();
     public DbSet<FileAttachment> FileAttachments => Set<FileAttachment>();
     public DbSet<Notification> Notifications => Set<Notification>();
     public DbSet<NotificationPreference> NotificationPreferences => Set<NotificationPreference>();

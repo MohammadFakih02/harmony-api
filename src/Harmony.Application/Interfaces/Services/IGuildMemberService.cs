@@ -48,4 +48,23 @@ public interface IGuildMemberService
 
     /// <summary>Lists the guild's bans (newest first), enriched with banned-user/banner identity.</summary>
     Task<IReadOnlyList<GuildBanResponse>> GetBansAsync(long guildId, CancellationToken ct = default);
+
+    /// <summary>Sets the caller's own server nickname (always permitted for any member). Blank
+    /// clears it back to the username. Broadcasts the change to the guild; no audit entry.</summary>
+    Task SetOwnNicknameAsync(
+        long guildId,
+        long userId,
+        string? nickname,
+        CancellationToken ct = default
+    );
+
+    /// <summary>Sets another member's server nickname (the endpoint gates ManageNicknames). Applies
+    /// the hierarchy guard (not the owner), audits a <c>member_nickname_update</c>, and broadcasts.</summary>
+    Task SetNicknameAsync(
+        long guildId,
+        long actorId,
+        long targetId,
+        string? nickname,
+        CancellationToken ct = default
+    );
 }

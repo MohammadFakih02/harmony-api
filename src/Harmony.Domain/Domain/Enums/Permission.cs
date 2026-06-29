@@ -45,6 +45,7 @@ public enum Permission : long
     ViewAuditLog = 1L << 24,
     TimeoutMembers = 1L << 25,
     ManageInvites = 1L << 26,
+    ManageNicknames = 1L << 27, // change OTHER members' guild nicknames (changing your own is always allowed)
 
     /// <summary>
     /// Default permission set granted to the <c>@everyone</c> role on guild creation:
