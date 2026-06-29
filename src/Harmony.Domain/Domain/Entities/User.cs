@@ -22,6 +22,9 @@ public class User : IdentityUser<long>
     /// <summary>Unix-ms when <see cref="PreferredStatus"/> auto-reverts to online; null = never.</summary>
     public long? PreferredStatusExpiresAt { get; set; }
     public string AccountStatus { get; set; } = "active";
+
+    /// <summary>Who may open a new DM with this user: "everyone" | "friends_only". Default "everyone".</summary>
+    public string DmPrivacy { get; set; } = "everyone";
     public long CreatedAt { get; set; }
 
     // Navigation

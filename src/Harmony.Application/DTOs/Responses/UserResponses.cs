@@ -15,7 +15,9 @@ public record UserProfileResponse(
     string AccountStatus,
     long CreatedAt,
     // ISO "yyyy-MM-dd" — private; only the owner sees their raw DOB (others see Age below).
-    string? DateOfBirth
+    string? DateOfBirth,
+    // "everyone" | "friends_only" — who may open a new DM with the owner. Private setting.
+    string DmPrivacy
 );
 
 // Returned per user from /api/users/presence — effective status + (when visible) custom message
@@ -48,4 +50,14 @@ public record MuteResponse(
     long TargetId,
     long? MutedUntil,
     long CreatedAt
+);
+
+// Returned for /api/notifications/preferences — the caller's notification toggles.
+// A user with no row yet (registered before the feature, or never saved) reads all-true defaults.
+public record NotificationPreferenceResponse(
+    bool MentionsEnabled,
+    bool RepliesEnabled,
+    bool FriendRequests,
+    bool GuildInvites,
+    bool PushEnabled
 );

@@ -25,6 +25,11 @@ public class UserConfiguration : IEntityTypeConfiguration<User>
             .Property(u => u.PreferredStatusExpiresAt)
             .HasColumnName("preferred_status_expires_at");
         builder.Property(u => u.AccountStatus).HasMaxLength(16).HasDefaultValue("active");
+        builder
+            .Property(u => u.DmPrivacy)
+            .HasColumnName("dm_privacy")
+            .HasMaxLength(16)
+            .HasDefaultValue("everyone");
         builder.Property(u => u.CreatedAt).IsRequired();
 
         // Use snake_case column names to match the schema

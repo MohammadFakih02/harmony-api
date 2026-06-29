@@ -17,6 +17,18 @@ public record UpdateStatusRequest(string Status, int? ExpiresInMinutes);
 // A null/empty Message clears it. ExpiresInMinutes (optional) auto-clears it later.
 public record UpdateCustomStatusRequest(string? Message, int? ExpiresInMinutes);
 
+// PATCH /api/users/me/dm-privacy — who may open a new DM with me: "everyone" | "friends_only".
+public record UpdateDmPrivacyRequest(string DmPrivacy);
+
+// PATCH /api/notifications/preferences — partial update; each null flag is left unchanged.
+public record UpdateNotificationPreferenceRequest(
+    bool? MentionsEnabled,
+    bool? RepliesEnabled,
+    bool? FriendRequests,
+    bool? GuildInvites,
+    bool? PushEnabled
+);
+
 // POST /api/mutes — mute a guild, channel, or user. MutedUntil is an absolute
 // unix-ms timestamp; null mutes indefinitely (until manual unmute).
 public record CreateMuteRequest(string TargetType, long TargetId, long? MutedUntil);
