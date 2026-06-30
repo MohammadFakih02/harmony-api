@@ -210,6 +210,64 @@ public class FileServiceTests
         file.IsConfirmed.Should().BeFalse();
     }
 
+    [Fact]
+    public async Task Confirm_NonImage_WithMatchingSignature_SucceedsWithNullDimensions()
+    {
+        var (sut, files, _, storage) = BuildSut();
+        var file = PendingFile();
+        file.Filename = "doc.pdf";
+        file.ContentType = "application/pdf";
+        files.Setup(f => f.GetByIdAsync(FileId)).ReturnsAsync(file);
+        storage.Setup(s => s.StatObjectAsync(file.MinioKey, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new StoredObjectInfo(2048, "application/pdf"));
+        storage.Setup(s => s.ReadObjectHeadAsync(file.MinioKey, It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync("%PDF-1.7"u8.ToArray());
+
+        var result = await sut.ConfirmAsync(UserId, FileId);
+
+        result.IsConfirmed.Should().BeTrue();
+        result.ContentType.Should().Be("application/pdf");
+        result.Width.Should().BeNull();
+        result.Height.Should().BeNull();
+        // Non-image path must not run the image decode.
+        storage.Verify(
+            s => s.TryReadImageDimensionsAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task Confirm_NonImage_WithMismatchedBytes_ThrowsArgument()
+    {
+        var (sut, files, _, storage) = BuildSut();
+        var file = PendingFile();
+        file.ContentType = "application/pdf";
+        files.Setup(f => f.GetByIdAsync(FileId)).ReturnsAsync(file);
+        storage.Setup(s => s.StatObjectAsync(file.MinioKey, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new StoredObjectInfo(2048, "application/pdf"));
+        // The declared type is allowed, but the bytes are not a PDF.
+        storage.Setup(s => s.ReadObjectHeadAsync(file.MinioKey, It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync("this is not a pdf"u8.ToArray());
+
+        await sut.Invoking(s => s.ConfirmAsync(UserId, FileId))
+            .Should().ThrowAsync<ArgumentException>();
+        file.IsConfirmed.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Confirm_StoreReportsDisallowedType_ThrowsArgument()
+    {
+        var (sut, files, _, storage) = BuildSut();
+        var file = PendingFile();
+        files.Setup(f => f.GetByIdAsync(FileId)).ReturnsAsync(file);
+        // Authoritative store type is not on the allowlist (defense-in-depth re-check).
+        storage.Setup(s => s.StatObjectAsync(file.MinioKey, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new StoredObjectInfo(2048, "application/x-msdownload"));
+
+        await sut.Invoking(s => s.ConfirmAsync(UserId, FileId))
+            .Should().ThrowAsync<ArgumentException>();
+        file.IsConfirmed.Should().BeFalse();
+    }
+
     // ---- Download ---------------------------------------------------------
 
     private static FileAttachment ConfirmedFile()
