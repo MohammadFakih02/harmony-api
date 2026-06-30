@@ -17,22 +17,44 @@ namespace Harmony.Application.Services;
 ///     the key, so it never needs URL-encoding.
 ///   - The client's declared size/content-type only gate the presign; confirm overwrites them with
 ///     the object store's authoritative values (NON-NEGOTIABLE #8 — never trust client claims).
-///   - Allowlist is images-only this branch, so ImageSharp's decode at confirm is a real magic-byte
-///     check: a file that declares an image type but does not decode is rejected.
+///   - Confirm verifies the object's actual bytes match the declared type: images go through
+///     ImageSharp's decode (which also yields dimensions), every other allowed type through the
+///     pure <see cref="FileSignatures"/> magic-byte sniff. A file declaring a type its bytes don't
+///     match is rejected.
 /// </summary>
 public sealed class FileService : IFileService
 {
     public const long MaxFileSizeBytes = 50L * 1024 * 1024; // 50 MB
+
+    // Bytes pulled at confirm for the non-image magic-byte sniff (a range request).
+    private const int SniffByteCount = 64;
 
     private static readonly TimeSpan PresignExpiry = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan DownloadUrlExpiry = TimeSpan.FromMinutes(15);
 
     private static readonly HashSet<string> AllowedContentTypes = new(StringComparer.OrdinalIgnoreCase)
     {
+        // Images (validated by ImageSharp decode at confirm).
         "image/png",
         "image/jpeg",
         "image/gif",
         "image/webp",
+        // Video.
+        "video/mp4",
+        "video/webm",
+        "video/quicktime",
+        // Audio.
+        "audio/mpeg",
+        "audio/ogg",
+        "audio/wav",
+        "audio/webm",
+        // Documents.
+        "application/pdf",
+        "text/plain",
+        "text/csv",
+        "text/markdown",
+        // Archives.
+        "application/zip",
     };
 
     private readonly IFileAttachmentRepository _files;
@@ -145,13 +167,29 @@ public sealed class FileService : IFileService
         file.SizeBytes = stat.Size;
         file.ContentType = stat.ContentType;
 
-        // The allowlist is images-only, so the decode below is also the magic-byte check.
-        var dims = await _storage.TryReadImageDimensionsAsync(file.MinioKey, ct);
-        if (dims is not { } d)
-            throw new ArgumentException("Uploaded object is not a valid image.");
+        // Defense-in-depth: the presign already gated the type, but re-check the store's
+        // authoritative content-type before trusting it.
+        if (!AllowedContentTypes.Contains(file.ContentType))
+            throw new ArgumentException($"Content type '{file.ContentType}' is not allowed.");
 
-        file.Width = d.Width;
-        file.Height = d.Height;
+        // Verify the bytes actually match the declared type. Images decode through ImageSharp
+        // (which also yields dimensions); every other type is sniffed by its magic bytes.
+        if (FileSignatures.IsImage(file.ContentType))
+        {
+            var dims = await _storage.TryReadImageDimensionsAsync(file.MinioKey, ct);
+            if (dims is not { } d)
+                throw new ArgumentException("Uploaded object is not a valid image.");
+
+            file.Width = d.Width;
+            file.Height = d.Height;
+        }
+        else
+        {
+            var head = await _storage.ReadObjectHeadAsync(file.MinioKey, SniffByteCount, ct);
+            if (head is null || !FileSignatures.IsConsistent(file.ContentType, head))
+                throw new ArgumentException("Uploaded file does not match its declared type.");
+        }
+
         file.IsConfirmed = true;
         await _files.SaveChangesAsync();
 

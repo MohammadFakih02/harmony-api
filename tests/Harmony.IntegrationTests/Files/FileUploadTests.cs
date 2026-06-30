@@ -62,6 +62,74 @@ public class FileUploadTests : ApiTestBase, IClassFixture<HarmonyWebApplicationF
         file.SizeBytes.Should().Be(SmallPng.Length);
     }
 
+    // A minimal PDF — only the leading "%PDF" matters to the magic-byte sniff.
+    private static readonly byte[] SmallPdf =
+        System.Text.Encoding.ASCII.GetBytes("%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF");
+
+    [Fact]
+    public async Task PresignUploadConfirm_NonImage_ConfirmsWithNullDimensions()
+    {
+        var ownerToken = await RegisterAsync("filepdf1", "filepdf1@test.com");
+        var (guildId, _) = await CreateGuildAsync(ownerToken);
+        var channelId = await CreateChannelAsync(ownerToken, guildId);
+
+        Auth(ownerToken);
+        var presignResp = await Client.PostAsJsonAsync(
+            $"/api/guilds/{guildId}/channels/{channelId}/files/presign",
+            new { filename = "doc.pdf", contentType = "application/pdf", sizeBytes = SmallPdf.Length }
+        );
+        presignResp.EnsureSuccessStatusCode();
+        var presign = await presignResp.Content.ReadFromJsonAsync<PresignResponse>();
+
+        using var http = new HttpClient();
+        var content = new ByteArrayContent(SmallPdf);
+        content.Headers.ContentType = new MediaTypeHeaderValue("application/pdf");
+        (await http.PutAsync(presign!.UploadUrl, content)).EnsureSuccessStatusCode();
+
+        Auth(ownerToken);
+        var confirmResp = await Client.PostAsync(
+            $"/api/guilds/{guildId}/channels/{channelId}/files/{presign.FileId}/confirm",
+            null
+        );
+        confirmResp.EnsureSuccessStatusCode();
+        var file = await confirmResp.Content.ReadFromJsonAsync<FileResponse>();
+
+        file!.IsConfirmed.Should().BeTrue();
+        file.ContentType.Should().Be("application/pdf");
+        file.Width.Should().BeNull();
+        file.Height.Should().BeNull();
+        file.SizeBytes.Should().Be(SmallPdf.Length);
+    }
+
+    [Fact]
+    public async Task Confirm_BytesDoNotMatchDeclaredType_IsBadRequest()
+    {
+        var ownerToken = await RegisterAsync("filepdf2", "filepdf2@test.com");
+        var (guildId, _) = await CreateGuildAsync(ownerToken);
+        var channelId = await CreateChannelAsync(ownerToken, guildId);
+
+        Auth(ownerToken);
+        var presignResp = await Client.PostAsJsonAsync(
+            $"/api/guilds/{guildId}/channels/{channelId}/files/presign",
+            new { filename = "fake.pdf", contentType = "application/pdf", sizeBytes = 16 }
+        );
+        presignResp.EnsureSuccessStatusCode();
+        var presign = await presignResp.Content.ReadFromJsonAsync<PresignResponse>();
+
+        // Declared application/pdf, but the bytes are not a PDF.
+        using var http = new HttpClient();
+        var content = new ByteArrayContent(System.Text.Encoding.ASCII.GetBytes("not a pdf at all"));
+        content.Headers.ContentType = new MediaTypeHeaderValue("application/pdf");
+        (await http.PutAsync(presign!.UploadUrl, content)).EnsureSuccessStatusCode();
+
+        Auth(ownerToken);
+        var confirmResp = await Client.PostAsync(
+            $"/api/guilds/{guildId}/channels/{channelId}/files/{presign.FileId}/confirm",
+            null
+        );
+        confirmResp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
     [Fact]
     public async Task Presign_WhenAttachFilesDeniedByOverride_IsForbidden()
     {
