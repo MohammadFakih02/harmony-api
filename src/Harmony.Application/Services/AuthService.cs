@@ -74,9 +74,14 @@ public class AuthService : IAuthService
         CancellationToken ct = default
     )
     {
-        var user = await _identityService.FindByEmailAsync(request.Email);
+        // Resolve by email first, then fall back to username. Both are globally unique,
+        // so this is unambiguous — and it avoids an '@' heuristic (ASP.NET Identity allows
+        // '@' in usernames by default, so "contains @" wouldn't reliably mean "is an email").
+        var user =
+            await _identityService.FindByEmailAsync(request.Identifier)
+            ?? await _identityService.FindByNameAsync(request.Identifier);
         if (user is null || !await _identityService.CheckPasswordAsync(user, request.Password))
-            throw new AuthenticationException("Invalid email or password.");
+            throw new AuthenticationException("Invalid credentials.");
 
         if (user.AccountStatus != "active")
             throw new AuthenticationException("Account is not active.");
