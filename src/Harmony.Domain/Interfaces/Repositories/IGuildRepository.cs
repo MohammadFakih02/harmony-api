@@ -19,5 +19,12 @@ public interface IGuildRepository
     /// Hot-path lean variant for the unread fan-out. Backed by IX_GuildMembers_guild_id.
     /// </summary>
     Task<List<long>> GetMemberIdsAsync(long guildId);
+
+    /// <summary>
+    /// Returns the ids of every guild the user is a member of — lean (id-only, no tracking).
+    /// Used to fan presence (online/offline/status) out to the user's guild groups so co-members
+    /// see their status live, not just their friends.
+    /// </summary>
+    Task<List<long>> GetGuildIdsForUserAsync(long userId);
     Task SaveChangesAsync();
 }

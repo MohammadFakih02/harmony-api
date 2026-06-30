@@ -6,40 +6,80 @@ namespace Harmony.Infrastructure.RabbitMQ;
 
 public class RabbitMQConnection : IAsyncDisposable
 {
-    private readonly Lazy<Task<IConnection>> _lazyConnection;
     private readonly ILogger<RabbitMQConnection> _logger;
     private readonly ConnectionFactory _factory;
+    private readonly string _connectionString;
+
+    // Guards (re)connection so concurrent callers can't open duplicate connections. We deliberately
+    // do NOT use Lazy<Task<IConnection>>: a Lazy caches the faulted task forever if the very first
+    // connect throws (broker not up at boot), permanently poisoning the process. This pattern caches
+    // a connection only on success and re-attempts on the next call.
+    private readonly SemaphoreSlim _gate = new(1, 1);
+    private IConnection? _connection;
+    private bool _disposed;
 
     public RabbitMQConnection(IConfiguration configuration, ILogger<RabbitMQConnection> logger)
     {
         _logger = logger;
 
-        var connectionString =
+        _connectionString =
             configuration.GetConnectionString("RabbitMQ") ?? "amqp://guest:guest@localhost:5672";
 
         _factory = new ConnectionFactory
         {
-            Uri = new Uri(connectionString),
+            Uri = new Uri(_connectionString),
             AutomaticRecoveryEnabled = true,
             NetworkRecoveryInterval = TimeSpan.FromSeconds(10),
         };
+    }
 
-        _lazyConnection = new Lazy<Task<IConnection>>(async () =>
+    /// <summary>
+    /// Returns a live connection, establishing (or re-establishing) one on demand. Unlike a
+    /// <c>Lazy&lt;Task&gt;</c>, a failed attempt is never cached — the next call retries — so a broker
+    /// that is briefly unavailable at startup or between restarts can never poison the process.
+    /// Consumers also use the returned connection to subscribe to its shutdown events.
+    /// </summary>
+    public async Task<IConnection> GetConnectionAsync()
+    {
+        var existing = _connection;
+        if (existing is { IsOpen: true })
+            return existing;
+
+        await _gate.WaitAsync();
+        try
         {
-            _logger.LogInformation(
-                "Connecting to RabbitMQ asynchronously at {Uri}...",
-                connectionString
-            );
+            if (_connection is { IsOpen: true })
+                return _connection;
+
+            // Drop a dead/closed connection before reconnecting.
+            if (_connection is not null)
+            {
+                try
+                {
+                    await _connection.DisposeAsync();
+                }
+                catch
+                { /* ignore */
+                }
+                _connection = null;
+            }
+
+            _logger.LogInformation("Connecting to RabbitMQ at {Uri}...", _connectionString);
             var conn = await _factory.CreateConnectionAsync();
-            _logger.LogInformation("RabbitMQ connection established.");
             await DeclareTopologyAsync(conn);
+            _connection = conn;
+            _logger.LogInformation("RabbitMQ connection established.");
             return conn;
-        });
+        }
+        finally
+        {
+            _gate.Release();
+        }
     }
 
     public async Task<IChannel> CreateChannelAsync()
     {
-        var connection = await _lazyConnection.Value;
+        var connection = await GetConnectionAsync();
         return await connection.CreateChannelAsync();
     }
 
@@ -183,10 +223,22 @@ public class RabbitMQConnection : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        if (_lazyConnection.IsValueCreated)
+        if (_disposed)
+            return;
+        _disposed = true;
+
+        if (_connection is not null)
         {
-            var connection = await _lazyConnection.Value;
-            await connection.DisposeAsync();
+            try
+            {
+                await _connection.DisposeAsync();
+            }
+            catch
+            { /* ignore */
+            }
+            _connection = null;
         }
+
+        _gate.Dispose();
     }
 }

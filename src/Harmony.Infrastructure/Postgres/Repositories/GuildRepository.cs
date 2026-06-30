@@ -76,5 +76,12 @@ public class GuildRepository : IGuildRepository
     public async Task<List<long>> GetMemberIdsAsync(long guildId) =>
         await _db.GuildMembers.Where(m => m.GuildId == guildId).Select(m => m.UserId).ToListAsync();
 
+    public async Task<List<long>> GetGuildIdsForUserAsync(long userId) =>
+        await _db
+            .GuildMembers.AsNoTracking()
+            .Where(m => m.UserId == userId)
+            .Select(m => m.GuildId)
+            .ToListAsync();
+
     public async Task SaveChangesAsync() => await _db.SaveChangesAsync();
 }

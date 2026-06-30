@@ -108,38 +108,181 @@ public class ScyllaMessageConsumer : BackgroundService
             .Build();
     }
 
+    // Self-healing reconnect backoff (the consume session ending isn't fatal — we re-subscribe).
+    // Capped low (5s, not 30s): this is *connection recovery*, not the message-retry ladder, so a
+    // tight cadence matters — a restarting broker answers ping in ~2s but refuses AMQP connections
+    // for ~15-20s ("connection.start was never received"), and we want to re-subscribe within a few
+    // seconds of it becoming ready rather than sitting in a long backoff.
+    private static readonly TimeSpan InitialReconnectDelay = TimeSpan.FromSeconds(1);
+    private static readonly TimeSpan MaxReconnectDelay = TimeSpan.FromSeconds(5);
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         _stoppingToken = stoppingToken;
-        _channel = await _connection.CreateChannelAsync();
+
+        // A BackgroundService that subscribes once and waits forever goes permanently silent the
+        // moment its channel/connection drops (RabbitMQ restart, transient network blip). Instead we
+        // run a self-healing loop: subscribe, wait until the channel signals shutdown, then dispose
+        // it and re-subscribe on a fresh one. Recovery no longer depends on the library quietly
+        // re-attaching the consumer (which it does not do reliably here).
+        var delay = InitialReconnectDelay;
+
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            try
+            {
+                await RunConsumeSessionAsync(stoppingToken);
+                // A clean return means the channel/connection dropped (not cancellation) — reconnect
+                // promptly with a fresh backoff window.
+                delay = InitialReconnectDelay;
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "ScyllaMessageConsumer: consume session failed — reconnecting in {Delay:0.0}s",
+                    delay.TotalSeconds
+                );
+            }
+
+            if (stoppingToken.IsCancellationRequested)
+                break;
+
+            try
+            {
+                await Task.Delay(delay, stoppingToken);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+
+            delay = TimeSpan.FromSeconds(
+                Math.Min(delay.TotalSeconds * 2, MaxReconnectDelay.TotalSeconds)
+            );
+        }
+
+        _logger.LogInformation("ScyllaMessageConsumer stopped.");
+    }
+
+    /// <summary>
+    /// Opens a fresh channel, subscribes, and blocks until the channel/connection shuts down or the
+    /// host stops. Returns normally on a channel drop so the outer loop reconnects; the channel is
+    /// always disposed here (so the library can't recover it to race the next subscription).
+    /// </summary>
+    private async Task RunConsumeSessionAsync(CancellationToken stoppingToken)
+    {
+        var connection = await _connection.GetConnectionAsync();
+        var channel = await connection.CreateChannelAsync();
+        _channel = channel;
+
         // prefetchCount > 1 buffers deliveries client-side to remove the per-message ack
         // round-trip stall. Ordering is preserved because consumer dispatch concurrency stays
         // at the default of 1 (set on the connection, not here) — a single dispatch thread
         // processes deliveries serially. Raising dispatch concurrency would reintroduce
         // reordering; the out-of-order edit requeue path below is the safety net if it ever is.
-        await _channel.BasicQosAsync(prefetchSize: 0, prefetchCount: 10, global: false);
+        await channel.BasicQosAsync(prefetchSize: 0, prefetchCount: 10, global: false);
 
-        var consumer = new AsyncEventingBasicConsumer(_channel);
+        // Completes when the channel reports shutdown / a callback exception, or the host stops —
+        // replaces the old `Task.Delay(Timeout.Infinite)` so a dead channel actually wakes the loop.
+        var sessionEnded = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
+
+        Task OnChannelShutdown(object? _, ShutdownEventArgs e)
+        {
+            _logger.LogWarning(
+                "ScyllaMessageConsumer: channel shut down ({Reason}) — will re-subscribe",
+                e.ReplyText
+            );
+            sessionEnded.TrySetResult();
+            return Task.CompletedTask;
+        }
+
+        Task OnCallbackException(object? _, CallbackExceptionEventArgs e)
+        {
+            _logger.LogWarning(e.Exception, "ScyllaMessageConsumer: channel callback exception");
+            sessionEnded.TrySetResult();
+            return Task.CompletedTask;
+        }
+
+        var consumer = new AsyncEventingBasicConsumer(channel);
         consumer.ReceivedAsync += OnMessageReceivedAsync;
+        channel.ChannelShutdownAsync += OnChannelShutdown;
+        channel.CallbackExceptionAsync += OnCallbackException;
 
-        _consumerTag = await _channel.BasicConsumeAsync(
-            queue: Topology.ScyllaMessageQueue,
-            autoAck: false,
-            consumer: consumer
-        );
+        try
+        {
+            _consumerTag = await channel.BasicConsumeAsync(
+                queue: Topology.ScyllaMessageQueue,
+                autoAck: false,
+                consumer: consumer
+            );
 
-        _logger.LogInformation(
-            "ScyllaMessageConsumer started — listening on {Queue}",
-            Topology.ScyllaMessageQueue
-        );
+            _logger.LogInformation(
+                "ScyllaMessageConsumer started — listening on {Queue}",
+                Topology.ScyllaMessageQueue
+            );
 
-        await Task.Delay(Timeout.Infinite, stoppingToken);
+            await using (stoppingToken.Register(() => sessionEnded.TrySetResult()))
+            {
+                await sessionEnded.Task;
+            }
+        }
+        finally
+        {
+            consumer.ReceivedAsync -= OnMessageReceivedAsync;
+            channel.ChannelShutdownAsync -= OnChannelShutdown;
+            channel.CallbackExceptionAsync -= OnCallbackException;
+            await TearDownChannelAsync(channel);
+            _channel = null;
+        }
+    }
+
+    /// <summary>Gracefully cancels + closes + disposes a channel, ignoring shutdown-time races.</summary>
+    private async Task TearDownChannelAsync(IChannel channel)
+    {
+        try
+        {
+            if (channel.IsOpen && !string.IsNullOrEmpty(_consumerTag))
+                await channel.BasicCancelAsync(_consumerTag, noWait: false);
+        }
+        catch
+        { /* the channel may already be gone */
+        }
+
+        try
+        {
+            if (channel.IsOpen)
+                await channel.CloseAsync(CancellationToken.None);
+        }
+        catch
+        { /* ignore */
+        }
+        finally
+        {
+            try
+            {
+                await channel.DisposeAsync();
+            }
+            catch
+            { /* ignore */
+            }
+        }
     }
 
     private async Task OnMessageReceivedAsync(object sender, BasicDeliverEventArgs ea)
     {
         var routingKey = ea.RoutingKey;
         var body = Encoding.UTF8.GetString(ea.Body.Span);
+
+        // Ack/Nack the channel this delivery actually arrived on — NOT the shared _channel field,
+        // which the self-healing loop may swap mid-flight (acking a disposed channel would throw).
+        var deliveryChannel = ((AsyncEventingBasicConsumer)sender).Channel;
 
         _logger.LogDebug("ScyllaConsumer received — RoutingKey: {RoutingKey}", routingKey);
 
@@ -177,7 +320,7 @@ public class ScyllaMessageConsumer : BackgroundService
                 _stoppingToken
             );
 
-            await _channel!.BasicAckAsync(ea.DeliveryTag, multiple: false);
+            await deliveryChannel.BasicAckAsync(ea.DeliveryTag, multiple: false);
         }
         catch (ServiceUnavailableException ex)
         {
@@ -215,7 +358,7 @@ public class ScyllaMessageConsumer : BackgroundService
             // dispatch thread, so it also throttles the queue — acceptable for this rare path).
             await Task.Delay(OutOfOrderRequeueDelay, _stoppingToken);
 
-            if (_channel!.IsOpen)
+            if (deliveryChannel.IsOpen)
             {
                 var attempts = await _deduplicator.IncrementRequeueCountAsync(
                     IMessageDeduplicator.Edited,
@@ -234,7 +377,7 @@ public class ScyllaMessageConsumer : BackgroundService
                         attempts
                     );
 
-                await _channel.BasicNackAsync(
+                await deliveryChannel.BasicNackAsync(
                     ea.DeliveryTag,
                     multiple: false,
                     requeue: shouldRequeue
@@ -278,7 +421,7 @@ public class ScyllaMessageConsumer : BackgroundService
                 }
             }
 
-            await _channel!.BasicNackAsync(ea.DeliveryTag, multiple: false, requeue: false);
+            await deliveryChannel.BasicNackAsync(ea.DeliveryTag, multiple: false, requeue: false);
         }
     }
 
@@ -481,47 +624,9 @@ public class ScyllaMessageConsumer : BackgroundService
 
     public override async Task StopAsync(CancellationToken cancellationToken)
     {
-        if (_channel is not null)
-        {
-            try
-            {
-                if (_channel.IsOpen)
-                {
-                    if (!string.IsNullOrEmpty(_consumerTag))
-                    {
-                        await _channel.BasicCancelAsync(
-                            _consumerTag,
-                            cancellationToken: cancellationToken
-                        );
-                    }
-
-                    await _channel.CloseAsync(cancellationToken);
-                }
-            }
-            catch (ObjectDisposedException)
-            {
-                // Quietly ignore if RabbitMQ connection pool was already disposed by the host
-            }
-            catch (AlreadyClosedException)
-            {
-                // Quietly ignore if RabbitMQ channel/connection was already closed during shutdown
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "ScyllaConsumer: exception during shutdown — ignoring");
-            }
-            finally
-            {
-                try
-                {
-                    await _channel.DisposeAsync();
-                }
-                catch
-                { /* ignore */
-                }
-            }
-        }
-
+        // The consume loop owns the channel lifecycle: cancelling the stopping token completes the
+        // session's TCS, whose finally cancels + closes + disposes the channel. So we just signal
+        // cancellation and await the loop — closing the channel here too would race that teardown.
         await base.StopAsync(cancellationToken);
     }
 }

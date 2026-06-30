@@ -71,6 +71,7 @@ public class StatusExpiryService : BackgroundService
             return 0;
 
         var reverted = new List<long>();
+        var clearedMessages = new List<long>();
         foreach (var user in expired)
         {
             if (user.PreferredStatusExpiresAt is not null && user.PreferredStatusExpiresAt <= now)
@@ -84,6 +85,7 @@ public class StatusExpiryService : BackgroundService
             {
                 user.StatusMessage = null;
                 user.StatusMessageExpiresAt = null;
+                clearedMessages.Add(user.Id);
             }
         }
 
@@ -107,10 +109,30 @@ public class StatusExpiryService : BackgroundService
             }
         }
 
+        // Clearing the DB column alone leaves the Redis cache (user:{id}:statusmsg) holding the stale
+        // message, with no live StatusChanged — so observers keep seeing an expired status forever.
+        // SetCustomStatusAsync(null) clears that cache key AND broadcasts the cleared message.
+        foreach (var userId in clearedMessages)
+        {
+            try
+            {
+                await presence.SetCustomStatusAsync(userId, null, ct);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "Failed to clear expired status message for user {UserId}",
+                    userId
+                );
+            }
+        }
+
         _logger.LogInformation(
-            "StatusExpiryService swept {Count} user(s) ({Reverted} status revert(s)).",
+            "StatusExpiryService swept {Count} user(s) ({Reverted} status revert(s), {Cleared} message clear(s)).",
             expired.Count,
-            reverted.Count
+            reverted.Count,
+            clearedMessages.Count
         );
 
         return expired.Count;

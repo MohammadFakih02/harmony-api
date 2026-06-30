@@ -167,14 +167,14 @@ await using (var startupChannel = await rabbitConnection.CreateChannelAsync())
 
 app.UseForwardedHeaders();
 app.UseCors("HarmonyClient");
+app.UseAuthentication();
+app.UseAuthorization();
 if (!app.Environment.IsEnvironment("Test"))
 {
     app.UseHttpsRedirection();
     app.UseRateLimiter();
 }
 app.UseExceptionHandler();
-app.UseAuthentication();
-app.UseAuthorization();
 
 app.MapControllers();
 app.MapHub<ChatHub>("/hubs/chat");

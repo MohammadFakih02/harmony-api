@@ -35,7 +35,8 @@ public static class RateLimitingExtensions
 
             // ----------------------------------------------------------------
             // General API limiter — keyed by user ID if authenticated,
-            // IP address if anonymous. 100 requests per 10 seconds.
+            // IP address if anonymous. Reads and writes use separate buckets
+            // so a page-load burst of GETs never eats into the write quota.
             // ----------------------------------------------------------------
             options.AddPolicy(
                 "api",
@@ -45,12 +46,29 @@ public static class RateLimitingExtensions
 
                     if (!string.IsNullOrEmpty(userId))
                     {
-                        // Authenticated — partition by user ID
+                        if (context.Request.Method != HttpMethods.Get)
+                        {
+                            // Writes — strict. Catches message floods / spam without
+                            // ever tripping on normal interactive use (6 writes/s average).
+                            return RateLimitPartition.GetFixedWindowLimiter(
+                                partitionKey: $"user:w:{userId}",
+                                factory: _ => new FixedWindowRateLimiterOptions
+                                {
+                                    PermitLimit = 90,
+                                    Window = TimeSpan.FromSeconds(10),
+                                    QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                                    QueueLimit = 0,
+                                }
+                            );
+                        }
+
+                        // Reads — generous. A deep-link page load fans out ~20-25 GETs;
+                        // 500/10s absorbs 20 rapid back-to-back refreshes without a 429.
                         return RateLimitPartition.GetFixedWindowLimiter(
-                            partitionKey: $"user:{userId}",
+                            partitionKey: $"user:r:{userId}",
                             factory: _ => new FixedWindowRateLimiterOptions
                             {
-                                PermitLimit = 100,
+                                PermitLimit = 500,
                                 Window = TimeSpan.FromSeconds(10),
                                 QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
                                 QueueLimit = 0,
@@ -58,7 +76,7 @@ public static class RateLimitingExtensions
                         );
                     }
 
-                    // Anonymous — partition by IP
+                    // Anonymous — partition by IP, same limit regardless of method
                     var ip = context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
                     return RateLimitPartition.GetFixedWindowLimiter(
                         partitionKey: $"anon:{ip}",
