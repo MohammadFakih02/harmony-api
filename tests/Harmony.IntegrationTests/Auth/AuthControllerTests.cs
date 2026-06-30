@@ -153,7 +153,7 @@ public class AuthControllerTests : ApiTestBase, IClassFixture<HarmonyWebApplicat
 
         var response = await Client.PostAsJsonAsync(
             "/api/auth/login",
-            new { email = "login@example.com", password = "Password123!" }
+            new { identifier = "login@example.com", password = "Password123!" }
         );
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
@@ -166,11 +166,24 @@ public class AuthControllerTests : ApiTestBase, IClassFixture<HarmonyWebApplicat
 
         var response = await Client.PostAsJsonAsync(
             "/api/auth/login",
-            new { email = "login2@example.com", password = "Password123!" }
+            new { identifier = "login2@example.com", password = "Password123!" }
         );
 
         var body = await response.Content.ReadFromJsonAsync<AuthResponse>();
         body!.AccessToken.Should().NotBeNullOrWhiteSpace();
+    }
+
+    [Fact]
+    public async Task Login_ShouldReturn200_WithUsernameInsteadOfEmail()
+    {
+        await RegisterUserAsync("loginbyname", "loginbyname@example.com", "Password123!");
+
+        var response = await Client.PostAsJsonAsync(
+            "/api/auth/login",
+            new { identifier = "loginbyname", password = "Password123!" }
+        );
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
     }
 
     [Fact]
@@ -180,7 +193,7 @@ public class AuthControllerTests : ApiTestBase, IClassFixture<HarmonyWebApplicat
 
         var response = await Client.PostAsJsonAsync(
             "/api/auth/login",
-            new { email = "login3@example.com", password = "WrongPassword!" }
+            new { identifier = "login3@example.com", password = "WrongPassword!" }
         );
 
         response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
@@ -191,7 +204,7 @@ public class AuthControllerTests : ApiTestBase, IClassFixture<HarmonyWebApplicat
     {
         var response = await Client.PostAsJsonAsync(
             "/api/auth/login",
-            new { email = "nobody@example.com", password = "Password123!" }
+            new { identifier = "nobody@example.com", password = "Password123!" }
         );
 
         response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
@@ -204,7 +217,7 @@ public class AuthControllerTests : ApiTestBase, IClassFixture<HarmonyWebApplicat
 
         var response = await Client.PostAsJsonAsync(
             "/api/auth/login",
-            new { email = "login4@example.com", password = "Password123!" }
+            new { identifier = "login4@example.com", password = "Password123!" }
         );
 
         response.Headers.TryGetValues("Set-Cookie", out var cookies).Should().BeTrue();
