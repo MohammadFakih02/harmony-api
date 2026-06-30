@@ -100,6 +100,29 @@ public interface IHubBroadcaster
     );
 
     /// <summary>
+    /// Fans a presence update out to an entire guild's group (every connected member who has joined
+    /// it) — so co-members see each other come online / change status live, not only friends. Masking
+    /// (invisible → suppressed/offline) is applied by the caller before this is invoked.
+    /// </summary>
+    Task BroadcastOnlineStatusToGuildAsync(
+        long guildId,
+        OnlineStatusPayload payload,
+        CancellationToken ct = default
+    );
+
+    Task BroadcastOfflineStatusToGuildAsync(
+        long guildId,
+        OfflineStatusPayload payload,
+        CancellationToken ct = default
+    );
+
+    Task BroadcastStatusChangedToGuildAsync(
+        long guildId,
+        StatusChangedPayload payload,
+        CancellationToken ct = default
+    );
+
+    /// <summary>
     /// Notifies a single user that one of their mutes ended (expired or manually
     /// removed). Per-user (Clients.User) — a mute is private to its owner.
     /// </summary>

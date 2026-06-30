@@ -90,6 +90,24 @@ public class HubBroadcaster : IHubBroadcaster
         CancellationToken ct = default
     ) => _hubContext.Clients.User(recipientId.ToString()).StatusChanged(payload);
 
+    public Task BroadcastOnlineStatusToGuildAsync(
+        long guildId,
+        OnlineStatusPayload payload,
+        CancellationToken ct = default
+    ) => _hubContext.Clients.Group(ChatHub.GuildGroup(guildId)).OnlineStatus(payload);
+
+    public Task BroadcastOfflineStatusToGuildAsync(
+        long guildId,
+        OfflineStatusPayload payload,
+        CancellationToken ct = default
+    ) => _hubContext.Clients.Group(ChatHub.GuildGroup(guildId)).OfflineStatus(payload);
+
+    public Task BroadcastStatusChangedToGuildAsync(
+        long guildId,
+        StatusChangedPayload payload,
+        CancellationToken ct = default
+    ) => _hubContext.Clients.Group(ChatHub.GuildGroup(guildId)).StatusChanged(payload);
+
     public Task BroadcastMuteExpiredAsync(
         long userId,
         MuteExpiredPayload payload,

@@ -38,13 +38,16 @@ public class GuildWelcomeTests : ApiTestBase, IClassFixture<HarmonyWebApplicatio
         return (await resp.Content.ReadFromJsonAsync<GuildResponse>())!.Id;
     }
 
-    private async Task<long> FirstTextChannelAsync(string token, long guildId)
+    // A freshly-created guild has no channels (guild-create seeds none), so make a text channel.
+    private async Task<long> CreateTextChannelAsync(string token, long guildId)
     {
         Auth(token);
-        var channels = await Client.GetFromJsonAsync<List<ChannelResponse>>(
-            $"/api/guilds/{guildId}/channels"
+        var resp = await Client.PostAsJsonAsync(
+            $"/api/guilds/{guildId}/channels",
+            new { name = "general", type = "text", position = 0 }
         );
-        return channels!.First(c => c.Type == "text").Id;
+        resp.EnsureSuccessStatusCode();
+        return (await resp.Content.ReadFromJsonAsync<ChannelResponse>())!.Id;
     }
 
     [Fact]
@@ -52,7 +55,7 @@ public class GuildWelcomeTests : ApiTestBase, IClassFixture<HarmonyWebApplicatio
     {
         var token = await RegisterAsync("wel_set", "wel_set@test.com");
         var guildId = await CreateGuildAsync(token);
-        var channelId = await FirstTextChannelAsync(token, guildId);
+        var channelId = await CreateTextChannelAsync(token, guildId);
 
         var resp = await Client.PatchAsJsonAsync(
             $"/api/guilds/{guildId}/welcome",
@@ -107,7 +110,7 @@ public class GuildWelcomeTests : ApiTestBase, IClassFixture<HarmonyWebApplicatio
     {
         var ownerToken = await RegisterAsync("wel_jowner", "wel_jowner@test.com");
         var guildId = await CreateGuildAsync(ownerToken);
-        var channelId = await FirstTextChannelAsync(ownerToken, guildId);
+        var channelId = await CreateTextChannelAsync(ownerToken, guildId);
 
         Auth(ownerToken);
         await Client.PatchAsJsonAsync(

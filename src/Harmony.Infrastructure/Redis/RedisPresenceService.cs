@@ -31,6 +31,7 @@ public sealed class RedisPresenceService : IPresenceService
     private readonly IHubBroadcaster _broadcaster;
     private readonly IUserRepository _users;
     private readonly IFriendRepository _friends;
+    private readonly IGuildRepository _guilds;
     private readonly ILogger<RedisPresenceService> _logger;
 
     public RedisPresenceService(
@@ -38,6 +39,7 @@ public sealed class RedisPresenceService : IPresenceService
         IHubBroadcaster broadcaster,
         IUserRepository users,
         IFriendRepository friends,
+        IGuildRepository guilds,
         ILogger<RedisPresenceService> logger
     )
     {
@@ -45,6 +47,7 @@ public sealed class RedisPresenceService : IPresenceService
         _broadcaster = broadcaster;
         _users = users;
         _friends = friends;
+        _guilds = guilds;
         _logger = logger;
     }
 
@@ -91,11 +94,19 @@ public sealed class RedisPresenceService : IPresenceService
             if (preferred == PresenceStatus.Invisible)
                 return;
 
+            var onlinePayload = new OnlineStatusPayload(userId, effective);
             await BroadcastToFriendsAsync(
                 userId,
-                new OnlineStatusPayload(userId, effective),
+                onlinePayload,
                 (recipientId, payload) =>
                     _broadcaster.BroadcastOnlineStatusAsync(recipientId, payload, ct)
+            );
+            // Also reach co-guild members (not just friends) so member-list dots update live.
+            await BroadcastToGuildsAsync(
+                userId,
+                onlinePayload,
+                (guildId, payload) =>
+                    _broadcaster.BroadcastOnlineStatusToGuildAsync(guildId, payload, ct)
             );
         }
         catch (Exception ex)
@@ -136,11 +147,19 @@ public sealed class RedisPresenceService : IPresenceService
             await db.KeyDeleteAsync(IdleKey(userId)); // idle is meaningless once disconnected
             await db.SortedSetRemoveAsync(OnlineZSetKey, userId.ToString());
 
+            var offlinePayload = new OfflineStatusPayload(userId);
             await BroadcastToFriendsAsync(
                 userId,
-                new OfflineStatusPayload(userId),
+                offlinePayload,
                 (recipientId, payload) =>
                     _broadcaster.BroadcastOfflineStatusAsync(recipientId, payload, ct)
+            );
+            // Also reach co-guild members so their member-list dots go grey live.
+            await BroadcastToGuildsAsync(
+                userId,
+                offlinePayload,
+                (guildId, payload) =>
+                    _broadcaster.BroadcastOfflineStatusToGuildAsync(guildId, payload, ct)
             );
         }
         catch (Exception ex)
@@ -509,6 +528,51 @@ public sealed class RedisPresenceService : IPresenceService
     }
 
     /// <summary>
+    /// Fans a presence payload out to the group of every guild the user belongs to (one group
+    /// broadcast per guild) so co-members — not just friends — see it live. Each call is individually
+    /// try/caught; the guild-id lookup fails open (no recipients), never breaking the connection
+    /// lifecycle. Invisible-masking is already applied by the caller.
+    /// </summary>
+    private async Task BroadcastToGuildsAsync<TPayload>(
+        long userId,
+        TPayload payload,
+        Func<long, TPayload, Task> sendToGuild
+    )
+    {
+        List<long> guildIds;
+        try
+        {
+            guildIds = await _guilds.GetGuildIdsForUserAsync(userId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Presence: guild-id resolution failed for user {UserId} — broadcasting to no guilds",
+                userId
+            );
+            return;
+        }
+
+        foreach (var guildId in guildIds)
+        {
+            try
+            {
+                await sendToGuild(guildId, payload);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "Presence: guild broadcast failed for guild {GuildId} (user {UserId}) — continuing",
+                    guildId,
+                    userId
+                );
+            }
+        }
+    }
+
+    /// <summary>
     /// Sends StatusChanged to the user's friends (with <paramref name="friendsStatus"/>)
     /// and to the user's own connections (with <paramref name="selfStatus"/>) — the latter
     /// keeps multi-tab pickers in sync and is the only path with recipients today.
@@ -523,12 +587,20 @@ public sealed class RedisPresenceService : IPresenceService
     {
         // Friends never see the custom message of someone who appears offline (invisible).
         var friendsMessage = friendsStatus == PresenceStatus.Offline ? null : statusMessage;
+        var maskedPayload = new StatusChangedPayload(userId, friendsStatus, friendsMessage);
 
         await BroadcastToFriendsAsync(
             userId,
-            new StatusChangedPayload(userId, friendsStatus, friendsMessage),
+            maskedPayload,
             (recipientId, payload) =>
                 _broadcaster.BroadcastStatusChangedAsync(recipientId, payload, ct)
+        );
+        // Co-guild members get the same masked value (effective status + message, offline-masked for
+        // invisible) so member-list dots and status lines track changes live, not only for friends.
+        await BroadcastToGuildsAsync(
+            userId,
+            maskedPayload,
+            (guildId, payload) => _broadcaster.BroadcastStatusChangedToGuildAsync(guildId, payload, ct)
         );
 
         try

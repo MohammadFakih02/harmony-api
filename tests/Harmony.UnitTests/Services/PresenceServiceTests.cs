@@ -32,12 +32,15 @@ public class PresenceServiceTests
         var users = new Mock<IUserRepository>(); // GetByIdAsync → null ⇒ preferred defaults to "online"
         var friends = new Mock<IFriendRepository>(); // no friends ⇒ broadcasts reach no recipients
         friends.Setup(f => f.GetFriendIdsAsync(It.IsAny<long>())).ReturnsAsync(new List<long>());
+        var guilds = new Mock<IGuildRepository>(); // no shared guilds ⇒ guild fan-out reaches no groups
+        guilds.Setup(g => g.GetGuildIdsForUserAsync(It.IsAny<long>())).ReturnsAsync(new List<long>());
 
         var sut = new RedisPresenceService(
             providerMock.Object,
             broadcaster.Object,
             users.Object,
             friends.Object,
+            guilds.Object,
             NullLogger<RedisPresenceService>.Instance
         );
 
