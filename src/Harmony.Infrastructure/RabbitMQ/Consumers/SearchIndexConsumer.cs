@@ -67,36 +67,170 @@ public class SearchIndexConsumer : BackgroundService
             .Build();
     }
 
+    // Self-healing reconnect backoff — capped low (5s) for fast re-subscribe after a broker restart.
+    // See ScyllaMessageConsumer for the rationale (this is connection recovery, not the retry ladder).
+    private static readonly TimeSpan InitialReconnectDelay = TimeSpan.FromSeconds(1);
+    private static readonly TimeSpan MaxReconnectDelay = TimeSpan.FromSeconds(5);
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         _stoppingToken = stoppingToken;
-        _channel = await _connection.CreateChannelAsync();
+
+        // Self-healing loop: subscribe, wait until the channel signals shutdown, then dispose it and
+        // re-subscribe on a fresh channel — so a RabbitMQ restart no longer silences this consumer
+        // until the backend is restarted. Mirrors ScyllaMessageConsumer.
+        var delay = InitialReconnectDelay;
+
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            try
+            {
+                await RunConsumeSessionAsync(stoppingToken);
+                delay = InitialReconnectDelay;
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "SearchIndexConsumer: consume session failed — reconnecting in {Delay:0.0}s",
+                    delay.TotalSeconds
+                );
+            }
+
+            if (stoppingToken.IsCancellationRequested)
+                break;
+
+            try
+            {
+                await Task.Delay(delay, stoppingToken);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+
+            delay = TimeSpan.FromSeconds(
+                Math.Min(delay.TotalSeconds * 2, MaxReconnectDelay.TotalSeconds)
+            );
+        }
+
+        _logger.LogInformation("SearchIndexConsumer stopped.");
+    }
+
+    /// <summary>
+    /// Opens a fresh channel, subscribes, and blocks until the channel/connection shuts down or the
+    /// host stops. Returns normally on a channel drop so the outer loop reconnects; the channel is
+    /// always disposed here so the library can't recover it to race the next subscription.
+    /// </summary>
+    private async Task RunConsumeSessionAsync(CancellationToken stoppingToken)
+    {
+        var connection = await _connection.GetConnectionAsync();
+        var channel = await connection.CreateChannelAsync();
+        _channel = channel;
+
         // Higher prefetch than the Scylla consumer: FTS writes are idempotent and the consumer
         // already tolerates reordering via its ServiceUnavailableException requeue, so it benefits
         // most from buffering. Ordering still holds — dispatch concurrency stays at the default 1.
-        await _channel.BasicQosAsync(prefetchSize: 0, prefetchCount: 20, global: false);
+        await channel.BasicQosAsync(prefetchSize: 0, prefetchCount: 20, global: false);
 
-        var consumer = new AsyncEventingBasicConsumer(_channel);
+        var sessionEnded = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
+
+        Task OnChannelShutdown(object? _, ShutdownEventArgs e)
+        {
+            _logger.LogWarning(
+                "SearchIndexConsumer: channel shut down ({Reason}) — will re-subscribe",
+                e.ReplyText
+            );
+            sessionEnded.TrySetResult();
+            return Task.CompletedTask;
+        }
+
+        Task OnCallbackException(object? _, CallbackExceptionEventArgs e)
+        {
+            _logger.LogWarning(e.Exception, "SearchIndexConsumer: channel callback exception");
+            sessionEnded.TrySetResult();
+            return Task.CompletedTask;
+        }
+
+        var consumer = new AsyncEventingBasicConsumer(channel);
         consumer.ReceivedAsync += OnMessageReceivedAsync;
+        channel.ChannelShutdownAsync += OnChannelShutdown;
+        channel.CallbackExceptionAsync += OnCallbackException;
 
-        _consumerTag = await _channel.BasicConsumeAsync(
-            queue: Topology.SearchIndexQueue,
-            autoAck: false,
-            consumer: consumer
-        );
+        try
+        {
+            _consumerTag = await channel.BasicConsumeAsync(
+                queue: Topology.SearchIndexQueue,
+                autoAck: false,
+                consumer: consumer
+            );
 
-        _logger.LogInformation(
-            "SearchIndexConsumer started — listening on {Queue}",
-            Topology.SearchIndexQueue
-        );
+            _logger.LogInformation(
+                "SearchIndexConsumer started — listening on {Queue}",
+                Topology.SearchIndexQueue
+            );
 
-        await Task.Delay(Timeout.Infinite, stoppingToken);
+            await using (stoppingToken.Register(() => sessionEnded.TrySetResult()))
+            {
+                await sessionEnded.Task;
+            }
+        }
+        finally
+        {
+            consumer.ReceivedAsync -= OnMessageReceivedAsync;
+            channel.ChannelShutdownAsync -= OnChannelShutdown;
+            channel.CallbackExceptionAsync -= OnCallbackException;
+            await TearDownChannelAsync(channel);
+            _channel = null;
+        }
+    }
+
+    /// <summary>Gracefully cancels + closes + disposes a channel, ignoring shutdown-time races.</summary>
+    private async Task TearDownChannelAsync(IChannel channel)
+    {
+        try
+        {
+            if (channel.IsOpen && !string.IsNullOrEmpty(_consumerTag))
+                await channel.BasicCancelAsync(_consumerTag, noWait: false);
+        }
+        catch
+        { /* the channel may already be gone */
+        }
+
+        try
+        {
+            if (channel.IsOpen)
+                await channel.CloseAsync(CancellationToken.None);
+        }
+        catch
+        { /* ignore */
+        }
+        finally
+        {
+            try
+            {
+                await channel.DisposeAsync();
+            }
+            catch
+            { /* ignore */
+            }
+        }
     }
 
     private async Task OnMessageReceivedAsync(object sender, BasicDeliverEventArgs ea)
     {
         var routingKey = ea.RoutingKey;
         var body = Encoding.UTF8.GetString(ea.Body.Span);
+
+        // Ack/Nack the channel this delivery actually arrived on — NOT the shared _channel field,
+        // which the self-healing loop may swap mid-flight (acking a disposed channel would throw).
+        var deliveryChannel = ((AsyncEventingBasicConsumer)sender).Channel;
 
         _logger.LogDebug("SearchIndexConsumer received — RoutingKey: {RoutingKey}", routingKey);
 
@@ -157,8 +291,8 @@ public class SearchIndexConsumer : BackgroundService
                 }
             }, _stoppingToken);
 
-            if (_channel!.IsOpen)
-                await _channel.BasicAckAsync(ea.DeliveryTag, multiple: false);
+            if (deliveryChannel.IsOpen)
+                await deliveryChannel.BasicAckAsync(ea.DeliveryTag, multiple: false);
         }
         catch (ServiceUnavailableException ex)
         {
@@ -169,7 +303,7 @@ public class SearchIndexConsumer : BackgroundService
 
             await Task.Delay(2000, _stoppingToken);
 
-            if (_channel!.IsOpen)
+            if (deliveryChannel.IsOpen)
             {
                 bool isTestEnv =
                     string.Equals(
@@ -185,7 +319,7 @@ public class SearchIndexConsumer : BackgroundService
 
                 bool shouldRequeue = !isTestEnv || !ea.Redelivered;
 
-                await _channel.BasicNackAsync(
+                await deliveryChannel.BasicNackAsync(
                     ea.DeliveryTag,
                     multiple: false,
                     requeue: shouldRequeue
@@ -200,54 +334,15 @@ public class SearchIndexConsumer : BackgroundService
                 routingKey
             );
 
-            if (_channel!.IsOpen)
-                await _channel.BasicNackAsync(ea.DeliveryTag, multiple: false, requeue: false);
+            if (deliveryChannel.IsOpen)
+                await deliveryChannel.BasicNackAsync(ea.DeliveryTag, multiple: false, requeue: false);
         }
     }
 
     public override async Task StopAsync(CancellationToken cancellationToken)
     {
-        if (_channel is not null)
-        {
-            try
-            {
-                if (_channel.IsOpen)
-                {
-                    if (!string.IsNullOrEmpty(_consumerTag))
-                    {
-                        await _channel.BasicCancelAsync(
-                            _consumerTag,
-                            cancellationToken: cancellationToken
-                        );
-                    }
-
-                    await _channel.CloseAsync(cancellationToken);
-                }
-            }
-            catch (ObjectDisposedException)
-            {
-                // Quietly ignore — RabbitMQ connection was already disposed by the host
-            }
-            catch (AlreadyClosedException)
-            {
-                // Quietly ignore if RabbitMQ connection/channel was already closed during shutdown
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "SearchIndexConsumer: exception during shutdown — ignoring");
-            }
-            finally
-            {
-                try
-                {
-                    await _channel.DisposeAsync();
-                }
-                catch
-                { /* ignore */
-                }
-            }
-        }
-
+        // The consume loop owns the channel lifecycle (its session finally cancels + closes +
+        // disposes on cancellation), so we just signal cancellation and await the loop.
         await base.StopAsync(cancellationToken);
     }
 }

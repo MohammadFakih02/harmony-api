@@ -44,12 +44,15 @@ public class RedisPresenceServiceTests : IAsyncLifetime
         var users = new Mock<IUserRepository>();
         var friends = new Mock<IFriendRepository>(); // friend fan-out not under test here
         friends.Setup(f => f.GetFriendIdsAsync(It.IsAny<long>())).ReturnsAsync(new List<long>());
+        var guilds = new Mock<IGuildRepository>(); // guild fan-out not under test here
+        guilds.Setup(g => g.GetGuildIdsForUserAsync(It.IsAny<long>())).ReturnsAsync(new List<long>());
 
         _sut = new RedisPresenceService(
             providerMock.Object,
             _broadcaster.Object,
             users.Object,
             friends.Object,
+            guilds.Object,
             NullLogger<RedisPresenceService>.Instance
         );
     }

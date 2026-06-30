@@ -10,9 +10,10 @@ namespace Harmony.Infrastructure.Scylla;
 public class ScyllaSessionFactory : IScyllaSessionFactory, IDisposable
 {
     private readonly ICluster _cluster;
-    private readonly Lazy<ISession> _lazySession;
     private readonly ILogger<ScyllaSessionFactory> _logger;
     private readonly string _keyspace;
+    private readonly object _sessionLock = new();
+    private ISession? _session;
     private bool _disposed;
 
     public ScyllaSessionFactory(IConfiguration configuration, ILogger<ScyllaSessionFactory> logger)
@@ -105,25 +106,42 @@ public class ScyllaSessionFactory : IScyllaSessionFactory, IDisposable
         }
 
         _cluster = clusterBuilder.Build();
-
-        _lazySession = new Lazy<ISession>(() =>
-        {
-            _logger.LogInformation(
-                "Establishing lazy ScyllaDB session for contact points: {ContactPoints}:{Port}",
-                string.Join(", ", contactPoints),
-                port
-            );
-            var session = _cluster.Connect();
-            session.Execute(
-                $"CREATE KEYSPACE IF NOT EXISTS {_keyspace} WITH replication = {{'class': 'SimpleStrategy', 'replication_factor': 1}}"
-            );
-            session.ChangeKeyspace(_keyspace);
-            _logger.LogInformation("ScyllaDB session established (lazy context)");
-            return session;
-        });
     }
 
-    public ISession Session => _lazySession.Value;
+    /// <summary>
+    /// The shared Scylla session, established on first access. Deliberately NOT a
+    /// <c>Lazy&lt;ISession&gt;</c>: a Lazy caches the exception forever if the first <c>Connect()</c>
+    /// throws (Scylla still booting, ~60–90s, or a restart) — every later query would rethrow the
+    /// stale failure until the process restarts. This double-checked getter caches the session only
+    /// on success and lets the next caller retry. Once established, the driver's reconnection policy
+    /// handles node recovery on the live session.
+    /// </summary>
+    public ISession Session
+    {
+        get
+        {
+            var existing = _session;
+            if (existing is not null)
+                return existing;
+
+            lock (_sessionLock)
+            {
+                if (_session is not null)
+                    return _session;
+
+                _logger.LogInformation("Establishing ScyllaDB session...");
+                var session = _cluster.Connect();
+                session.Execute(
+                    $"CREATE KEYSPACE IF NOT EXISTS {_keyspace} WITH replication = {{'class': 'SimpleStrategy', 'replication_factor': 1}}"
+                );
+                session.ChangeKeyspace(_keyspace);
+                _logger.LogInformation("ScyllaDB session established.");
+                _session = session;
+                return session;
+            }
+        }
+    }
+
     public string Keyspace => _keyspace;
 
     public void Dispose()
@@ -131,11 +149,7 @@ public class ScyllaSessionFactory : IScyllaSessionFactory, IDisposable
         if (_disposed)
             return;
 
-        if (_lazySession.IsValueCreated)
-        {
-            _lazySession.Value.Dispose();
-        }
-
+        _session?.Dispose();
         _cluster.Dispose();
         _disposed = true;
         GC.SuppressFinalize(this);

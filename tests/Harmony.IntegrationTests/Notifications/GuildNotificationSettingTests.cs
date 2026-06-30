@@ -38,13 +38,16 @@ public class GuildNotificationSettingTests : ApiTestBase, IClassFixture<HarmonyW
         return (await resp.Content.ReadFromJsonAsync<GuildResponse>())!.Id;
     }
 
-    private async Task<long> FirstTextChannelAsync(string token, long guildId)
+    // A freshly-created guild has no channels (guild-create seeds none), so make a text channel.
+    private async Task<long> CreateTextChannelAsync(string token, long guildId)
     {
         Auth(token);
-        var channels = await Client.GetFromJsonAsync<List<ChannelResponse>>(
-            $"/api/guilds/{guildId}/channels"
+        var resp = await Client.PostAsJsonAsync(
+            $"/api/guilds/{guildId}/channels",
+            new { name = "general", type = "text", position = 0 }
         );
-        return channels!.First(c => c.Type == "text").Id;
+        resp.EnsureSuccessStatusCode();
+        return (await resp.Content.ReadFromJsonAsync<ChannelResponse>())!.Id;
     }
 
     [Fact]
@@ -65,7 +68,7 @@ public class GuildNotificationSettingTests : ApiTestBase, IClassFixture<HarmonyW
     {
         var token = await RegisterAsync("ns_set", "ns_set@test.com");
         var guildId = await CreateGuildAsync(token);
-        var channelId = await FirstTextChannelAsync(token, guildId);
+        var channelId = await CreateTextChannelAsync(token, guildId);
 
         (await Client.PutAsJsonAsync(
             $"/api/guilds/{guildId}/notification-settings",
@@ -89,7 +92,7 @@ public class GuildNotificationSettingTests : ApiTestBase, IClassFixture<HarmonyW
     {
         var token = await RegisterAsync("ns_reset", "ns_reset@test.com");
         var guildId = await CreateGuildAsync(token);
-        var channelId = await FirstTextChannelAsync(token, guildId);
+        var channelId = await CreateTextChannelAsync(token, guildId);
 
         await Client.PutAsJsonAsync(
             $"/api/guilds/{guildId}/channels/{channelId}/notification-settings",
