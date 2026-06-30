@@ -47,6 +47,17 @@ public interface IFileStorageService
     );
 
     /// <summary>
+    /// Reads up to <paramref name="maxBytes"/> leading bytes of the object (a range request, so a
+    /// 50 MB upload is never fully pulled). Feeds the non-image magic-byte sniff at confirm. Returns
+    /// null if the object does not exist.
+    /// </summary>
+    Task<byte[]?> ReadObjectHeadAsync(
+        string objectKey,
+        int maxBytes,
+        CancellationToken ct = default
+    );
+
+    /// <summary>
     /// Deletes the object if present. Idempotent — removing a missing key is not an error.
     /// Used by the orphan-attachment sweep to drop objects whose DB row never confirmed.
     /// </summary>

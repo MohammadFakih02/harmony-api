@@ -133,6 +133,35 @@ public sealed class S3FileStorageService : IFileStorageService
         }
     }
 
+    public async Task<byte[]?> ReadObjectHeadAsync(
+        string objectKey,
+        int maxBytes,
+        CancellationToken ct = default
+    )
+    {
+        try
+        {
+            // Range request so we only pull the header, never the whole (up to 50 MB) object.
+            using var response = await _client.GetObjectAsync(
+                new GetObjectRequest
+                {
+                    BucketName = _bucket,
+                    Key = objectKey,
+                    ByteRange = new ByteRange(0, maxBytes - 1),
+                },
+                ct
+            );
+            await using var stream = response.ResponseStream;
+            using var buffer = new MemoryStream();
+            await stream.CopyToAsync(buffer, ct);
+            return buffer.ToArray();
+        }
+        catch (AmazonS3Exception ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            return null;
+        }
+    }
+
     public Task DeleteObjectAsync(string objectKey, CancellationToken ct = default) =>
         // S3/MinIO DeleteObject is idempotent — deleting a missing key returns success.
         _client.DeleteObjectAsync(
