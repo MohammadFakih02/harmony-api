@@ -45,7 +45,9 @@ public class MessagesController : ControllerBase
         long guildId,
         long channelId,
         [FromQuery] int limit = 50,
-        [FromQuery] long? before = null
+        [FromQuery] long? before = null,
+        [FromQuery] long? around = null,
+        [FromQuery] long? after = null
     )
     {
         var userId = GetUserId();
@@ -57,7 +59,9 @@ public class MessagesController : ControllerBase
             guildId,
             channelId,
             limit,
-            before
+            before,
+            around,
+            after
         );
         return Ok(response);
     }

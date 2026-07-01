@@ -12,6 +12,23 @@ public interface IMessageRepository
         CancellationToken ct = default
     );
 
+    // messages_by_channel — a window centred on a message (for jump-to / search results),
+    // newest first. Returns ~limit messages straddling messageId (half newer-or-equal, half older).
+    Task<IEnumerable<Message>> GetMessagesAroundAsync(
+        long channelId,
+        long messageId,
+        int limit = 50,
+        CancellationToken ct = default
+    );
+
+    // messages_by_channel — a strictly-newer page (scroll-down after a jump), newest first.
+    Task<IEnumerable<Message>> GetMessagesAfterAsync(
+        long channelId,
+        long afterMessageId,
+        int limit = 50,
+        CancellationToken ct = default
+    );
+
     // messages_by_id — single message lookup (for edits, deletes, replies)
     Task<Message?> GetByIdAsync(long messageId, CancellationToken ct = default);
 

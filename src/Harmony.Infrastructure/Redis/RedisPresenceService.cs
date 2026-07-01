@@ -188,6 +188,11 @@ public sealed class RedisPresenceService : IPresenceService
             var effective = ResolveEffective(preferred, idle);
 
             await db.StringSetAsync(StatusKey(userId), effective, StatusTtl);
+            // Keep the idle flag alive alongside the status key so a genuinely-idle-but-connected
+            // user stays "away"; it only lapses (within StatusTtl) once heartbeats stop — i.e. a
+            // crash — which is exactly what prevents a stuck idle key.
+            if (idle)
+                await db.KeyExpireAsync(IdleKey(userId), StatusTtl);
             await db.SortedSetAddAsync(
                 OnlineZSetKey,
                 userId.ToString(),
@@ -259,7 +264,10 @@ public sealed class RedisPresenceService : IPresenceService
             var db = _redisProvider.Connection!.GetDatabase();
 
             if (idle)
-                await db.StringSetAsync(IdleKey(userId), "1");
+                // TTL so a crashed/dropped client can't leave a zombie idle flag behind: it
+                // auto-expires within StatusTtl and is kept alive by HeartbeatAsync while the
+                // client keeps talking (a dead-man's switch, like the status key itself).
+                await db.StringSetAsync(IdleKey(userId), "1", StatusTtl);
             else
                 await db.KeyDeleteAsync(IdleKey(userId));
 

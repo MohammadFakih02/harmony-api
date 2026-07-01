@@ -254,7 +254,9 @@ public class DirectMessagesController : ControllerBase
     public async Task<IActionResult> GetMessages(
         long channelId,
         [FromQuery] int limit = 50,
-        [FromQuery] long? before = null
+        [FromQuery] long? before = null,
+        [FromQuery] long? around = null,
+        [FromQuery] long? after = null
     )
     {
         var response = await _messageService.GetChannelMessagesAsync(
@@ -262,7 +264,9 @@ public class DirectMessagesController : ControllerBase
             guildId: null,
             channelId,
             limit,
-            before
+            before,
+            around,
+            after
         );
         return Ok(response);
     }

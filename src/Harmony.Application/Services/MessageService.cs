@@ -411,6 +411,8 @@ public class MessageService : IMessageService
         long channelId,
         int limit = 50,
         long? beforeMessageId = null,
+        long? aroundMessageId = null,
+        long? afterMessageId = null,
         CancellationToken ct = default
     )
     {
@@ -442,12 +444,20 @@ public class MessageService : IMessageService
 
         try
         {
-            var messages = await _messageRepository.GetChannelMessagesAsync(
-                channelId,
-                limit,
-                beforeMessageId,
-                ct
-            );
+            // Cursor precedence (mutually exclusive from the client): a jump target (around) loads a
+            // window centred on that message; after = scroll-down "load newer"; else the before page.
+            IEnumerable<Message> messages;
+            if (aroundMessageId is { } around)
+                messages = await _messageRepository.GetMessagesAroundAsync(channelId, around, limit, ct);
+            else if (afterMessageId is { } after)
+                messages = await _messageRepository.GetMessagesAfterAsync(channelId, after, limit, ct);
+            else
+                messages = await _messageRepository.GetChannelMessagesAsync(
+                    channelId,
+                    limit,
+                    beforeMessageId,
+                    ct
+                );
 
             var userIds = messages.Select(m => m.UserId).Distinct();
             var users = await _userRepository.GetByIdsAsync(userIds);
