@@ -39,3 +39,14 @@ public record ChannelMessagesResponse(
     IEnumerable<MessageResponse> Messages,
     bool Degraded
 );
+
+/// <summary>
+/// A pinned message: the full <see cref="MessageResponse"/> (so the client renders it exactly like a
+/// message) plus who pinned it and when. <c>PinnedAt</c> equals the message id (the pin's Scylla
+/// clustering key), unix-ms-derivable via the snowflake epoch on the client if needed for display.
+/// </summary>
+public record PinnedMessageResponse(
+    MessageResponse Message,
+    long PinnedBy,
+    long PinnedAt
+);

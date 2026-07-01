@@ -32,6 +32,12 @@ public interface IHubBroadcaster
     /// </summary>
     Task BroadcastMessageEditedAsync(MessageEditedPayload payload, CancellationToken ct = default);
 
+    /// <summary>Broadcasts a pin event to all connections subscribed to the channel group.</summary>
+    Task BroadcastMessagePinnedAsync(MessagePinPayload payload, CancellationToken ct = default);
+
+    /// <summary>Broadcasts an unpin event to all connections subscribed to the channel group.</summary>
+    Task BroadcastMessageUnpinnedAsync(MessagePinPayload payload, CancellationToken ct = default);
+
     /// <summary>
     /// Broadcasts a channel metadata change (create / update / reorder) to all
     /// connections in the guild group. Clients update their channel list.

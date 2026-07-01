@@ -232,6 +232,7 @@ public class ChannelsController : ControllerBase
             CanAttach: canView && Has(Permission.AttachFiles),
             CanManageMessages: Has(Permission.ManageMessages),
             CanManageChannels: Has(Permission.ManageChannels),
+            CanPin: canView && Has(Permission.PinMessages),
             TimedOut: timedOut
         ));
     }
