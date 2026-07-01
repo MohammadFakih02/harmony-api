@@ -287,6 +287,30 @@ public class DirectMessagesController : ControllerBase
         return NoContent();
     }
 
+    // GET /api/dm/{channelId}/pins — list pins (participation checked in the service)
+    [HttpGet("{channelId:long}/pins")]
+    public async Task<IActionResult> GetPins(long channelId, CancellationToken ct)
+    {
+        var pins = await _messageService.GetPinsAsync(GetUserId(), guildId: null, channelId, ct);
+        return Ok(pins);
+    }
+
+    // PUT /api/dm/{channelId}/pins/{messageId} — pin (any participant)
+    [HttpPut("{channelId:long}/pins/{messageId:long}")]
+    public async Task<IActionResult> Pin(long channelId, long messageId, CancellationToken ct)
+    {
+        await _messageService.PinMessageAsync(GetUserId(), guildId: null, channelId, messageId, ct);
+        return NoContent();
+    }
+
+    // DELETE /api/dm/{channelId}/pins/{messageId} — unpin (any participant)
+    [HttpDelete("{channelId:long}/pins/{messageId:long}")]
+    public async Task<IActionResult> Unpin(long channelId, long messageId, CancellationToken ct)
+    {
+        await _messageService.UnpinMessageAsync(GetUserId(), guildId: null, channelId, messageId, ct);
+        return NoContent();
+    }
+
     // POST /api/dm/{channelId}/files/presign — mint a presigned PUT (participant-gated)
     [HttpPost("{channelId:long}/files/presign")]
     public async Task<IActionResult> Presign(

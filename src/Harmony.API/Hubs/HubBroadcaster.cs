@@ -39,6 +39,16 @@ public class HubBroadcaster : IHubBroadcaster
         CancellationToken ct = default
     ) => _hubContext.Clients.Group(ChatHub.ChannelGroup(payload.ChannelId)).MessageEdited(payload);
 
+    public Task BroadcastMessagePinnedAsync(
+        MessagePinPayload payload,
+        CancellationToken ct = default
+    ) => _hubContext.Clients.Group(ChatHub.ChannelGroup(payload.ChannelId)).MessagePinned(payload);
+
+    public Task BroadcastMessageUnpinnedAsync(
+        MessagePinPayload payload,
+        CancellationToken ct = default
+    ) => _hubContext.Clients.Group(ChatHub.ChannelGroup(payload.ChannelId)).MessageUnpinned(payload);
+
     public Task BroadcastChannelUpdatedAsync(
         ChannelResponse channel,
         long guildId,

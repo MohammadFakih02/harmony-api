@@ -32,4 +32,6 @@ public static class AuditLogAction
 
     // Messages
     public const string MessageDelete = "message_delete";
+    public const string MessagePin = "message_pin";
+    public const string MessageUnpin = "message_unpin";
 }

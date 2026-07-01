@@ -32,6 +32,18 @@ public interface IChatClient
     Task MessageEdited(MessageEditedPayload payload);
 
     /// <summary>
+    /// Fired when a message is pinned in a channel. Broadcast to the channel group so any
+    /// connected member updates their pinned-message indicator and refreshes the pins panel.
+    /// </summary>
+    Task MessagePinned(MessagePinPayload payload);
+
+    /// <summary>
+    /// Fired when a message is unpinned (manually, or because it was deleted). Broadcast to the
+    /// channel group so clients drop it from the pins panel / clear the pinned indicator.
+    /// </summary>
+    Task MessageUnpinned(MessagePinPayload payload);
+
+    /// <summary>
     /// Fired when channel metadata changes (create / update / reorder).
     /// Clients refresh their channel list on receipt.
     /// Distinct from ChannelDeleted — clients should update, not remove.
@@ -179,6 +191,9 @@ public record MessageEditedPayload(
     string NewContent,
     long EditedAt
 );
+
+/// <summary>Minimal pin/unpin notification — message + channel identity. Reused for both events.</summary>
+public record MessagePinPayload(long MessageId, long ChannelId);
 
 /// <summary>
 /// Channel deletion notification sent to all guild group subscribers.
