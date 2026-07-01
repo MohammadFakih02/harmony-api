@@ -2,6 +2,7 @@ using Harmony.Application.DTOs.Requests;
 using Harmony.Application.DTOs.Responses;
 using Harmony.Application.Interfaces.Services;
 using Harmony.Application.Services;
+using Harmony.Domain.Domain.Entities;
 using Harmony.Domain.Domain.Enums;
 using Harmony.Domain.Interfaces;
 using Harmony.Domain.Interfaces.Repositories;
@@ -469,33 +470,43 @@ public class MessageService : IMessageService
     // -------------------------------------------------------------------------
 
     /// <summary>
-    /// Asserts the channel exists and is a DM (no owning guild). Throws 404 otherwise,
-    /// so a guild channel id can never be driven down the guild-less DM path.
+    /// Asserts the channel exists and is a DM or group DM (no owning guild). Throws 404 otherwise,
+    /// so a guild channel id can never be driven down the guild-less DM path. Returns the channel
+    /// so callers can branch on the DM type without a second lookup.
     /// </summary>
-    private async Task GetDmChannelOrThrowAsync(long channelId)
+    private async Task<Channel> GetDmChannelOrThrowAsync(long channelId)
     {
         var channel = await _channelRepository.GetByIdAsync(channelId);
-        if (channel is null || channel.GuildId is not null || channel.Type != "dm")
+        if (
+            channel is null
+            || channel.GuildId is not null
+            || (channel.Type != "dm" && channel.Type != "group_dm")
+        )
             throw new KeyNotFoundException("Channel not found.");
+        return channel;
     }
 
     /// <summary>
-    /// Authorizes a DM send: the channel must be a DM, the caller a participant, and the
-    /// caller must not be blocked by (or blocking) the peer.
+    /// Authorizes a DM send: the channel must be a DM, and the caller a participant. For a 1:1
+    /// DM a pairwise block hard-stops the send in either direction; a group DM is soft — a block
+    /// only hides content client-side, so two members who blocked each other can coexist in a group.
     /// </summary>
     private async Task AuthorizeDmSendAsync(long userId, long channelId)
     {
-        await GetDmChannelOrThrowAsync(channelId);
+        var channel = await GetDmChannelOrThrowAsync(channelId);
 
         var participantIds = await _dms.GetParticipantIdsAsync(channelId);
         if (!participantIds.Contains(userId))
             throw new UnauthorizedAccessException("You are not a participant of this conversation.");
 
-        // Blocking suppresses DMs in either direction.
-        foreach (var peerId in participantIds)
+        if (channel.Type == "dm")
         {
-            if (peerId != userId && await _blocks.AreBlockedAsync(userId, peerId))
-                throw new UnauthorizedAccessException("You cannot send messages to this user.");
+            // Blocking suppresses 1:1 DMs in either direction.
+            foreach (var peerId in participantIds)
+            {
+                if (peerId != userId && await _blocks.AreBlockedAsync(userId, peerId))
+                    throw new UnauthorizedAccessException("You cannot send messages to this user.");
+            }
         }
     }
 }

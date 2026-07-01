@@ -151,6 +151,14 @@ public interface IChatClient
     /// <summary>Fired when a member's role assignments change. Broadcast to the guild group; carries the
     /// member's full current role-id set so clients re-render role-derived UI (colors, badges).</summary>
     Task MemberRoleUpdated(MemberRoleUpdatedPayload payload);
+
+    /// <summary>
+    /// Fired when a DM/group channel's membership changes (group created, a participant added,
+    /// or someone left). Sent via Clients.Users to every current participant — and the just-added
+    /// or just-departed user — so each refetches their DM list (GET /api/dm) and re-joins the
+    /// channel group. A coarse "something changed, resync" signal, not a delta.
+    /// </summary>
+    Task DmChannelUpdated(DmChannelUpdatedPayload payload);
 }
 
 /// <summary>Minimal delete notification — no content, just identity. GuildId is null for DMs.</summary>
@@ -251,3 +259,6 @@ public record RoleDeletedPayload(long GuildId, long RoleId);
 
 /// <summary>A member's role-id set after an assignment change.</summary>
 public record MemberRoleUpdatedPayload(long GuildId, long UserId, IEnumerable<long> RoleIds);
+
+/// <summary>A DM/group channel whose membership changed — the recipient should resync its DM list.</summary>
+public record DmChannelUpdatedPayload(long ChannelId);

@@ -50,10 +50,13 @@ public class DirectMessageTests : ApiTestBase, IClassFixture<HarmonyWebApplicati
         var create = await OpenDmAsync(idB);
         create.StatusCode.Should().Be(HttpStatusCode.OK);
         var dm = await create.Content.ReadFromJsonAsync<DmDto>();
-        dm!.PeerId.Should().Be(idB);
+        dm!.IsGroup.Should().BeFalse();
+        dm.Participants.Should().ContainSingle(p => p.UserId == idB);
 
         var aList = await Client.GetFromJsonAsync<List<DmDto>>("/api/dm");
-        aList.Should().ContainSingle(d => d.ChannelId == dm.ChannelId && d.PeerId == idB);
+        aList.Should().ContainSingle(d =>
+            d.ChannelId == dm.ChannelId && d.Participants.Any(p => p.UserId == idB)
+        );
 
         Authorize(tokenB);
         var bList = await Client.GetFromJsonAsync<List<DmDto>>("/api/dm");
@@ -216,7 +219,15 @@ public class DirectMessageTests : ApiTestBase, IClassFixture<HarmonyWebApplicati
 
     private record UserDto(long Id);
 
-    private record DmDto(long ChannelId, long PeerId, string PeerUsername, long LastReadId);
+    private record DmDto(
+        long ChannelId,
+        bool IsGroup,
+        string? Name,
+        long LastReadId,
+        List<DmParticipantDto> Participants
+    );
+
+    private record DmParticipantDto(long UserId, string Username, string? AvatarKey);
 
     private record SendDto(long MessageId, long ChannelId, long? GuildId, string Content);
 
