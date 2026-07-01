@@ -51,6 +51,50 @@ public class MessageRepository : IMessageRepository
         return rows.Select(MapMessage).ToList();
     }
 
+    public async Task<IEnumerable<Message>> GetMessagesAroundAsync(
+        long channelId,
+        long messageId,
+        int limit = 50,
+        CancellationToken ct = default
+    )
+    {
+        // Split the window: the newer-or-equal half (includes the target) plus the older half. Ask
+        // for one extra on the newer side so an odd limit still centres roughly on the target.
+        var newerCount = limit / 2 + 1;
+        var olderCount = limit - limit / 2;
+
+        var newerBound = _statements.SelectByChannelAtOrAfter.Bind(channelId, messageId, newerCount);
+        newerBound.SetIdempotence(true);
+        var newerRows = await _session.ExecuteAsync(newerBound, "read");
+
+        var olderBound = _statements.SelectByChannelBefore.Bind(channelId, messageId, olderCount);
+        olderBound.SetIdempotence(true);
+        var olderRows = await _session.ExecuteAsync(olderBound, "read");
+
+        // newerRows come back ASC (target → newest); reverse to DESC (newest → target), then append
+        // olderRows (already DESC, target-1 → oldest) so the whole window is newest-first, matching
+        // every other read MapMessage feeds.
+        var window = newerRows.Select(MapMessage).Reverse().ToList();
+        window.AddRange(olderRows.Select(MapMessage));
+        return window;
+    }
+
+    public async Task<IEnumerable<Message>> GetMessagesAfterAsync(
+        long channelId,
+        long afterMessageId,
+        int limit = 50,
+        CancellationToken ct = default
+    )
+    {
+        var bound = _statements.SelectByChannelAfter.Bind(channelId, afterMessageId, limit);
+        bound.SetIdempotence(true);
+        var rows = await _session.ExecuteAsync(bound, "read");
+
+        // Query is ASC (oldest-of-newer → newest); flip to DESC so callers get newest-first like
+        // every other read MapMessage feeds.
+        return rows.Select(MapMessage).Reverse().ToList();
+    }
+
     public async Task<Message?> GetByIdAsync(long messageId, CancellationToken ct = default)
     {
         var bound = _statements.SelectById.Bind(messageId);

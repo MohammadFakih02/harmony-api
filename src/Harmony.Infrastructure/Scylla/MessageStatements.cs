@@ -8,6 +8,8 @@ public class MessageStatements
     public PreparedStatement InsertById { get; }
     public PreparedStatement SelectByChannel { get; }
     public PreparedStatement SelectByChannelBefore { get; }
+    public PreparedStatement SelectByChannelAtOrAfter { get; }
+    public PreparedStatement SelectByChannelAfter { get; }
     public PreparedStatement SelectById { get; }
     public PreparedStatement SoftDeleteByChannel { get; }
     public PreparedStatement SoftDeleteById { get; }
@@ -51,6 +53,27 @@ public class MessageStatements
                       mention_ids, reply_to_id, is_deleted, is_edited, edited_at, message_type
                FROM {ks}.messages_by_channel
                WHERE channel_id = ? AND message_id < ?
+               LIMIT ?"
+        );
+
+        // Newer-or-equal half of an "around" window. Clustering order is message_id DESC, so we
+        // reverse to ASC to walk forward from the target; the repo flips the result back to DESC.
+        SelectByChannelAtOrAfter = session.Prepare(
+            $@"SELECT channel_id, message_id, user_id, content, attachment_ids,
+                      mention_ids, reply_to_id, is_deleted, is_edited, edited_at, message_type
+               FROM {ks}.messages_by_channel
+               WHERE channel_id = ? AND message_id >= ?
+               ORDER BY message_id ASC
+               LIMIT ?"
+        );
+
+        // Strictly-newer page (scroll-down "load newer" after a jump). Same ASC reversal.
+        SelectByChannelAfter = session.Prepare(
+            $@"SELECT channel_id, message_id, user_id, content, attachment_ids,
+                      mention_ids, reply_to_id, is_deleted, is_edited, edited_at, message_type
+               FROM {ks}.messages_by_channel
+               WHERE channel_id = ? AND message_id > ?
+               ORDER BY message_id ASC
                LIMIT ?"
         );
 
