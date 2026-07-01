@@ -34,6 +34,28 @@ public sealed class ResilientMessageRepository : IMessageRepository
             ct
         );
 
+    public async Task<IEnumerable<Message>> GetMessagesAroundAsync(
+        long channelId,
+        long messageId,
+        int limit = 50,
+        CancellationToken ct = default
+    ) =>
+        await _pipeline.ExecuteAsync(
+            async token => await _inner.GetMessagesAroundAsync(channelId, messageId, limit, token),
+            ct
+        );
+
+    public async Task<IEnumerable<Message>> GetMessagesAfterAsync(
+        long channelId,
+        long afterMessageId,
+        int limit = 50,
+        CancellationToken ct = default
+    ) =>
+        await _pipeline.ExecuteAsync(
+            async token => await _inner.GetMessagesAfterAsync(channelId, afterMessageId, limit, token),
+            ct
+        );
+
     public async Task<Message?> GetByIdAsync(long messageId, CancellationToken ct = default) =>
         await _pipeline.ExecuteAsync(
             async token => await _inner.GetByIdAsync(messageId, token),

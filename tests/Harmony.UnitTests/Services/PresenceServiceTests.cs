@@ -374,7 +374,8 @@ public class PresenceServiceTests
         db.Verify(
             d => d.StringSetAsync(
                 It.Is<RedisKey>(k => k.ToString() == RedisPresenceService.IdleKey(1)),
-                It.Is<RedisValue>(v => v.ToString() == "1")
+                It.Is<RedisValue>(v => v.ToString() == "1"),
+                It.IsAny<Expiration>()
             ),
             Times.Once
         );
@@ -402,7 +403,8 @@ public class PresenceServiceTests
         db.Verify(
             d => d.StringSetAsync(
                 It.Is<RedisKey>(k => k.ToString() == RedisPresenceService.IdleKey(1)),
-                It.Is<RedisValue>(v => v.ToString() == "1")
+                It.Is<RedisValue>(v => v.ToString() == "1"),
+                It.IsAny<Expiration>()
             ),
             Times.Once
         );

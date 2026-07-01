@@ -19,6 +19,8 @@ public interface IMessageService
         long channelId,
         int limit = 50,
         long? beforeMessageId = null,
+        long? aroundMessageId = null,
+        long? afterMessageId = null,
         CancellationToken ct = default
     );
 
