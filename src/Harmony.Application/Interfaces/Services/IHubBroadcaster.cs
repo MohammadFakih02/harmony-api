@@ -215,4 +215,14 @@ public interface IHubBroadcaster
         MemberRoleUpdatedPayload payload,
         CancellationToken ct = default
     );
+
+    /// <summary>
+    /// Notifies the given users (all their tabs) that a DM/group channel's membership changed,
+    /// so each resyncs its DM list. Sent via Clients.Users to the explicit recipient set.
+    /// </summary>
+    Task BroadcastDmChannelUpdatedAsync(
+        IReadOnlyList<long> userIds,
+        DmChannelUpdatedPayload payload,
+        CancellationToken ct = default
+    );
 }

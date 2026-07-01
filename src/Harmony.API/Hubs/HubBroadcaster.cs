@@ -179,4 +179,13 @@ public class HubBroadcaster : IHubBroadcaster
         MemberRoleUpdatedPayload payload,
         CancellationToken ct = default
     ) => _hubContext.Clients.Group(ChatHub.GuildGroup(guildId)).MemberRoleUpdated(payload);
+
+    public Task BroadcastDmChannelUpdatedAsync(
+        IReadOnlyList<long> userIds,
+        DmChannelUpdatedPayload payload,
+        CancellationToken ct = default
+    ) =>
+        _hubContext
+            .Clients.Users(userIds.Select(id => id.ToString()).ToList())
+            .DmChannelUpdated(payload);
 }

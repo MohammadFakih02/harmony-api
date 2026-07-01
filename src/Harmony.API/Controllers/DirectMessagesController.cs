@@ -1,8 +1,10 @@
 using System.Security.Claims;
 using Harmony.Application.DTOs.Requests;
 using Harmony.Application.DTOs.Responses;
+using Harmony.Application.Hubs;
 using Harmony.Application.Interfaces.Services;
 using Harmony.Application.Services;
+using Harmony.Domain.Domain.Entities;
 using Harmony.Domain.Interfaces.Repositories;
 using Harmony.Domain.Interfaces.Services;
 using Microsoft.AspNetCore.Authorization;
@@ -12,10 +14,11 @@ using Microsoft.AspNetCore.RateLimiting;
 namespace Harmony.API.Controllers;
 
 /// <summary>
-/// Direct messages — guild-less 1:1 conversations. Channel management (open/list/hide)
-/// plus the messaging surface, which delegates to the shared IMessageService with a null
-/// guildId so the same persist → broadcast pipeline is reused; only authorization differs
-/// (participant + not-blocked instead of guild permissions).
+/// Direct messages — guild-less conversations, 1:1 or group. Channel management
+/// (open/list/hide, plus group create/add/leave) and the messaging surface, which
+/// delegates to the shared IMessageService with a null guildId so the same persist →
+/// broadcast pipeline is reused; only authorization differs (participant + not-blocked
+/// instead of guild permissions).
 /// </summary>
 [ApiController]
 [Route("api/dm")]
@@ -23,34 +26,45 @@ namespace Harmony.API.Controllers;
 [EnableRateLimiting("api")]
 public class DirectMessagesController : ControllerBase
 {
+    private const string GroupDmType = "group_dm";
+
+    /// <summary>Max total members in a group DM (Discord parity).</summary>
+    private const int MaxGroupParticipants = 10;
+
     private readonly IDirectMessageRepository _dms;
     private readonly IUserRepository _users;
     private readonly IUserBlockRepository _blocks;
     private readonly IFriendRepository _friends;
+    private readonly IChannelRepository _channels;
     private readonly ISnowflakeIdGenerator _snowflake;
     private readonly IMessageService _messageService;
     private readonly IUnreadCountService _unread;
     private readonly IFileService _files;
+    private readonly IHubBroadcaster _broadcaster;
 
     public DirectMessagesController(
         IDirectMessageRepository dms,
         IUserRepository users,
         IUserBlockRepository blocks,
         IFriendRepository friends,
+        IChannelRepository channels,
         ISnowflakeIdGenerator snowflake,
         IMessageService messageService,
         IUnreadCountService unread,
-        IFileService files
+        IFileService files,
+        IHubBroadcaster broadcaster
     )
     {
         _dms = dms;
         _users = users;
         _blocks = blocks;
         _friends = friends;
+        _channels = channels;
         _snowflake = snowflake;
         _messageService = messageService;
         _unread = unread;
         _files = files;
+        _broadcaster = broadcaster;
     }
 
     // POST /api/dm — open or reuse a 1:1 DM with another user
@@ -100,23 +114,118 @@ public class DirectMessagesController : ControllerBase
             );
         }
 
-        return Ok(ToResponse(channelId, target, lastReadId: 0));
+        return Ok(OneToOneResponse(channelId, target, lastReadId: 0));
     }
 
-    // GET /api/dm — the caller's non-hidden DM channels
+    // POST /api/dm/group — create a group DM with two or more other users
+    [HttpPost("group")]
+    public async Task<IActionResult> CreateGroup([FromBody] CreateGroupDmRequest request)
+    {
+        var me = GetUserId();
+
+        var others = (request.UserIds ?? [])
+            .Where(uid => uid != me)
+            .Distinct()
+            .ToList();
+
+        if (others.Count < 2)
+            return BadRequest(new { error = "A group needs at least two other people." });
+        if (others.Count > MaxGroupParticipants - 1)
+            return BadRequest(new { error = $"A group can have at most {MaxGroupParticipants} people." });
+
+        var users = await _users.GetByIdsAsync(others);
+        if (users.Count != others.Count)
+            return BadRequest(new { error = "One or more users were not found." });
+
+        var name = (request.Name ?? string.Empty).Trim();
+        if (name.Length > 100)
+            return BadRequest(new { error = "Group name is too long." });
+
+        var channelId = _snowflake.NextId();
+        var allParticipants = new List<long>(others) { me };
+        await _dms.CreateGroupAsync(
+            channelId,
+            name,
+            allParticipants,
+            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+        );
+
+        await NotifyParticipantsAsync(allParticipants, channelId);
+
+        var participants = others
+            .Select(uid => new DmParticipantResponse(uid, users[uid].UserName!, users[uid].AvatarKey))
+            .ToList();
+        return Ok(new DirectMessageChannelResponse(channelId, IsGroup: true, name, LastReadId: 0, participants));
+    }
+
+    // POST /api/dm/{channelId}/participants — add a user to a group DM (any participant may add)
+    [HttpPost("{channelId:long}/participants")]
+    public async Task<IActionResult> AddParticipant(
+        long channelId,
+        [FromBody] AddGroupParticipantRequest request
+    )
+    {
+        var me = GetUserId();
+        if (!await _dms.IsParticipantAsync(channelId, me))
+            return Forbid();
+        if (!await IsGroupAsync(channelId))
+            return BadRequest(new { error = "You can only add people to a group conversation." });
+
+        var target = await _users.GetByIdAsync(request.UserId);
+        if (target is null)
+            return NotFound(new { error = "User not found." });
+
+        var current = await _dms.GetParticipantIdsAsync(channelId);
+        if (current.Contains(request.UserId))
+            return NoContent(); // already in the group — idempotent
+        if (current.Count >= MaxGroupParticipants)
+            return BadRequest(new { error = "This group is full." });
+
+        await _dms.AddParticipantAsync(channelId, request.UserId);
+
+        // Notify everyone who is now a member (existing + the new one) to resync.
+        var recipients = current.Append(request.UserId).ToList();
+        await NotifyParticipantsAsync(recipients, channelId);
+        return NoContent();
+    }
+
+    // DELETE /api/dm/{channelId}/participants/me — leave a group DM
+    [HttpDelete("{channelId:long}/participants/me")]
+    public async Task<IActionResult> Leave(long channelId)
+    {
+        var me = GetUserId();
+        if (!await _dms.IsParticipantAsync(channelId, me))
+            return NotFound();
+        if (!await IsGroupAsync(channelId))
+            return BadRequest(new { error = "You can only leave a group conversation; hide a 1:1 DM instead." });
+
+        // Capture the membership (including me) before removal so my other tabs are told too.
+        var recipients = await _dms.GetParticipantIdsAsync(channelId);
+        await _dms.RemoveParticipantAsync(channelId, me);
+        await NotifyParticipantsAsync(recipients, channelId);
+        return NoContent();
+    }
+
+    // GET /api/dm — the caller's non-hidden DM/group channels
     [HttpGet]
     public async Task<IActionResult> GetMyDms()
     {
         var me = GetUserId();
-        var views = await _dms.GetVisibleForUserAsync(me);
-        if (views.Count == 0)
+        var summaries = await _dms.GetVisibleForUserAsync(me);
+        if (summaries.Count == 0)
             return Ok(Array.Empty<DirectMessageChannelResponse>());
 
-        var peers = await _users.GetByIdsAsync(views.Select(v => v.PeerId));
-        var result = views
-            .Where(v => peers.ContainsKey(v.PeerId))
-            .Select(v => ToResponse(v.ChannelId, peers[v.PeerId], v.LastReadId));
+        var participantsByChannel = await _dms.GetParticipantsForChannelsAsync(
+            summaries.Select(s => s.ChannelId)
+        );
 
+        var otherIds = participantsByChannel
+            .Values.SelectMany(ids => ids)
+            .Where(id => id != me)
+            .Distinct();
+        var users = await _users.GetByIdsAsync(otherIds);
+
+        var result = summaries.Select(s => BuildResponse(s, participantsByChannel, users, me));
         return Ok(result);
     }
 
@@ -227,12 +336,49 @@ public class DirectMessagesController : ControllerBase
         return NoContent();
     }
 
-    private static DirectMessageChannelResponse ToResponse(
-        long channelId,
-        Harmony.Domain.Domain.Entities.User peer,
-        long lastReadId
-    ) =>
-        new(channelId, peer.Id, peer.UserName!, peer.AvatarKey, lastReadId);
+    private async Task<bool> IsGroupAsync(long channelId)
+    {
+        var channel = await _channels.GetByIdAsync(channelId);
+        return channel?.Type == GroupDmType;
+    }
+
+    private Task NotifyParticipantsAsync(IReadOnlyList<long> userIds, long channelId) =>
+        _broadcaster.BroadcastDmChannelUpdatedAsync(userIds, new DmChannelUpdatedPayload(channelId));
+
+    private static DirectMessageChannelResponse BuildResponse(
+        DmChannelSummary summary,
+        Dictionary<long, List<long>> participantsByChannel,
+        Dictionary<long, User> users,
+        long me
+    )
+    {
+        var isGroup = summary.Type == GroupDmType;
+        var others = participantsByChannel.TryGetValue(summary.ChannelId, out var ids)
+            ? ids.Where(id => id != me)
+            : Enumerable.Empty<long>();
+
+        var participants = others
+            .Where(users.ContainsKey)
+            .Select(id => new DmParticipantResponse(id, users[id].UserName!, users[id].AvatarKey))
+            .ToList();
+
+        return new DirectMessageChannelResponse(
+            summary.ChannelId,
+            isGroup,
+            isGroup ? summary.Name : null,
+            summary.LastReadId,
+            participants
+        );
+    }
+
+    private static DirectMessageChannelResponse OneToOneResponse(long channelId, User peer, long lastReadId) =>
+        new(
+            channelId,
+            IsGroup: false,
+            Name: null,
+            lastReadId,
+            new List<DmParticipantResponse> { new(peer.Id, peer.UserName!, peer.AvatarKey) }
+        );
 
     private long GetUserId() => long.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
 }
