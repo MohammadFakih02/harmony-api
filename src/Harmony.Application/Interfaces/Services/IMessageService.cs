@@ -40,6 +40,43 @@ public interface IMessageService
     );
 
     /// <summary>
+    /// Pins a message in a channel. Guild → requires <c>PinMessages</c>; DM/group → any participant.
+    /// Idempotent, capped at 50/channel. Posts a system notice + audit in a guild; broadcasts
+    /// <c>MessagePinned</c> to the channel group.
+    /// </summary>
+    Task PinMessageAsync(
+        long userId,
+        long? guildId,
+        long channelId,
+        long messageId,
+        CancellationToken ct = default
+    );
+
+    /// <summary>
+    /// Unpins a message. Same authorization as <see cref="PinMessageAsync"/>; idempotent. Audits in a
+    /// guild; broadcasts <c>MessageUnpinned</c>. No system notice.
+    /// </summary>
+    Task UnpinMessageAsync(
+        long userId,
+        long? guildId,
+        long channelId,
+        long messageId,
+        CancellationToken ct = default
+    );
+
+    /// <summary>
+    /// Lists a channel's pinned messages (most-recently-pinned first), resolved to full
+    /// <see cref="PinnedMessageResponse"/>s. Read authorization mirrors channel history (guild →
+    /// ViewChannel + ReadHistory; DM → participant). Skips deleted messages.
+    /// </summary>
+    Task<IReadOnlyList<PinnedMessageResponse>> GetPinsAsync(
+        long userId,
+        long? guildId,
+        long channelId,
+        CancellationToken ct = default
+    );
+
+    /// <summary>
     /// Publishes a server-generated system message (e.g. a member-join welcome notice) into a
     /// guild channel. Bypasses the permission/timeout/attachment/content gates of a normal send —
     /// the caller (a controller/service) is responsible for authorization. The message flows

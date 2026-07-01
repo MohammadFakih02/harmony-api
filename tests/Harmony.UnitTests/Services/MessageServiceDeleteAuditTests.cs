@@ -42,7 +42,8 @@ public class MessageServiceDeleteAuditTests
             new(
                 Channels.Object, Guilds.Object, Publisher.Object, Snowflake.Object,
                 Messages.Object, Users.Object, Permissions.Object, Files.Object,
-                Dms.Object, Blocks.Object, Presence.Object, AuditLog.Object
+                Dms.Object, Blocks.Object, Presence.Object, AuditLog.Object,
+                Mock.Of<IHubBroadcaster>()
             );
 
         public void SetUpGuildDelete(long messageAuthorId, bool canManageMessages)

@@ -57,7 +57,8 @@ public class MessageServiceAttachmentTests
         var sut = new MessageService(
             channels.Object, guilds.Object, publisher.Object, snowflake.Object,
             messages.Object, users.Object, permissions.Object, files.Object,
-            dms.Object, blocks.Object, presence.Object, auditLog.Object
+            dms.Object, blocks.Object, presence.Object, auditLog.Object,
+            Mock.Of<IHubBroadcaster>()
         );
         return (sut, publisher, files);
     }

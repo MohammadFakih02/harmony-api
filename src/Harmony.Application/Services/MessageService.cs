@@ -1,5 +1,6 @@
 using Harmony.Application.DTOs.Requests;
 using Harmony.Application.DTOs.Responses;
+using Harmony.Application.Hubs;
 using Harmony.Application.Interfaces.Services;
 using Harmony.Application.Services;
 using Harmony.Domain.Domain.Entities;
@@ -25,9 +26,13 @@ public class MessageService : IMessageService
     private readonly IUserBlockRepository _blocks;
     private readonly IPresenceService _presence;
     private readonly IAuditLogService _auditLog;
+    private readonly IHubBroadcaster _broadcaster;
 
     /// <summary>Max attachments per message (Discord parity).</summary>
     public const int MaxAttachments = 10;
+
+    /// <summary>Max pinned messages per channel (Discord parity).</summary>
+    public const int MaxPinsPerChannel = 50;
 
     public MessageService(
         IChannelRepository channelRepository,
@@ -41,7 +46,8 @@ public class MessageService : IMessageService
         IDirectMessageRepository dms,
         IUserBlockRepository blocks,
         IPresenceService presence,
-        IAuditLogService auditLog
+        IAuditLogService auditLog,
+        IHubBroadcaster broadcaster
     )
     {
         _channelRepository = channelRepository;
@@ -56,6 +62,7 @@ public class MessageService : IMessageService
         _blocks = blocks;
         _presence = presence;
         _auditLog = auditLog;
+        _broadcaster = broadcaster;
     }
 
     /// <summary>
@@ -304,6 +311,19 @@ public class MessageService : IMessageService
         // 1. Synchronously update ScyllaDB
         await _messageRepository.DeleteAsync(messageId, channelId, ct);
 
+        // 1b. A deleted message can no longer be pinned — drop any pin row so the pins panel and
+        //     the 50-cap stay honest. Idempotent (a tombstone if it wasn't pinned) and best-effort:
+        //     a leftover pin row is harmless (bounded by the cap, purged on channel delete), and the
+        //     client already drops the pin locally off the MessageDeleted broadcast.
+        try
+        {
+            await _messageRepository.UnpinAsync(channelId, messageId, ct);
+        }
+        catch
+        {
+            // ignore — pin cleanup must never fail an otherwise-successful delete
+        }
+
         // 2. Publish event to background queues (search index update)
         await _publisher.PublishMessageDeletedAsync(
             new MessageDeletedEvent(
@@ -433,35 +453,219 @@ public class MessageService : IMessageService
             var users = await _userRepository.GetByIdsAsync(userIds);
 
             return new ChannelMessagesResponse(
-                messages.Select(m =>
-                {
-                    users.TryGetValue(m.UserId, out var user);
-                    return new MessageResponse(
-                        MessageId: m.MessageId,
-                        ChannelId: m.ChannelId,
-                        GuildId: guildId,
-                        UserId: m.UserId,
-                        Username: user?.UserName ?? "Unknown",
-                        AvatarKey: user?.AvatarKey,
-                        Content: m.IsDeleted ? string.Empty : m.Content,
-                        MessageType: m.MessageType,
-                        IsDeleted: m.IsDeleted,
-                        IsEdited: m.IsEdited,
-                        ReplyToId: m.ReplyToId,
-                        MentionIds: m.IsDeleted ? [] : m.MentionIds,
-                        AttachmentIds: m.IsDeleted ? [] : m.AttachmentIds,
-                        SentAt: ((DateTimeOffset)m.CreatedAt).ToUnixTimeMilliseconds(),
-                        EditedAt: m.EditedAt.HasValue
-                            ? ((DateTimeOffset)m.EditedAt.Value).ToUnixTimeMilliseconds()
-                            : null
-                    );
-                }),
+                messages.Select(m => MapMessage(m, guildId, users)),
                 Degraded: false
             );
         }
         catch (BrokenCircuitException)
         {
             return new ChannelMessagesResponse([], Degraded: true);
+        }
+    }
+
+    /// <summary>
+    /// Projects a Scylla <see cref="Message"/> into the wire <see cref="MessageResponse"/>, resolving
+    /// the sender's identity from a pre-fetched batch (no N+1). <paramref name="guildId"/> is the
+    /// request scope (null for DMs) — a message row doesn't carry its guild. Shared by the channel
+    /// history read and the pins list so both render identically.
+    /// </summary>
+    private static MessageResponse MapMessage(
+        Message m,
+        long? guildId,
+        Dictionary<long, User> users
+    )
+    {
+        users.TryGetValue(m.UserId, out var user);
+        return new MessageResponse(
+            MessageId: m.MessageId,
+            ChannelId: m.ChannelId,
+            GuildId: guildId,
+            UserId: m.UserId,
+            Username: user?.UserName ?? "Unknown",
+            AvatarKey: user?.AvatarKey,
+            Content: m.IsDeleted ? string.Empty : m.Content,
+            MessageType: m.MessageType,
+            IsDeleted: m.IsDeleted,
+            IsEdited: m.IsEdited,
+            ReplyToId: m.ReplyToId,
+            MentionIds: m.IsDeleted ? [] : m.MentionIds,
+            AttachmentIds: m.IsDeleted ? [] : m.AttachmentIds,
+            SentAt: ((DateTimeOffset)m.CreatedAt).ToUnixTimeMilliseconds(),
+            EditedAt: m.EditedAt.HasValue
+                ? ((DateTimeOffset)m.EditedAt.Value).ToUnixTimeMilliseconds()
+                : null
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // Pins
+    // -------------------------------------------------------------------------
+
+    public async Task PinMessageAsync(
+        long userId,
+        long? guildId,
+        long channelId,
+        long messageId,
+        CancellationToken ct = default
+    )
+    {
+        await AuthorizePinActionAsync(userId, guildId, channelId, ct);
+
+        var message = await _messageRepository.GetByIdAsync(messageId, ct);
+        if (message is null)
+            throw new KeyNotFoundException("Message not found.");
+        if (message.ChannelId != channelId)
+            throw new UnauthorizedAccessException(
+                "Message does not belong to the specified channel."
+            );
+        if (message.IsDeleted)
+            throw new ArgumentException("You cannot pin a deleted message.");
+
+        var pinned = (await _messageRepository.GetPinnedAsync(channelId, ct)).ToList();
+        // Idempotent: the pin's clustering key IS the message id, so re-pinning is a harmless
+        // upsert — short-circuit so it neither errors on the cap nor duplicates the side effects.
+        if (pinned.Any(p => p.MessageId == messageId))
+            return;
+        if (pinned.Count >= MaxPinsPerChannel)
+            throw new ArgumentException(
+                $"This channel has reached the maximum of {MaxPinsPerChannel} pins."
+            );
+
+        await _messageRepository.PinAsync(channelId, messageId, userId, ct);
+
+        // Guild only: post a "pinned a message" system notice (author = the pinner) and audit.
+        // DMs have neither system-message infra nor an audit log.
+        if (guildId is { } gid)
+        {
+            await PublishSystemMessageAsync(gid, channelId, userId, "pin", string.Empty, ct);
+            await _auditLog.LogAsync(
+                gid,
+                userId,
+                AuditLogAction.MessagePin,
+                targetId: messageId,
+                changes: new { channelId },
+                ct: ct
+            );
+        }
+
+        await _broadcaster.BroadcastMessagePinnedAsync(new MessagePinPayload(messageId, channelId), ct);
+    }
+
+    public async Task UnpinMessageAsync(
+        long userId,
+        long? guildId,
+        long channelId,
+        long messageId,
+        CancellationToken ct = default
+    )
+    {
+        await AuthorizePinActionAsync(userId, guildId, channelId, ct);
+
+        // pinned_at == messageId (the pin's clustering key), so unpin keys on the message id.
+        // Idempotent — a DELETE on an absent clustering key is a harmless tombstone.
+        await _messageRepository.UnpinAsync(channelId, messageId, ct);
+
+        if (guildId is { } gid)
+        {
+            await _auditLog.LogAsync(
+                gid,
+                userId,
+                AuditLogAction.MessageUnpin,
+                targetId: messageId,
+                changes: new { channelId },
+                ct: ct
+            );
+        }
+
+        await _broadcaster.BroadcastMessageUnpinnedAsync(new MessagePinPayload(messageId, channelId), ct);
+    }
+
+    public async Task<IReadOnlyList<PinnedMessageResponse>> GetPinsAsync(
+        long userId,
+        long? guildId,
+        long channelId,
+        CancellationToken ct = default
+    )
+    {
+        // Read authorization mirrors GetChannelMessagesAsync: guild → ViewChannel + ReadHistory
+        // (overrides apply); DM → participant.
+        if (guildId is { } gid)
+        {
+            var channel = await _channelRepository.GetByIdAndGuildIdAsync(channelId, gid);
+            if (channel is null)
+                throw new KeyNotFoundException("Channel not found.");
+
+            const long readMask = (long)(Permission.ViewChannel | Permission.ReadHistory);
+            var bits = await _permissions.ResolveAsync(userId, gid, channelId, ct);
+            if ((bits & readMask) != readMask)
+                throw new UnauthorizedAccessException(
+                    "You do not have permission to view this channel."
+                );
+        }
+        else
+        {
+            await GetDmChannelOrThrowAsync(channelId);
+            if (!await _dms.IsParticipantAsync(channelId, userId))
+                throw new UnauthorizedAccessException(
+                    "You are not a participant of this conversation."
+                );
+        }
+
+        var pins = (await _messageRepository.GetPinnedAsync(channelId, ct)).ToList();
+        if (pins.Count == 0)
+            return [];
+
+        // Resolve each pinned message from messages_by_id; skip any since hard-gone or soft-deleted.
+        var results = new List<(PinnedMessage Pin, Message Message)>(pins.Count);
+        foreach (var pin in pins)
+        {
+            var message = await _messageRepository.GetByIdAsync(pin.MessageId, ct);
+            if (message is null || message.IsDeleted)
+                continue;
+            results.Add((pin, message));
+        }
+
+        var users = await _userRepository.GetByIdsAsync(results.Select(r => r.Message.UserId).Distinct());
+
+        // GetPinnedAsync already returns pinned_at DESC (most-recently-pinned first) — preserve it.
+        return results
+            .Select(r => new PinnedMessageResponse(
+                Message: MapMessage(r.Message, guildId, users),
+                PinnedBy: r.Pin.PinnedBy,
+                PinnedAt: r.Pin.PinnedAt
+            ))
+            .ToList();
+    }
+
+    /// <summary>
+    /// Authorizes a pin/unpin: guild → <see cref="Permission.PinMessages"/> (channel-scoped, so
+    /// overrides apply; owners/administrators resolve to all bits); DM/group → the caller must be a
+    /// participant (no moderators in a DM). Throws 404/403 as appropriate.
+    /// </summary>
+    private async Task AuthorizePinActionAsync(
+        long userId,
+        long? guildId,
+        long channelId,
+        CancellationToken ct
+    )
+    {
+        if (guildId is { } gid)
+        {
+            var channel = await _channelRepository.GetByIdAndGuildIdAsync(channelId, gid);
+            if (channel is null)
+                throw new KeyNotFoundException("Channel not found.");
+            if (!await _permissions.HasAsync(userId, gid, Permission.PinMessages, channelId, ct))
+                throw new UnauthorizedAccessException(
+                    "You do not have permission to pin messages in this channel."
+                );
+        }
+        else
+        {
+            await GetDmChannelOrThrowAsync(channelId);
+            if (!await _dms.IsParticipantAsync(channelId, userId))
+                throw new UnauthorizedAccessException(
+                    "You are not a participant of this conversation."
+                );
         }
     }
 

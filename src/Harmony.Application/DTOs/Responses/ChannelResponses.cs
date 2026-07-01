@@ -35,5 +35,6 @@ public record ChannelCapabilitiesResponse(
     bool CanAttach,
     bool CanManageMessages,
     bool CanManageChannels,
+    bool CanPin,
     bool TimedOut
 );
