@@ -125,4 +125,80 @@ public class MentionParserTests
 
         result.UserIds.Should().BeEmpty();
     }
+
+    // --- nickname / role / longest-match (multi-word) ---
+
+    private static readonly Dictionary<string, long> WithNick = new()
+    {
+        ["alice"] = 1,
+        ["bobby mcbobface"] = 2, // a server nickname with spaces
+        ["john"] = 4,
+        ["john smith"] = 5,
+    };
+
+    private static readonly Dictionary<string, long> Roles = new()
+    {
+        ["server admin"] = 50,
+        ["mods"] = 51,
+    };
+
+    [Fact]
+    public void Parse_ShouldResolveMultiWordNickname()
+    {
+        var result = MentionParser.Parse("hey @Bobby McBobface how are you", WithNick, guildContext: true);
+
+        result.UserIds.Should().BeEquivalentTo(new HashSet<long> { 2 });
+    }
+
+    [Fact]
+    public void Parse_ShouldPreferTheLongestCandidate()
+    {
+        // Both "john" and "john smith" are candidates — the longer name wins.
+        var result = MentionParser.Parse("ping @John Smith please", WithNick, guildContext: true);
+
+        result.UserIds.Should().BeEquivalentTo(new HashSet<long> { 5 });
+    }
+
+    [Fact]
+    public void Parse_ShouldNotPartialMatchAcrossAWordBoundary()
+    {
+        // "@Johnson" must not resolve the shorter "john" candidate.
+        var result = MentionParser.Parse("@Johnson", WithNick, guildContext: true);
+
+        result.UserIds.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Parse_ShouldResolveRoleByName_IncludingSpaces()
+    {
+        var result = MentionParser.Parse(
+            "heads up @Server Admin", WithNick, guildContext: true, rolesByNameLower: Roles
+        );
+
+        result.RoleIds.Should().BeEquivalentTo(new HashSet<long> { 50 });
+        result.UserIds.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Parse_ShouldResolveUserAndRoleTogether()
+    {
+        var result = MentionParser.Parse(
+            "@alice and @mods ship it", WithNick, guildContext: true, rolesByNameLower: Roles
+        );
+
+        result.UserIds.Should().BeEquivalentTo(new HashSet<long> { 1 });
+        result.RoleIds.Should().BeEquivalentTo(new HashSet<long> { 51 });
+    }
+
+    [Fact]
+    public void Parse_ShouldPreferUserOverRole_OnANameTie()
+    {
+        var users = new Dictionary<string, long> { ["admin"] = 1 };
+        var roles = new Dictionary<string, long> { ["admin"] = 50 };
+
+        var result = MentionParser.Parse("@admin", users, guildContext: true, rolesByNameLower: roles);
+
+        result.UserIds.Should().BeEquivalentTo(new HashSet<long> { 1 });
+        result.RoleIds.Should().BeEmpty();
+    }
 }

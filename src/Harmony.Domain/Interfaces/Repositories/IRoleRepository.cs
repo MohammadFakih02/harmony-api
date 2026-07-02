@@ -28,6 +28,9 @@ public interface IRoleRepository
     /// <summary>All explicit role assignments in a guild, grouped by member — for the member-list enrichment.</summary>
     Task<Dictionary<long, List<long>>> GetRoleIdsByMemberAsync(long guildId);
 
+    /// <summary>Member ids holding a specific role — for expanding a role @mention to its members.</summary>
+    Task<List<long>> GetMemberIdsWithRoleAsync(long guildId, long roleId);
+
     Task<RoleAssignment?> GetAssignmentAsync(long roleId, long userId);
 
     Task AddAssignmentAsync(RoleAssignment assignment);
