@@ -29,6 +29,7 @@ public class ChatHub : Hub<IChatClient>
     private readonly IPermissionService _permissions;
     private readonly IPresenceService _presence;
     private readonly IDirectMessageRepository _dms;
+    private readonly IHubBroadcaster _broadcaster;
     private readonly ILogger<ChatHub> _logger;
 
     public ChatHub(
@@ -38,6 +39,7 @@ public class ChatHub : Hub<IChatClient>
         IPermissionService permissions,
         IPresenceService presence,
         IDirectMessageRepository dms,
+        IHubBroadcaster broadcaster,
         ILogger<ChatHub> logger
     )
     {
@@ -47,6 +49,7 @@ public class ChatHub : Hub<IChatClient>
         _permissions = permissions;
         _presence = presence;
         _dms = dms;
+        _broadcaster = broadcaster;
         _logger = logger;
     }
 
@@ -113,30 +116,30 @@ public class ChatHub : Hub<IChatClient>
     {
         var userId = GetUserId();
 
-        // Authorize: resolve the channel's owning guild and verify the caller can view it
-        // before subscribing to the broadcast group. Without this, any authenticated client
-        // could join channel:{id} and receive its messages. ViewChannel is resolved with the
-        // channel's overrides applied, so a channel hidden by an override can't be joined;
-        // non-members resolve to 0 and are rejected.
-        var channel = await _channelRepository.GetByIdAsync(channelId);
-        if (channel is null)
-            throw new HubException("Channel not found.");
-
-        // Guild channels require ViewChannel (overrides applied; non-members resolve to 0).
-        // Guild-less channels are DMs — the caller must be a participant.
-        if (channel.GuildId is { } guildId)
-        {
-            if (!await _permissions.HasAsync(userId, guildId, Permission.ViewChannel, channelId))
-                throw new HubException("You do not have permission to view this channel.");
-        }
-        else
-        {
-            if (!await _dms.IsParticipantAsync(channelId, userId))
-                throw new HubException("You cannot join this channel.");
-        }
+        // Authorize: verify the caller can view the channel before subscribing to its broadcast
+        // group. Without this, any authenticated client could join channel:{id} and receive its
+        // messages.
+        if (!await CanAccessChannelAsync(userId, channelId))
+            throw new HubException("You do not have permission to view this channel.");
 
         await Groups.AddToGroupAsync(Context.ConnectionId, ChannelGroup(channelId));
         _logger.LogDebug("User {UserId} joined {Group}", userId, ChannelGroup(channelId));
+    }
+
+    /// <summary>
+    /// Whether a user may access a channel: for a guild channel, ViewChannel (overrides applied;
+    /// non-members resolve to 0); for a guild-less DM, the caller must be a participant. A missing
+    /// channel is not accessible. Shared by JoinChannel and StartTyping.
+    /// </summary>
+    private async Task<bool> CanAccessChannelAsync(long userId, long channelId)
+    {
+        var channel = await _channelRepository.GetByIdAsync(channelId);
+        if (channel is null)
+            return false;
+
+        return channel.GuildId is { } guildId
+            ? await _permissions.HasAsync(userId, guildId, Permission.ViewChannel, channelId)
+            : await _dms.IsParticipantAsync(channelId, userId);
     }
 
     public async Task LeaveChannel(long channelId)
@@ -241,6 +244,27 @@ public class ChatHub : Hub<IChatClient>
                 ErrorMessage: ex.Message
             );
         }
+    }
+
+    /// <summary>
+    /// Ephemeral typing signal. The client throttles this to at most once every few seconds while
+    /// the composer has focus + content. Verifies channel access (so you can't spoof typing into a
+    /// channel you can't see), then broadcasts TypingStarted to the channel group (the typer's own
+    /// client filters itself). Nothing is persisted.
+    /// </summary>
+    public async Task StartTyping(long channelId)
+    {
+        var userId = GetUserId();
+        if (!await CanAccessChannelAsync(userId, channelId))
+            return; // silently ignore — typing is a best-effort signal, not an action to error on
+
+        await _broadcaster.BroadcastTypingStartedAsync(channelId, userId);
+    }
+
+    /// <summary>Clears the caller's typing indicator in a channel (sent on message send).</summary>
+    public async Task StopTyping(long channelId)
+    {
+        await _broadcaster.BroadcastTypingStoppedAsync(channelId, GetUserId());
     }
 
     // -------------------------------------------------------------------------

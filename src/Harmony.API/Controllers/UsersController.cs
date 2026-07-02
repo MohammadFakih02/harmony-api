@@ -435,7 +435,8 @@ public class UsersController : ControllerBase
         );
 
     private static PublicUserResponse ToPublicResponse(User u) =>
-        new(u.Id, u.UserName!, u.AvatarKey, u.BannerKey, u.Bio, u.StatusMessage, AgeFrom(u.DateOfBirth));
+        new(u.Id, u.UserName!, u.AvatarKey, u.BannerKey, u.Bio, u.StatusMessage,
+            AgeFrom(u.DateOfBirth), u.DmPrivacy);
 
     /// <summary>Whole years between a DOB and today (UTC), or null when DOB is unset.</summary>
     private static int? AgeFrom(DateOnly? dob)

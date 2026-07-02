@@ -37,6 +37,7 @@ public class MessageServiceMentionTests
         public Mock<IFileAttachmentRepository> Files { get; } = new();
         public Mock<IDirectMessageRepository> Dms { get; } = new();
         public Mock<IUserBlockRepository> Blocks { get; } = new();
+        public Mock<IFriendRepository> Friends { get; } = new();
         public Mock<IPresenceService> Presence { get; } = new();
         public Mock<IAuditLogService> AuditLog { get; } = new();
         public Mock<IRoleRepository> Roles { get; } = new();
@@ -70,7 +71,7 @@ public class MessageServiceMentionTests
             return new MessageService(
                 Channels.Object, Guilds.Object, Publisher.Object, Snowflake.Object,
                 Messages.Object, Users.Object, Permissions.Object, Files.Object,
-                Dms.Object, Blocks.Object, Presence.Object, AuditLog.Object,
+                Dms.Object, Blocks.Object, Friends.Object, Presence.Object, AuditLog.Object,
                 Mock.Of<IHubBroadcaster>(), Roles.Object
             );
         }

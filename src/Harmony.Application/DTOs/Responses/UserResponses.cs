@@ -32,7 +32,10 @@ public record PublicUserResponse(
     string? Bio,
     string? StatusMessage,
     // Computed years from DOB (not the raw date — others don't see your birthday); null = unset.
-    int? Age
+    int? Age,
+    // "everyone" | "friends_only" — lets the client hide the DM/Message action for a stranger when
+    // the target only accepts DMs from friends (the server still enforces on send regardless).
+    string DmPrivacy
 );
 
 // Returned for /api/users/me/blocks — the blocked user's public identity + when blocked

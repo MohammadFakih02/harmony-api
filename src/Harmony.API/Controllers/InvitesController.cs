@@ -1,5 +1,7 @@
 using System.Security.Claims;
 using Harmony.Application.DTOs.Responses;
+using Harmony.Application.Hubs;
+using Harmony.Application.Interfaces.Services;
 using Harmony.Domain.Domain.Entities;
 using Harmony.Domain.Interfaces.Repositories;
 using Harmony.Domain.Interfaces.Services;
@@ -27,6 +29,8 @@ public class InvitesController : ControllerBase
     private readonly IGuildBanRepository _bans;
     private readonly IChannelRepository _channels;
     private readonly IMessageService _messages;
+    private readonly IUserRepository _users;
+    private readonly IHubBroadcaster _broadcaster;
     private readonly ILogger<InvitesController> _logger;
 
     public InvitesController(
@@ -35,6 +39,8 @@ public class InvitesController : ControllerBase
         IGuildBanRepository bans,
         IChannelRepository channels,
         IMessageService messages,
+        IUserRepository users,
+        IHubBroadcaster broadcaster,
         ILogger<InvitesController> logger
     )
     {
@@ -43,6 +49,8 @@ public class InvitesController : ControllerBase
         _bans = bans;
         _channels = channels;
         _messages = messages;
+        _users = users;
+        _broadcaster = broadcaster;
         _logger = logger;
     }
 
@@ -105,6 +113,7 @@ public class InvitesController : ControllerBase
         await _guilds.SaveChangesAsync();
 
         await PostWelcomeMessageAsync(guild, userId);
+        await BroadcastMemberJoinedAsync(guild.Id, userId, member.JoinedAt);
 
         return Ok(ToResponse(guild));
     }
@@ -154,6 +163,42 @@ public class InvitesController : ControllerBase
                 "Failed to post welcome message for user {UserId} joining guild {GuildId}",
                 joinerId,
                 guild.Id
+            );
+        }
+    }
+
+    /// <summary>
+    /// Best-effort: announce the join to the guild group so every connected member inserts the new
+    /// member into their list live. A fresh join has no roles/nickname/timeout yet. Failure here
+    /// must never fail the join itself — the member is already persisted.
+    /// </summary>
+    private async Task BroadcastMemberJoinedAsync(long guildId, long userId, long joinedAt)
+    {
+        try
+        {
+            var user = await _users.GetByIdAsync(userId);
+            var member = new GuildMemberResponse(
+                userId,
+                user?.UserName ?? "Unknown",
+                Nickname: null,
+                user?.AvatarKey,
+                IsOwner: false,
+                JoinedAt: joinedAt,
+                CommunicationDisabledUntil: null,
+                RoleIds: Array.Empty<long>()
+            );
+            await _broadcaster.BroadcastMemberJoinedAsync(
+                guildId,
+                new MemberJoinedPayload(guildId, member)
+            );
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Failed to broadcast MemberJoined for user {UserId} joining guild {GuildId}",
+                userId,
+                guildId
             );
         }
     }

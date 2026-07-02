@@ -50,7 +50,7 @@ public class MessageServicePinTests
             new(
                 Channels.Object, Guilds.Object, Publisher.Object, Snowflake.Object,
                 Messages.Object, Users.Object, Permissions.Object, Files.Object,
-                Dms.Object, Blocks.Object, Presence.Object, AuditLog.Object,
+                Dms.Object, Blocks.Object, Mock.Of<IFriendRepository>(), Presence.Object, AuditLog.Object,
                 Broadcaster.Object, Mock.Of<IRoleRepository>()
             );
 
