@@ -137,6 +137,16 @@ public class DirectMessagesController : ControllerBase
         if (users.Count != others.Count)
             return BadRequest(new { error = "One or more users were not found." });
 
+        // A "friends_only" user can't be pulled into a group by a non-friend (the group-DM backdoor).
+        foreach (var uid in others)
+        {
+            if (users[uid].DmPrivacy == DmPrivacy.FriendsOnly && !await AreFriendsAsync(me, uid))
+                return StatusCode(
+                    StatusCodes.Status403Forbidden,
+                    new { error = $"{users[uid].UserName} only accepts messages from friends." }
+                );
+        }
+
         var name = (request.Name ?? string.Empty).Trim();
         if (name.Length > 100)
             return BadRequest(new { error = "Group name is too long." });
@@ -174,6 +184,13 @@ public class DirectMessagesController : ControllerBase
         var target = await _users.GetByIdAsync(request.UserId);
         if (target is null)
             return NotFound(new { error = "User not found." });
+
+        // A "friends_only" user can't be added to a group by a non-friend (the group-DM backdoor).
+        if (target.DmPrivacy == DmPrivacy.FriendsOnly && !await AreFriendsAsync(me, request.UserId))
+            return StatusCode(
+                StatusCodes.Status403Forbidden,
+                new { error = $"{target.UserName} only accepts messages from friends." }
+            );
 
         var current = await _dms.GetParticipantIdsAsync(channelId);
         if (current.Contains(request.UserId))
@@ -368,6 +385,13 @@ public class DirectMessagesController : ControllerBase
     {
         var channel = await _channels.GetByIdAsync(channelId);
         return channel?.Type == GroupDmType;
+    }
+
+    /// <summary>True if an accepted friendship (either direction) exists between the two users.</summary>
+    private async Task<bool> AreFriendsAsync(long a, long b)
+    {
+        var friendship = await _friends.GetBetweenAsync(a, b);
+        return friendship is { Status: "accepted" };
     }
 
     private Task NotifyParticipantsAsync(IReadOnlyList<long> userIds, long channelId) =>

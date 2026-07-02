@@ -24,6 +24,7 @@ public class MessageService : IMessageService
     private readonly IFileAttachmentRepository _attachments;
     private readonly IDirectMessageRepository _dms;
     private readonly IUserBlockRepository _blocks;
+    private readonly IFriendRepository _friends;
     private readonly IPresenceService _presence;
     private readonly IAuditLogService _auditLog;
     private readonly IHubBroadcaster _broadcaster;
@@ -46,6 +47,7 @@ public class MessageService : IMessageService
         IFileAttachmentRepository attachments,
         IDirectMessageRepository dms,
         IUserBlockRepository blocks,
+        IFriendRepository friends,
         IPresenceService presence,
         IAuditLogService auditLog,
         IHubBroadcaster broadcaster,
@@ -62,6 +64,7 @@ public class MessageService : IMessageService
         _attachments = attachments;
         _dms = dms;
         _blocks = blocks;
+        _friends = friends;
         _presence = presence;
         _auditLog = auditLog;
         _broadcaster = broadcaster;
@@ -758,9 +761,28 @@ public class MessageService : IMessageService
             // Blocking suppresses 1:1 DMs in either direction.
             foreach (var peerId in participantIds)
             {
-                if (peerId != userId && await _blocks.AreBlockedAsync(userId, peerId))
+                if (peerId == userId)
+                    continue;
+
+                if (await _blocks.AreBlockedAsync(userId, peerId))
                     throw new UnauthorizedAccessException("You cannot send messages to this user.");
+
+                // A "friends_only" peer only accepts DMs from accepted friends. Enforced HERE (on
+                // every send), not just at channel creation — so unfriending closes an existing DM,
+                // and a stranger can't keep messaging through a channel that already exists.
+                var peer = await _userRepository.GetByIdAsync(peerId);
+                if (peer?.DmPrivacy == DmPrivacy.FriendsOnly && !await AreFriendsAsync(userId, peerId))
+                    throw new UnauthorizedAccessException(
+                        "This user only accepts direct messages from friends."
+                    );
             }
         }
+    }
+
+    /// <summary>True if an accepted friendship (either direction) exists between the two users.</summary>
+    private async Task<bool> AreFriendsAsync(long a, long b)
+    {
+        var friendship = await _friends.GetBetweenAsync(a, b);
+        return friendship is { Status: "accepted" };
     }
 }

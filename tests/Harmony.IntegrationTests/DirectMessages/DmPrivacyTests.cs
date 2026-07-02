@@ -45,6 +45,9 @@ public class DmPrivacyTests : ApiTestBase, IClassFixture<HarmonyWebApplicationFa
     private Task<HttpResponseMessage> SetDmPrivacyAsync(string dmPrivacy) =>
         Client.PatchAsJsonAsync("/api/users/me/dm-privacy", new { dmPrivacy });
 
+    private Task<HttpResponseMessage> SendDmAsync(long channelId, string content) =>
+        Client.PostAsJsonAsync($"/api/dm/{channelId}/messages", new { content });
+
     private async Task BefriendAsync(
         (string token, long id, string name) a,
         (string token, long id, string name) b
@@ -115,6 +118,67 @@ public class DmPrivacyTests : ApiTestBase, IClassFixture<HarmonyWebApplicationFa
     }
 
     [Fact]
+    public async Task FriendsOnly_BlocksSending_InAnExistingDm_ToANonFriend()
+    {
+        // The "existing conversation loophole": A opened the DM while B was "everyone", then B
+        // locked down. Reopening still works, but A must NOT be able to keep messaging as a stranger.
+        var a = await RegisterAsync("dmp_a6", "dmp_a6@test.com");
+        var b = await RegisterAsync("dmp_b6", "dmp_b6@test.com");
+
+        Authorize(a.token);
+        var open = await OpenDmAsync(b.userId);
+        open.EnsureSuccessStatusCode();
+        var channelId = (await open.Content.ReadFromJsonAsync<DmChannelDto>())!.ChannelId;
+
+        // Sending is fine while B is "everyone".
+        (await SendDmAsync(channelId, "hi")).EnsureSuccessStatusCode();
+
+        Authorize(b.token);
+        (await SetDmPrivacyAsync("friends_only")).EnsureSuccessStatusCode();
+
+        // Now A (a non-friend) can no longer send in the existing channel.
+        Authorize(a.token);
+        (await SendDmAsync(channelId, "still here")).StatusCode.Should().Be(HttpStatusCode.Forbidden);
+    }
+
+    [Fact]
+    public async Task FriendsOnly_AllowsSending_InAnExistingDm_BetweenFriends()
+    {
+        var a = await RegisterAsync("dmp_a7", "dmp_a7@test.com");
+        var b = await RegisterAsync("dmp_b7", "dmp_b7@test.com");
+        await BefriendAsync((a.token, a.userId, a.username), (b.token, b.userId, b.username));
+
+        Authorize(b.token);
+        (await SetDmPrivacyAsync("friends_only")).EnsureSuccessStatusCode();
+
+        Authorize(a.token);
+        var open = await OpenDmAsync(b.userId);
+        open.EnsureSuccessStatusCode();
+        var channelId = (await open.Content.ReadFromJsonAsync<DmChannelDto>())!.ChannelId;
+
+        (await SendDmAsync(channelId, "hey friend")).EnsureSuccessStatusCode();
+    }
+
+    [Fact]
+    public async Task FriendsOnly_BlocksBeingAddedToAGroup_ByANonFriend()
+    {
+        // The group-DM backdoor: a "friends_only" user can't be pulled into a group by a non-friend.
+        var a = await RegisterAsync("dmp_a8", "dmp_a8@test.com");
+        var b = await RegisterAsync("dmp_b8", "dmp_b8@test.com"); // a plain second member
+        var c = await RegisterAsync("dmp_c8", "dmp_c8@test.com"); // friends_only, not A's friend
+
+        Authorize(c.token);
+        (await SetDmPrivacyAsync("friends_only")).EnsureSuccessStatusCode();
+
+        Authorize(a.token);
+        var resp = await Client.PostAsJsonAsync(
+            "/api/dm/group",
+            new { userIds = new[] { b.userId, c.userId } }
+        );
+        resp.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+    }
+
+    [Fact]
     public async Task UpdateDmPrivacy_Persists_AndValidatesValue()
     {
         var a = await RegisterAsync("dmp_a5", "dmp_a5@test.com");
@@ -137,4 +201,6 @@ public class DmPrivacyTests : ApiTestBase, IClassFixture<HarmonyWebApplicationFa
     private record UserDto(long Id);
 
     private record MeDto(string DmPrivacy);
+
+    private record DmChannelDto(long ChannelId);
 }

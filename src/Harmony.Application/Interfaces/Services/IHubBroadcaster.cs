@@ -39,6 +39,16 @@ public interface IHubBroadcaster
     Task BroadcastMessageUnpinnedAsync(MessagePinPayload payload, CancellationToken ct = default);
 
     /// <summary>
+    /// Broadcasts an ephemeral typing-started signal to the channel group. The typer's own client
+    /// filters itself out. Invoked from the hub (StartTyping) — routing it through the broadcaster
+    /// keeps every SignalR broadcast flowing through this one chokepoint.
+    /// </summary>
+    Task BroadcastTypingStartedAsync(long channelId, long userId, CancellationToken ct = default);
+
+    /// <summary>Broadcasts an ephemeral typing-stopped signal to the channel group.</summary>
+    Task BroadcastTypingStoppedAsync(long channelId, long userId, CancellationToken ct = default);
+
+    /// <summary>
     /// Broadcasts a channel metadata change (create / update / reorder) to all
     /// connections in the guild group. Clients update their channel list.
     /// </summary>
@@ -200,6 +210,16 @@ public interface IHubBroadcaster
     Task BroadcastMemberUpdatedAsync(
         long guildId,
         MemberUpdatedPayload payload,
+        CancellationToken ct = default
+    );
+
+    /// <summary>
+    /// Broadcasts a member join (invite redeem) to the guild group so every connected member adds
+    /// them to their member list live.
+    /// </summary>
+    Task BroadcastMemberJoinedAsync(
+        long guildId,
+        MemberJoinedPayload payload,
         CancellationToken ct = default
     );
 

@@ -64,8 +64,11 @@ public class AuditLogServiceTests
 
         captured.Changes.Should().NotBeNull();
         var json = JsonDocument.Parse(captured.Changes!);
-        json.RootElement.GetProperty("channelId").GetInt64().Should().Be(42);
-        json.RootElement.GetProperty("authorId").GetInt64().Should().Be(7);
+        // Snowflake longs inside `changes` are serialized AS STRINGS (§5.40 — upholds the
+        // codebase-wide "every long is a string on the wire" invariant so the bigInt interceptor
+        // can't mangle them inside the stringified sub-blob).
+        json.RootElement.GetProperty("channelId").GetString().Should().Be("42");
+        json.RootElement.GetProperty("authorId").GetString().Should().Be("7");
     }
 
     [Fact]
