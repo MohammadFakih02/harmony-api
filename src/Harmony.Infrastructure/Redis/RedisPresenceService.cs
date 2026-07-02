@@ -143,24 +143,7 @@ public sealed class RedisPresenceService : IPresenceService
             if (remaining != 0)
                 return; // other tabs/devices still connected — stay online
 
-            await db.KeyDeleteAsync(StatusKey(userId));
-            await db.KeyDeleteAsync(IdleKey(userId)); // idle is meaningless once disconnected
-            await db.SortedSetRemoveAsync(OnlineZSetKey, userId.ToString());
-
-            var offlinePayload = new OfflineStatusPayload(userId);
-            await BroadcastToFriendsAsync(
-                userId,
-                offlinePayload,
-                (recipientId, payload) =>
-                    _broadcaster.BroadcastOfflineStatusAsync(recipientId, payload, ct)
-            );
-            // Also reach co-guild members so their member-list dots go grey live.
-            await BroadcastToGuildsAsync(
-                userId,
-                offlinePayload,
-                (guildId, payload) =>
-                    _broadcaster.BroadcastOfflineStatusToGuildAsync(guildId, payload, ct)
-            );
+            await MarkOfflineAndBroadcastAsync(db, userId, ct);
         }
         catch (Exception ex)
         {
@@ -447,6 +430,64 @@ public sealed class RedisPresenceService : IPresenceService
         }
     }
 
+    public async Task<int> SweepStaleAsync(TimeSpan staleThreshold, CancellationToken ct = default)
+    {
+        if (!_redisProvider.IsConnected)
+            return 0;
+
+        try
+        {
+            var db = _redisProvider.Connection!.GetDatabase();
+            var cutoff = DateTimeOffset.UtcNow.ToUnixTimeSeconds() - (long)staleThreshold.TotalSeconds;
+
+            // Every member whose most-recent heartbeat score is at/below the cutoff is stale.
+            // The score is refreshed by SetOnlineAsync/HeartbeatAsync, so a live client keeps
+            // itself above the cutoff; only a crashed client or a restarted server lets it lapse.
+            var stale = await db.SortedSetRangeByScoreAsync(
+                OnlineZSetKey,
+                double.NegativeInfinity,
+                cutoff
+            );
+            if (stale.Length == 0)
+                return 0;
+
+            var reaped = 0;
+            foreach (var member in stale)
+            {
+                if (!long.TryParse(member.ToString(), out var userId))
+                {
+                    // Defensive: drop an unparseable member so it can't wedge every future sweep.
+                    await db.SortedSetRemoveAsync(OnlineZSetKey, member);
+                    continue;
+                }
+
+                try
+                {
+                    await MarkOfflineAndBroadcastAsync(db, userId, ct);
+                    reaped++;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(
+                        ex,
+                        "Presence: failed reaping stale user {UserId} — continuing",
+                        userId
+                    );
+                }
+            }
+
+            if (reaped > 0)
+                _logger.LogInformation("Presence: swept {Count} stale connection(s).", reaped);
+
+            return reaped;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Presence: stale-connection sweep failed — continuing");
+            return 0;
+        }
+    }
+
     // -------------------------------------------------------------------------
     // Resolution + reads
     // -------------------------------------------------------------------------
@@ -504,6 +545,41 @@ public sealed class RedisPresenceService : IPresenceService
     // -------------------------------------------------------------------------
     // Broadcast fan-out
     // -------------------------------------------------------------------------
+
+    /// <summary>
+    /// Clears every presence key for a user and broadcasts OfflineStatus to their friends
+    /// and co-guild members. Shared by the graceful last-disconnect path
+    /// (<see cref="SetOfflineAsync"/>) and the crash-recovery sweep
+    /// (<see cref="SweepStaleAsync"/>). Idempotent — deleting already-absent keys is a no-op,
+    /// so on the graceful path the extra session-key delete is a no-op (the set is already
+    /// empty), while on the sweep path it clears the lingering ghost connection ids.
+    /// </summary>
+    private async Task MarkOfflineAndBroadcastAsync(
+        IDatabase db,
+        long userId,
+        CancellationToken ct
+    )
+    {
+        await db.KeyDeleteAsync(SessionKey(userId)); // clear any ghost connection ids
+        await db.KeyDeleteAsync(StatusKey(userId));
+        await db.KeyDeleteAsync(IdleKey(userId)); // idle is meaningless once disconnected
+        await db.SortedSetRemoveAsync(OnlineZSetKey, userId.ToString());
+
+        var offlinePayload = new OfflineStatusPayload(userId);
+        await BroadcastToFriendsAsync(
+            userId,
+            offlinePayload,
+            (recipientId, payload) =>
+                _broadcaster.BroadcastOfflineStatusAsync(recipientId, payload, ct)
+        );
+        // Also reach co-guild members so their member-list dots go grey live.
+        await BroadcastToGuildsAsync(
+            userId,
+            offlinePayload,
+            (guildId, payload) =>
+                _broadcaster.BroadcastOfflineStatusToGuildAsync(guildId, payload, ct)
+        );
+    }
 
     /// <summary>
     /// Fans a payload out to the user's friends, one call per recipient, each

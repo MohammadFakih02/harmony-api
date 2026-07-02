@@ -200,6 +200,7 @@ public static class DependencyInjection
             services.AddHostedService<MuteExpiryService>();
             services.AddHostedService<OrphanFileSweepService>();
             services.AddHostedService<StatusExpiryService>();
+            services.AddHostedService<PresenceSweepService>();
         }
 
         // -----------------------------------------------------------------------

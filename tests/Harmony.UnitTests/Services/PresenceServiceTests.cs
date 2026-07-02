@@ -493,4 +493,112 @@ public class PresenceServiceTests
         var (sut, _, _) = BuildSut(redisConnected: false);
         (await sut.GetPreferredStatusAsync(userId: 1)).Should().Be("online");
     }
+
+    // -------------------------------------------------------------------------
+    // SweepStaleAsync — crash-recovery reap of ghost connections
+    // -------------------------------------------------------------------------
+
+    /// <summary>Stubs the ZRANGEBYSCORE the sweep runs against presence:online.</summary>
+    private static void SetupStaleMembers(Mock<IDatabase> db, params long[] userIds) =>
+        db.Setup(d =>
+                d.SortedSetRangeByScoreAsync(
+                    It.Is<RedisKey>(k => k.ToString() == "presence:online"),
+                    It.IsAny<double>(),
+                    It.IsAny<double>(),
+                    It.IsAny<Exclude>(),
+                    It.IsAny<Order>(),
+                    It.IsAny<long>(),
+                    It.IsAny<long>(),
+                    It.IsAny<CommandFlags>()
+                )
+            )
+            .ReturnsAsync(userIds.Select(id => (RedisValue)id.ToString()).ToArray());
+
+    [Fact]
+    public async Task SweepStaleAsync_WhenRedisDown_ReturnsZero_DoesNotThrow()
+    {
+        var (sut, _, _) = BuildSut(redisConnected: false);
+
+        var reaped = await sut.SweepStaleAsync(TimeSpan.FromSeconds(90));
+
+        reaped.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task SweepStaleAsync_WhenNothingStale_ReturnsZero()
+    {
+        var (sut, db, _) = BuildSut();
+        SetupStaleMembers(db); // empty
+
+        var reaped = await sut.SweepStaleAsync(TimeSpan.FromSeconds(90));
+
+        reaped.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task SweepStaleAsync_StaleUser_ClearsEveryPresenceKey_AndReturnsCount()
+    {
+        const long userId = 42;
+        var (sut, db, _) = BuildSut();
+        SetupStaleMembers(db, userId);
+
+        var reaped = await sut.SweepStaleAsync(TimeSpan.FromSeconds(90));
+
+        reaped.Should().Be(1);
+        // The ghost session set is cleared (this is the whole point — SetOnlineAsync's
+        // connectionCount guard would otherwise suppress the user's next OnlineStatus).
+        db.Verify(
+            d => d.KeyDeleteAsync(
+                It.Is<RedisKey>(k => k.ToString() == RedisPresenceService.SessionKey(userId)),
+                It.IsAny<CommandFlags>()
+            ),
+            Times.Once
+        );
+        db.Verify(
+            d => d.KeyDeleteAsync(
+                It.Is<RedisKey>(k => k.ToString() == RedisPresenceService.StatusKey(userId)),
+                It.IsAny<CommandFlags>()
+            ),
+            Times.Once
+        );
+        db.Verify(
+            d => d.SortedSetRemoveAsync(
+                It.Is<RedisKey>(k => k.ToString() == "presence:online"),
+                It.Is<RedisValue>(v => v.ToString() == userId.ToString()),
+                It.IsAny<CommandFlags>()
+            ),
+            Times.Once
+        );
+    }
+
+    [Fact]
+    public async Task SweepStaleAsync_UnparseableMember_IsDroppedFromZSet_NotCounted()
+    {
+        var (sut, db, _) = BuildSut();
+        db.Setup(d =>
+                d.SortedSetRangeByScoreAsync(
+                    It.Is<RedisKey>(k => k.ToString() == "presence:online"),
+                    It.IsAny<double>(),
+                    It.IsAny<double>(),
+                    It.IsAny<Exclude>(),
+                    It.IsAny<Order>(),
+                    It.IsAny<long>(),
+                    It.IsAny<long>(),
+                    It.IsAny<CommandFlags>()
+                )
+            )
+            .ReturnsAsync([(RedisValue)"not-a-number"]);
+
+        var reaped = await sut.SweepStaleAsync(TimeSpan.FromSeconds(90));
+
+        reaped.Should().Be(0);
+        db.Verify(
+            d => d.SortedSetRemoveAsync(
+                It.Is<RedisKey>(k => k.ToString() == "presence:online"),
+                It.Is<RedisValue>(v => v.ToString() == "not-a-number"),
+                It.IsAny<CommandFlags>()
+            ),
+            Times.Once
+        );
+    }
 }

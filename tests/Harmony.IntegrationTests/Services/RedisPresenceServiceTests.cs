@@ -305,4 +305,52 @@ public class RedisPresenceServiceTests : IAsyncLifetime
         await _sut.SetOfflineAsync(a, "conn-a");
         await _sut.SetOfflineAsync(b, "conn-b");
     }
+
+    // -------------------------------------------------------------------------
+    // SweepStaleAsync — crash-recovery reap against real Redis
+    // -------------------------------------------------------------------------
+
+    [Fact]
+    public async Task SweepStale_ReapsUserWithStaleHeartbeat_ClearsKeysAndZSet()
+    {
+        var userId = UniqueUserId();
+        TrackKeysFor(userId);
+
+        await _sut.SetOnlineAsync(userId, "conn-1");
+        // Backdate the heartbeat score well past the threshold, simulating a client that
+        // crashed / a server that restarted (OnDisconnectedAsync never ran to clear it).
+        var staleScore = DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 200;
+        await _db.SortedSetAddAsync("presence:online", userId.ToString(), staleScore);
+
+        var reaped = await _sut.SweepStaleAsync(TimeSpan.FromSeconds(90));
+
+        reaped.Should().BeGreaterThanOrEqualTo(1);
+        (await _db.KeyExistsAsync(RedisPresenceService.SessionKey(userId)))
+            .Should()
+            .BeFalse("the ghost session set must be cleared");
+        (await _db.KeyExistsAsync(RedisPresenceService.StatusKey(userId))).Should().BeFalse();
+        (await _db.SortedSetScoreAsync("presence:online", userId.ToString())).Should().BeNull();
+    }
+
+    [Fact]
+    public async Task SweepStale_LeavesFreshlyHeartbeatingUser_Online()
+    {
+        var userId = UniqueUserId();
+        TrackKeysFor(userId);
+
+        await _sut.SetOnlineAsync(userId, "conn-1"); // score = now → above the cutoff
+
+        var reaped = await _sut.SweepStaleAsync(TimeSpan.FromSeconds(90));
+
+        // Other suites share this global ZSET, so don't assert an exact count — assert this
+        // specific fresh user survived.
+        (await _db.StringGetAsync(RedisPresenceService.StatusKey(userId)))
+            .ToString()
+            .Should()
+            .Be("online");
+        (await _db.SortedSetScoreAsync("presence:online", userId.ToString())).Should().NotBeNull();
+        (await _db.SetLengthAsync(RedisPresenceService.SessionKey(userId))).Should().Be(1);
+
+        await _sut.SetOfflineAsync(userId, "conn-1");
+    }
 }

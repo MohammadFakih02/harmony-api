@@ -87,4 +87,15 @@ public interface IPresenceService
     /// StatusChanged when the effective status actually changes.
     /// </summary>
     Task SetIdleAsync(long userId, bool idle, CancellationToken ct = default);
+
+    /// <summary>
+    /// Crash-recovery sweep: marks offline every user whose last heartbeat in the
+    /// <c>presence:online</c> ZSET is older than <paramref name="staleThreshold"/> — the
+    /// ghost left when a client crashes or the server restarts before
+    /// <see cref="SetOfflineAsync"/> could run, so the graceful disconnect path never
+    /// fired. For each such user it clears the lingering session set / status / idle keys,
+    /// removes the ZSET entry, and broadcasts OfflineStatus to friends and co-guild members.
+    /// Returns the number of users reaped. Fails open (Redis unavailable → 0, never throws).
+    /// </summary>
+    Task<int> SweepStaleAsync(TimeSpan staleThreshold, CancellationToken ct = default);
 }

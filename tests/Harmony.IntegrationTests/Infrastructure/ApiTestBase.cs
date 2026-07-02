@@ -76,6 +76,23 @@ public abstract class ApiTestBase : IAsyncLifetime
                 if (!_dbInitialized)
                 {
                     db.Database.EnsureCreated();
+
+                    // EnsureCreated() builds from the EF model, which deliberately leaves
+                    // MessagesSearch.content_search UNMAPPED (it's a GENERATED tsvector column
+                    // created via raw SQL in InitialSchema — see the entity + MessageSearchRepository).
+                    // So the EnsureCreated test DB otherwise lacks that column and its GIN index, and
+                    // every full-text search 500s (undefined_column). Re-apply the exact InitialSchema
+                    // DDL here, idempotently, so the test schema matches the migrated dev/prod schema.
+                    db.Database.ExecuteSqlRaw(
+                        @"ALTER TABLE ""MessagesSearch""
+                          ADD COLUMN IF NOT EXISTS content_search tsvector
+                          GENERATED ALWAYS AS (to_tsvector('english', content)) STORED;"
+                    );
+                    db.Database.ExecuteSqlRaw(
+                        @"CREATE INDEX IF NOT EXISTS ix_messages_search_content_search
+                          ON ""MessagesSearch"" USING GIN (content_search);"
+                    );
+
                     _dbInitialized = true;
                 }
             }
