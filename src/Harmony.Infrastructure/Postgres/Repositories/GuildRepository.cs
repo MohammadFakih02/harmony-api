@@ -56,10 +56,16 @@ public class GuildRepository : IGuildRepository
         _db.GuildMembers.Remove(member);
     }
 
-    public Task RemoveMemberAsync(GuildMember member)
+    public async Task RemoveMemberAsync(GuildMember member)
     {
         _db.GuildMembers.Remove(member);
-        return Task.CompletedTask;
+
+        // Drop the member's role assignments too, so rejoining resets them to @everyone rather than
+        // restoring their old roles/permissions. RoleAssignments FK to (User, Role), not GuildMember,
+        // so they don't cascade with the membership — this covers kick, ban, and leave in one place.
+        await _db
+            .RoleAssignments.Where(a => a.GuildId == member.GuildId && a.UserId == member.UserId)
+            .ExecuteDeleteAsync();
     }
 
     public void Delete(Guild guild)

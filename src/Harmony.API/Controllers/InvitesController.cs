@@ -92,10 +92,17 @@ public class InvitesController : ControllerBase
         if (await _guilds.IsMemberAsync(guild.Id, userId))
             return Conflict(new { error = "Already a member of this guild." });
 
-        if (await _bans.IsBannedAsync(guild.Id, userId))
+        if (await _bans.GetAsync(guild.Id, userId) is { } ban)
             return StatusCode(
                 StatusCodes.Status403Forbidden,
-                new { error = "You are banned from this guild." }
+                new
+                {
+                    error = string.IsNullOrWhiteSpace(ban.Reason)
+                        ? "You are banned from this guild."
+                        : $"You are banned from this guild. Reason: {ban.Reason}",
+                    banned = true,
+                    reason = ban.Reason,
+                }
             );
 
         var member = new GuildMember

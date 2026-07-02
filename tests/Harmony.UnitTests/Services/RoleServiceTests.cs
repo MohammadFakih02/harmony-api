@@ -86,6 +86,21 @@ public class RoleServiceTests
     }
 
     [Fact]
+    public async Task Create_WithNullBits_DefaultsToEveryonesPermissionSet()
+    {
+        // A new role with no explicit bits inherits @everyone's permission set (Discord default).
+        var everyoneBits = (long)Permission.DefaultEveryone;
+        var (sut, _, roles, _, _) = BuildSut(ownerId: ActorId);
+        roles.Setup(r => r.GetDefaultRoleAsync(GuildId))
+            .ReturnsAsync(new Role { Id = 7, GuildId = GuildId, IsDefault = true, PermissionBits = everyoneBits });
+
+        var resp = await sut.CreateRoleAsync(GuildId, ActorId,
+            new CreateRoleRequest("New Role", null, null, null, null));
+
+        resp.PermissionBits.Should().Be(everyoneBits);
+    }
+
+    [Fact]
     public async Task Update_RoleAtOrAboveYourHighest_Throws()
     {
         // Actor's highest assigned role is position 2; target sits at position 5.
