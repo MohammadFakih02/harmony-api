@@ -58,7 +58,12 @@ public class RoleService : IRoleService
     {
         var ctx = await GetActorContextAsync(guildId, actorId, ct);
 
-        var bits = request.PermissionBits ?? 0;
+        // A new role starts with the same permissions as @everyone (Discord's default) unless the
+        // caller specified an explicit set. The actor holds @everyone's bits by definition, so the
+        // grant rule below still passes.
+        var bits = request.PermissionBits
+            ?? (await _roles.GetDefaultRoleAsync(guildId))?.PermissionBits
+            ?? 0;
         EnsureCanChangeBits(ctx, 0, bits);
 
         var role = new Role

@@ -46,11 +46,19 @@ public class GuildInvitesController : ControllerBase
     }
 
     // POST /api/guilds/{guildId}/invites
+    // No [RequirePermission] — creating is authorized in-body as "CreateInvite OR ManageInvites",
+    // since ManageInvites is a superset of CreateInvite (a moderator who can revoke anyone's invite
+    // can obviously mint one). [RequirePermission] can only AND bits, so the OR lives here.
     [HttpPost]
-    [RequirePermission(Permission.CreateInvite)]
     public async Task<IActionResult> Create(long guildId, [FromBody] CreateInviteRequest request)
     {
         var userId = GetUserId();
+
+        if (
+            !await _permissions.HasAsync(userId, guildId, Permission.CreateInvite)
+            && !await _permissions.HasAsync(userId, guildId, Permission.ManageInvites)
+        )
+            return Forbid();
 
         // A landing channel is optional, but if one is named it must belong to this guild.
         if (request.ChannelId is { } channelId)
