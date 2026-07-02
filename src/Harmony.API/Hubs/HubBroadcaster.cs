@@ -49,6 +49,18 @@ public class HubBroadcaster : IHubBroadcaster
         CancellationToken ct = default
     ) => _hubContext.Clients.Group(ChatHub.ChannelGroup(payload.ChannelId)).MessageUnpinned(payload);
 
+    public Task BroadcastTypingStartedAsync(
+        long channelId,
+        long userId,
+        CancellationToken ct = default
+    ) => _hubContext.Clients.Group(ChatHub.ChannelGroup(channelId)).TypingStarted(userId, channelId);
+
+    public Task BroadcastTypingStoppedAsync(
+        long channelId,
+        long userId,
+        CancellationToken ct = default
+    ) => _hubContext.Clients.Group(ChatHub.ChannelGroup(channelId)).TypingStopped(userId, channelId);
+
     public Task BroadcastChannelUpdatedAsync(
         ChannelResponse channel,
         long guildId,
@@ -165,6 +177,12 @@ public class HubBroadcaster : IHubBroadcaster
         MemberUpdatedPayload payload,
         CancellationToken ct = default
     ) => _hubContext.Clients.Group(ChatHub.GuildGroup(guildId)).MemberUpdated(payload);
+
+    public Task BroadcastMemberJoinedAsync(
+        long guildId,
+        MemberJoinedPayload payload,
+        CancellationToken ct = default
+    ) => _hubContext.Clients.Group(ChatHub.GuildGroup(guildId)).MemberJoined(payload);
 
     public Task BroadcastRoleCreatedAsync(
         long guildId,

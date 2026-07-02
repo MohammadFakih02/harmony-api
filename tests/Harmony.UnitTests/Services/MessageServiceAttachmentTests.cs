@@ -36,6 +36,7 @@ public class MessageServiceAttachmentTests
         var files = new Mock<IFileAttachmentRepository>();
         var dms = new Mock<IDirectMessageRepository>();
         var blocks = new Mock<IUserBlockRepository>();
+        var friends = new Mock<IFriendRepository>();
         var presence = new Mock<IPresenceService>();
         var auditLog = new Mock<IAuditLogService>();
         var roles = new Mock<IRoleRepository>();
@@ -60,7 +61,7 @@ public class MessageServiceAttachmentTests
         var sut = new MessageService(
             channels.Object, guilds.Object, publisher.Object, snowflake.Object,
             messages.Object, users.Object, permissions.Object, files.Object,
-            dms.Object, blocks.Object, presence.Object, auditLog.Object,
+            dms.Object, blocks.Object, friends.Object, presence.Object, auditLog.Object,
             Mock.Of<IHubBroadcaster>(), roles.Object
         );
         return (sut, publisher, files);

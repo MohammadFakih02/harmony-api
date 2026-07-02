@@ -44,6 +44,17 @@ public interface IChatClient
     Task MessageUnpinned(MessagePinPayload payload);
 
     /// <summary>
+    /// Ephemeral: a user started typing in a channel. Broadcast to the whole channel group (the
+    /// typer's own client filters itself out). No persistence — the client resolves the display name
+    /// from its own stores (nickname-aware) and auto-expires the indicator if no further signal
+    /// arrives. Paired with <see cref="TypingStopped"/> (sent on send).
+    /// </summary>
+    Task TypingStarted(long userId, long channelId);
+
+    /// <summary>Ephemeral: a user stopped typing in a channel (e.g. sent the message).</summary>
+    Task TypingStopped(long userId, long channelId);
+
+    /// <summary>
     /// Fired when channel metadata changes (create / update / reorder).
     /// Clients refresh their channel list on receipt.
     /// Distinct from ChannelDeleted — clients should update, not remove.
@@ -150,6 +161,13 @@ public interface IChatClient
     /// affected user's own composer, and the member's displayed name everywhere in the guild.
     /// </summary>
     Task MemberUpdated(MemberUpdatedPayload payload);
+
+    /// <summary>
+    /// Fired when a member joins a guild (invite redeem). Broadcast to the guild group so every
+    /// connected member adds them to the member list live — without this a rejoining/new member only
+    /// appears after a manual refresh.
+    /// </summary>
+    Task MemberJoined(MemberJoinedPayload payload);
 
     /// <summary>Fired when a role is created. Broadcast to the guild group so clients add it to the role list.</summary>
     Task RoleCreated(RoleResponse role);
@@ -268,6 +286,10 @@ public record MemberUpdatedPayload(
     string? Nickname,
     long? CommunicationDisabledUntil
 );
+
+/// <summary>A member joined a guild — carries the full member record so clients can insert it into
+/// the member list without a follow-up fetch.</summary>
+public record MemberJoinedPayload(long GuildId, GuildMemberResponse Member);
 
 /// <summary>A role was deleted from a guild.</summary>
 public record RoleDeletedPayload(long GuildId, long RoleId);
