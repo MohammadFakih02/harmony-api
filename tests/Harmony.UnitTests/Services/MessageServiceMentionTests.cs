@@ -39,9 +39,21 @@ public class MessageServiceMentionTests
         public Mock<IUserBlockRepository> Blocks { get; } = new();
         public Mock<IPresenceService> Presence { get; } = new();
         public Mock<IAuditLogService> AuditLog { get; } = new();
+        public Mock<IRoleRepository> Roles { get; } = new();
 
         public MessageSentEvent? PublishedEvent { get; private set; }
         public MessageEditedEvent? PublishedEditEvent { get; private set; }
+
+        public Harness()
+        {
+            // Safe empty defaults for the nickname/role resolution path (real EF never returns null).
+            // Individual tests override these with more specific setups.
+            Guilds.Setup(g => g.GetMembersAsync(It.IsAny<long>())).ReturnsAsync(new List<GuildMember>());
+            Roles.Setup(r => r.GetByGuildAsync(It.IsAny<long>())).ReturnsAsync(new List<Role>());
+            Roles
+                .Setup(r => r.GetMemberIdsWithRoleAsync(It.IsAny<long>(), It.IsAny<long>()))
+                .ReturnsAsync(new List<long>());
+        }
 
         public MessageService BuildSut()
         {
@@ -59,7 +71,7 @@ public class MessageServiceMentionTests
                 Channels.Object, Guilds.Object, Publisher.Object, Snowflake.Object,
                 Messages.Object, Users.Object, Permissions.Object, Files.Object,
                 Dms.Object, Blocks.Object, Presence.Object, AuditLog.Object,
-                Mock.Of<IHubBroadcaster>()
+                Mock.Of<IHubBroadcaster>(), Roles.Object
             );
         }
 
@@ -78,6 +90,38 @@ public class MessageServiceMentionTests
             Guilds.Setup(g => g.GetMemberIdsAsync(GuildId)).ReturnsAsync(members.Keys.ToList());
             Users.Setup(u => u.GetByIdsAsync(It.IsAny<IEnumerable<long>>()))
                 .ReturnsAsync(members.ToDictionary(kv => kv.Key, kv => new User { Id = kv.Key, UserName = kv.Value }));
+        }
+
+        /// <summary>Assigns server nicknames (userId -> nickname) for the resolution path.</summary>
+        public void SetUpNicknames(IReadOnlyDictionary<long, string> nicknames)
+        {
+            Guilds
+                .Setup(g => g.GetMembersAsync(GuildId))
+                .ReturnsAsync(
+                    nicknames
+                        .Select(kv => new GuildMember { UserId = kv.Key, GuildId = GuildId, Nickname = kv.Value })
+                        .ToList()
+                );
+        }
+
+        /// <summary>Registers a role and the members holding it.</summary>
+        public void SetUpRole(long roleId, string name, bool mentionable, params long[] memberIds)
+        {
+            Roles
+                .Setup(r => r.GetByGuildAsync(GuildId))
+                .ReturnsAsync(
+                    new List<Role>
+                    {
+                        new()
+                        {
+                            Id = roleId,
+                            GuildId = GuildId,
+                            Name = name,
+                            IsMentionable = mentionable,
+                        },
+                    }
+                );
+            Roles.Setup(r => r.GetMemberIdsWithRoleAsync(GuildId, roleId)).ReturnsAsync(memberIds.ToList());
         }
 
         public void SetUpDmSendContext(List<long> participantIds)
@@ -240,5 +284,78 @@ public class MessageServiceMentionTests
             p => p.HasAsync(It.IsAny<long>(), It.IsAny<long>(), It.IsAny<Permission>(), It.IsAny<long?>(), It.IsAny<CancellationToken>()),
             Times.Never
         );
+    }
+
+    [Fact]
+    public async Task SendMessageAsync_ShouldResolveMentionByServerNickname_IncludingSpaces()
+    {
+        var h = new Harness();
+        h.SetUpGuildSendContext();
+        h.SetUpGuildMembers(new Dictionary<long, string> { [ActorId] = "actor", [BobId] = "bob" });
+        // Bob's server nickname has a space — the longest-match resolver must still find it.
+        h.SetUpNicknames(new Dictionary<long, string> { [BobId] = "Bobby McBobface" });
+        var sut = h.BuildSut();
+
+        await sut.SendMessageAsync(
+            ActorId, GuildId, ChannelId, new SendMessageRequest(Content: "hey @Bobby McBobface")
+        );
+
+        h.PublishedEvent!.MentionIds.Should().BeEquivalentTo(new List<long> { BobId });
+    }
+
+    [Fact]
+    public async Task SendMessageAsync_ShouldExpandMentionableRole_ToItsMembers()
+    {
+        var h = new Harness();
+        h.SetUpGuildSendContext();
+        h.SetUpGuildMembers(new Dictionary<long, string> { [ActorId] = "actor" });
+        // A mentionable role — expands for any member, no MentionEveryone needed.
+        h.SetUpRole(roleId: 50, name: "Server Admin", mentionable: true, BobId, CarolId);
+        var sut = h.BuildSut();
+
+        await sut.SendMessageAsync(
+            ActorId, GuildId, ChannelId, new SendMessageRequest(Content: "@Server Admin standup")
+        );
+
+        h.PublishedEvent!.MentionIds.Should().BeEquivalentTo(new List<long> { BobId, CarolId });
+    }
+
+    [Fact]
+    public async Task SendMessageAsync_ShouldNotExpandNonMentionableRole_WithoutPermission_AndStillSend()
+    {
+        var h = new Harness();
+        h.SetUpGuildSendContext();
+        h.SetUpGuildMembers(new Dictionary<long, string> { [ActorId] = "actor" });
+        h.SetUpRole(roleId: 50, name: "Admins", mentionable: false, BobId, CarolId);
+        h.Permissions
+            .Setup(p => p.HasAsync(ActorId, GuildId, Permission.MentionEveryone, ChannelId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(false);
+        var sut = h.BuildSut();
+
+        var response = await sut.SendMessageAsync(
+            ActorId, GuildId, ChannelId, new SendMessageRequest(Content: "@Admins deploy?")
+        );
+
+        response.Content.Should().Be("@Admins deploy?");
+        h.PublishedEvent!.MentionIds.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task SendMessageAsync_ShouldExpandNonMentionableRole_WhenActorHasMentionEveryone()
+    {
+        var h = new Harness();
+        h.SetUpGuildSendContext();
+        h.SetUpGuildMembers(new Dictionary<long, string> { [ActorId] = "actor" });
+        h.SetUpRole(roleId: 50, name: "Admins", mentionable: false, BobId, CarolId);
+        h.Permissions
+            .Setup(p => p.HasAsync(ActorId, GuildId, Permission.MentionEveryone, ChannelId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+        var sut = h.BuildSut();
+
+        await sut.SendMessageAsync(
+            ActorId, GuildId, ChannelId, new SendMessageRequest(Content: "@Admins deploy now")
+        );
+
+        h.PublishedEvent!.MentionIds.Should().BeEquivalentTo(new List<long> { BobId, CarolId });
     }
 }

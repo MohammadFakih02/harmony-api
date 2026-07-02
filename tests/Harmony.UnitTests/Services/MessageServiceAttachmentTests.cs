@@ -38,6 +38,7 @@ public class MessageServiceAttachmentTests
         var blocks = new Mock<IUserBlockRepository>();
         var presence = new Mock<IPresenceService>();
         var auditLog = new Mock<IAuditLogService>();
+        var roles = new Mock<IRoleRepository>();
 
         // Happy-path send context: channel exists, can view+send, not timed out.
         channels.Setup(c => c.GetByIdAndGuildIdAsync(ChannelId, GuildId))
@@ -48,6 +49,8 @@ public class MessageServiceAttachmentTests
             .ReturnsAsync(new GuildMember { UserId = UserId, GuildId = GuildId });
         // Mention resolution candidate scoping — no mentioned users in these attachment-focused tests.
         guilds.Setup(g => g.GetMemberIdsAsync(GuildId)).ReturnsAsync(new List<long> { UserId });
+        guilds.Setup(g => g.GetMembersAsync(GuildId)).ReturnsAsync(new List<GuildMember>());
+        roles.Setup(r => r.GetByGuildAsync(GuildId)).ReturnsAsync(new List<Role>());
         users.Setup(u => u.GetByIdsAsync(It.IsAny<IEnumerable<long>>()))
             .ReturnsAsync(new Dictionary<long, User>());
         snowflake.Setup(s => s.NextId()).Returns(999);
@@ -58,7 +61,7 @@ public class MessageServiceAttachmentTests
             channels.Object, guilds.Object, publisher.Object, snowflake.Object,
             messages.Object, users.Object, permissions.Object, files.Object,
             dms.Object, blocks.Object, presence.Object, auditLog.Object,
-            Mock.Of<IHubBroadcaster>()
+            Mock.Of<IHubBroadcaster>(), roles.Object
         );
         return (sut, publisher, files);
     }
