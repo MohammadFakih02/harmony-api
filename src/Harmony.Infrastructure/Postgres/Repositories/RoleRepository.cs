@@ -64,6 +64,13 @@ public class RoleRepository : IRoleRepository
             .ToDictionary(g => g.Key, g => g.Select(x => x.RoleId).ToList());
     }
 
+    public async Task<List<long>> GetMemberIdsWithRoleAsync(long guildId, long roleId) =>
+        await _db
+            .RoleAssignments.AsNoTracking()
+            .Where(a => a.GuildId == guildId && a.RoleId == roleId)
+            .Select(a => a.UserId)
+            .ToListAsync();
+
     public async Task<RoleAssignment?> GetAssignmentAsync(long roleId, long userId) =>
         await _db.RoleAssignments.FirstOrDefaultAsync(a => a.RoleId == roleId && a.UserId == userId);
 

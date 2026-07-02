@@ -446,6 +446,102 @@ public class NotificationTests : ApiTestBase, IClassFixture<HarmonyWebApplicatio
         unreadCount.Should().Be(0);
     }
 
+    [Fact]
+    public async Task RoleMention_ByOwner_NotifiesRoleMembers()
+    {
+        var (ownerToken, ownerId) = await RegisterAsync("notif_owner9", "notif_owner9@test.com");
+        Authorize(ownerToken);
+        var g = await Client.PostAsJsonAsync("/api/guilds", new { name = "Role Mention Guild" });
+        g.EnsureSuccessStatusCode();
+        var guild = await g.Content.ReadFromJsonAsync<GuildResponse>();
+        var c = await Client.PostAsJsonAsync(
+            $"/api/guilds/{guild!.Id}/channels",
+            new { name = "general", type = "text" }
+        );
+        c.EnsureSuccessStatusCode();
+        var channel = await c.Content.ReadFromJsonAsync<IdResponse>();
+
+        var (memberToken, memberId) = await RegisterAsync("notif_member9", "notif_member9@test.com");
+        var inviteCode = await CreateInviteCodeAsync(guild!.Id);
+        Authorize(memberToken);
+        (await Client.PostAsJsonAsync($"/api/invites/{inviteCode}/join", new { }))
+            .EnsureSuccessStatusCode();
+
+        // Owner mints a MENTIONABLE role (multi-word name) and assigns it to the member.
+        Authorize(ownerToken);
+        var roleResp = await Client.PostAsJsonAsync(
+            $"/api/guilds/{guild.Id}/roles",
+            new { name = "Ping Squad", isMentionable = true }
+        );
+        roleResp.EnsureSuccessStatusCode();
+        var role = await roleResp.Content.ReadFromJsonAsync<IdResponse>();
+        (await Client.PutAsync($"/api/guilds/{guild.Id}/roles/{role!.Id}/members/{memberId}", null))
+            .EnsureSuccessStatusCode();
+
+        var send = await Client.PostAsJsonAsync(
+            $"/api/guilds/{guild.Id}/channels/{channel!.Id}/messages",
+            new { content = "@Ping Squad standup time" }
+        );
+        send.EnsureSuccessStatusCode();
+
+        Authorize(memberToken);
+        var list = await Eventually.GetAsync(
+            action: async () =>
+                (await Client.GetFromJsonAsync<List<NotificationDto>>("/api/notifications"))!,
+            predicate: l => l.Any(n => n.Type == "mention" && n.ActorId == ownerId),
+            retries: 100,
+            intervalMs: 100
+        );
+        list.Should().ContainSingle(n => n.Type == "mention" && n.ActorId == ownerId);
+    }
+
+    [Fact]
+    public async Task NonMentionableRoleMention_ByMemberWithoutPermission_StillSends_ButDoesNotNotify()
+    {
+        var (ownerToken, ownerId) = await RegisterAsync("notif_owner10", "notif_owner10@test.com");
+        Authorize(ownerToken);
+        var g = await Client.PostAsJsonAsync("/api/guilds", new { name = "No Ping Guild" });
+        g.EnsureSuccessStatusCode();
+        var guild = await g.Content.ReadFromJsonAsync<GuildResponse>();
+        var c = await Client.PostAsJsonAsync(
+            $"/api/guilds/{guild!.Id}/channels",
+            new { name = "general", type = "text" }
+        );
+        c.EnsureSuccessStatusCode();
+        var channel = await c.Content.ReadFromJsonAsync<IdResponse>();
+
+        var (memberToken, _) = await RegisterAsync("notif_member10", "notif_member10@test.com");
+        var inviteCode = await CreateInviteCodeAsync(guild!.Id);
+        Authorize(memberToken);
+        (await Client.PostAsJsonAsync($"/api/invites/{inviteCode}/join", new { }))
+            .EnsureSuccessStatusCode();
+
+        // A NON-mentionable role, held by the owner. A plain member lacks MentionEveryone, so
+        // mentioning it by name must not expand → the owner gets no notification.
+        Authorize(ownerToken);
+        var roleResp = await Client.PostAsJsonAsync(
+            $"/api/guilds/{guild.Id}/roles",
+            new { name = "Admins", isMentionable = false }
+        );
+        roleResp.EnsureSuccessStatusCode();
+        var role = await roleResp.Content.ReadFromJsonAsync<IdResponse>();
+        (await Client.PutAsync($"/api/guilds/{guild.Id}/roles/{role!.Id}/members/{ownerId}", null))
+            .EnsureSuccessStatusCode();
+
+        Authorize(memberToken);
+        var send = await Client.PostAsJsonAsync(
+            $"/api/guilds/{guild.Id}/channels/{channel!.Id}/messages",
+            new { content = "@Admins anyone?" }
+        );
+        // Mentions never block a send — the message still goes through.
+        send.EnsureSuccessStatusCode();
+
+        Authorize(ownerToken);
+        await Task.Delay(300);
+        var unreadCount = await Client.GetFromJsonAsync<int>("/api/notifications/unread-count");
+        unreadCount.Should().Be(0);
+    }
+
     private record AuthResponse(string AccessToken, UserDto User);
 
     private record UserDto(long Id);

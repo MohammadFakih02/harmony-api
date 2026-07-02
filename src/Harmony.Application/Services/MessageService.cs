@@ -27,6 +27,7 @@ public class MessageService : IMessageService
     private readonly IPresenceService _presence;
     private readonly IAuditLogService _auditLog;
     private readonly IHubBroadcaster _broadcaster;
+    private readonly IRoleRepository _roles;
 
     /// <summary>Max attachments per message (Discord parity).</summary>
     public const int MaxAttachments = 10;
@@ -47,7 +48,8 @@ public class MessageService : IMessageService
         IUserBlockRepository blocks,
         IPresenceService presence,
         IAuditLogService auditLog,
-        IHubBroadcaster broadcaster
+        IHubBroadcaster broadcaster,
+        IRoleRepository roles
     )
     {
         _channelRepository = channelRepository;
@@ -63,15 +65,17 @@ public class MessageService : IMessageService
         _presence = presence;
         _auditLog = auditLog;
         _broadcaster = broadcaster;
+        _roles = roles;
     }
 
     /// <summary>
     /// Server-side `@mention` detection (NON-NEGOTIABLE #8 — never trust client-provided ids).
-    /// Resolves candidates scoped to the channel's actual participants (guild members, or the
-    /// DM peer), parses the content, and — for a guild channel — expands `@everyone`/`@here`
-    /// into the member-id set if the actor holds `MentionEveryone`. If the actor lacks the
-    /// permission, the literal text is simply not expanded; mentions are a notification side
-    /// effect and must never block the send.
+    /// Resolves candidates scoped to the channel's actual participants: guild members (by username
+    /// AND server nickname) plus the guild's roles, or — in a DM — just the peer's username. Then
+    /// expands broadcast/role mentions: `@everyone`/`@here` if the actor holds `MentionEveryone`, and
+    /// a `@role` into that role's members if the role `IsMentionable` OR the actor holds
+    /// `MentionEveryone`. If the actor lacks the permission the literal text is simply not expanded;
+    /// mentions are a notification side effect and must never block the send.
     /// </summary>
     private async Task<List<long>> ResolveMentionsAsync(
         string content,
@@ -87,17 +91,43 @@ public class MessageService : IMessageService
             : await _dms.GetParticipantIdsAsync(channelId);
 
         var users = await _userRepository.GetByIdsAsync(candidateIds);
-        var usersByUsernameLower = users.Values
-            .Where(u => u.UserName is not null)
-            .GroupBy(u => u.UserName!.ToLowerInvariant())
-            .ToDictionary(g => g.Key, g => g.First().Id);
+        // name -> userId: usernames first, then (guild only) server nicknames on top — so a member
+        // is mentionable by either. Last write wins on a collision (a harmless edge).
+        var usersByNameLower = new Dictionary<string, long>();
+        foreach (var u in users.Values)
+            if (u.UserName is not null)
+                usersByNameLower[u.UserName.ToLowerInvariant()] = u.Id;
 
-        var parsed = MentionParser.Parse(content, usersByUsernameLower, guildContext);
+        List<Role> roles = [];
+        Dictionary<string, long>? rolesByNameLower = null;
+        if (guildContext)
+        {
+            var members = await _guildRepository.GetMembersAsync(guildId!.Value);
+            foreach (var m in members)
+                if (!string.IsNullOrWhiteSpace(m.Nickname))
+                    usersByNameLower[m.Nickname.ToLowerInvariant()] = m.UserId;
+
+            roles = await _roles.GetByGuildAsync(guildId.Value);
+            rolesByNameLower = new Dictionary<string, long>();
+            foreach (var r in roles)
+                // The default (@everyone) role is addressed via the literal @everyone token, not by name.
+                if (!r.IsDefault)
+                    rolesByNameLower[r.Name.ToLowerInvariant()] = r.Id;
+        }
+
+        var parsed = MentionParser.Parse(content, usersByNameLower, guildContext, rolesByNameLower);
         var mentionIds = parsed.UserIds;
 
-        if (guildContext && (parsed.Everyone || parsed.Here))
-        {
-            var canMentionEveryone = await _permissions.HasAsync(
+        if (!guildContext)
+            return mentionIds.ToList();
+
+        // MentionEveryone is the shared gate for @everyone/@here AND non-mentionable roles — resolve
+        // it once, only if some broadcast/role expansion is actually needed.
+        var needsPermission =
+            parsed.Everyone || parsed.Here || parsed.RoleIds.Count > 0;
+        var canMentionEveryone =
+            needsPermission
+            && await _permissions.HasAsync(
                 actorId,
                 guildId!.Value,
                 Permission.MentionEveryone,
@@ -105,20 +135,30 @@ public class MessageService : IMessageService
                 ct
             );
 
-            if (canMentionEveryone)
+        if (parsed.Everyone && canMentionEveryone)
+        {
+            foreach (var id in candidateIds)
+                mentionIds.Add(id);
+        }
+        else if (parsed.Here && canMentionEveryone)
+        {
+            var statuses = await _presence.GetStatusesAsync(candidateIds, ct);
+            foreach (var id in candidateIds)
+                if (statuses.TryGetValue(id, out var status) && status != "offline")
+                    mentionIds.Add(id);
+        }
+
+        if (parsed.RoleIds.Count > 0)
+        {
+            var rolesById = roles.ToDictionary(r => r.Id);
+            foreach (var roleId in parsed.RoleIds)
             {
-                if (parsed.Everyone)
-                {
-                    foreach (var id in candidateIds)
-                        mentionIds.Add(id);
-                }
-                else if (parsed.Here)
-                {
-                    var statuses = await _presence.GetStatusesAsync(candidateIds, ct);
-                    foreach (var id in candidateIds)
-                        if (statuses.TryGetValue(id, out var status) && status != "offline")
-                            mentionIds.Add(id);
-                }
+                if (!rolesById.TryGetValue(roleId, out var role))
+                    continue;
+                if (!role.IsMentionable && !canMentionEveryone)
+                    continue;
+                foreach (var memberId in await _roles.GetMemberIdsWithRoleAsync(guildId!.Value, roleId))
+                    mentionIds.Add(memberId);
             }
         }
 
