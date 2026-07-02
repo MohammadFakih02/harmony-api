@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using FluentAssertions;
 using Harmony.Domain.Domain.Entities;
+using Harmony.Domain.Domain.Enums;
 using Harmony.Domain.Interfaces.Repositories;
 using Harmony.IntegrationTests.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
@@ -221,9 +222,54 @@ public class InviteTests : ApiTestBase, IClassFixture<HarmonyWebApplicationFacto
             .Be(HttpStatusCode.NotFound);
     }
 
+    [Fact]
+    public async Task Member_WithManageInvitesButNotCreateInvite_CanStillCreate()
+    {
+        var (ownerToken, _) = await RegisterAsync("inv_owner8", "inv_owner8@test.com");
+        var guildId = await CreateGuildAsync(ownerToken);
+        var code = await CreateInviteAsync(ownerToken, guildId);
+
+        var (memberToken, memberId) = await RegisterAsync("inv_member8", "inv_member8@test.com");
+        Auth(memberToken);
+        (await Client.PostAsJsonAsync($"/api/invites/{code.Code}/join", new { })).EnsureSuccessStatusCode();
+
+        // Strip CreateInvite from @everyone so a plain member no longer has it.
+        Auth(ownerToken);
+        var roles = await Client.GetFromJsonAsync<List<RoleDto>>($"/api/guilds/{guildId}/roles");
+        var everyone = roles!.Single(r => r.IsDefault);
+        var withoutCreate =
+            (long)Permission.DefaultEveryone & ~(long)Permission.CreateInvite;
+        (await Client.PatchAsJsonAsync(
+            $"/api/guilds/{guildId}/roles/{everyone.Id}",
+            new { permissionBits = withoutCreate }
+        )).EnsureSuccessStatusCode();
+
+        // The member now lacks CreateInvite (and has no ManageInvites) → creating is forbidden.
+        Auth(memberToken);
+        (await Client.PostAsJsonAsync($"/api/guilds/{guildId}/invites", new { }))
+            .StatusCode.Should().Be(HttpStatusCode.Forbidden);
+
+        // Grant a role carrying ManageInvites (a superset) — creating is allowed again.
+        Auth(ownerToken);
+        var mgr = await Client.PostAsJsonAsync(
+            $"/api/guilds/{guildId}/roles",
+            new { name = "Invite Managers", permissionBits = (long)Permission.ManageInvites }
+        );
+        mgr.EnsureSuccessStatusCode();
+        var mgrId = (await mgr.Content.ReadFromJsonAsync<RoleDto>())!.Id;
+        (await Client.PutAsync($"/api/guilds/{guildId}/roles/{mgrId}/members/{memberId}", null))
+            .EnsureSuccessStatusCode();
+
+        Auth(memberToken);
+        (await Client.PostAsJsonAsync($"/api/guilds/{guildId}/invites", new { }))
+            .StatusCode.Should().Be(HttpStatusCode.OK);
+    }
+
     private record AuthResponse(string AccessToken, UserDto User);
 
     private record UserDto(long Id);
+
+    private record RoleDto(long Id, long PermissionBits, bool IsDefault);
 
     private record GuildResponse(long Id, string Name);
 

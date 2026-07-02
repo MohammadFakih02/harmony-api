@@ -126,6 +126,61 @@ public class GuildMemberTests : ApiTestBase, IClassFixture<HarmonyWebApplication
     }
 
     [Fact]
+    public async Task BannedMember_RejoinAttempt_Returns403_WithReason()
+    {
+        var s = await SetupGuildWithMemberAsync("banreason");
+
+        Auth(s.ownerToken);
+        (await Client.PutAsJsonAsync(
+            $"/api/guilds/{s.guildId}/members/bans/{s.memberId}",
+            new { reason = "being naughty" }
+        )).StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        Auth(s.memberToken);
+        var rejoin = await Client.PostAsJsonAsync($"/api/invites/{s.code}/join", new { });
+        rejoin.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+
+        var body = await rejoin.Content.ReadFromJsonAsync<BanJoinError>();
+        body!.Banned.Should().BeTrue();
+        body.Reason.Should().Be("being naughty");
+        body.Error.Should().Contain("being naughty");
+    }
+
+    [Fact]
+    public async Task KickedMember_Rejoining_LosesTheirRoles()
+    {
+        var s = await SetupGuildWithMemberAsync("rejoinroles");
+
+        // Owner mints a role and assigns it to the member.
+        Auth(s.ownerToken);
+        var created = await Client.PostAsJsonAsync(
+            $"/api/guilds/{s.guildId}/roles",
+            new { name = "Kickers", permissionBits = (long)Harmony.Domain.Domain.Enums.Permission.KickMembers }
+        );
+        created.EnsureSuccessStatusCode();
+        var roleId = (await created.Content.ReadFromJsonAsync<RoleIdDto>())!.Id;
+        (await Client.PutAsync($"/api/guilds/{s.guildId}/roles/{roleId}/members/{s.memberId}", null))
+            .EnsureSuccessStatusCode();
+        MemberRoleIds(s.guildId, s.memberId).Should().Contain(roleId);
+
+        // Kick, then the member rejoins via the still-valid invite.
+        Auth(s.ownerToken);
+        (await Client.DeleteAsync($"/api/guilds/{s.guildId}/members/{s.memberId}"))
+            .StatusCode.Should().Be(HttpStatusCode.NoContent);
+        await JoinAsync(s.memberToken, s.code);
+
+        // Their old assignment is gone — rejoin starts fresh at @everyone.
+        MemberRoleIds(s.guildId, s.memberId).Should().BeEmpty();
+    }
+
+    private IReadOnlyList<long> MemberRoleIds(long guildId, long userId)
+    {
+        using var scope = Factory.Services.CreateScope();
+        var roles = scope.ServiceProvider.GetRequiredService<IRoleRepository>();
+        return roles.GetMemberRoleIdsAsync(guildId, userId).GetAwaiter().GetResult();
+    }
+
+    [Fact]
     public async Task Owner_TimesOutMember_SetsExpiry_AndClearReverts()
     {
         var s = await SetupGuildWithMemberAsync("timeout");
@@ -330,4 +385,8 @@ public class GuildMemberTests : ApiTestBase, IClassFixture<HarmonyWebApplication
     );
 
     private record InviteCodeDto(string Code);
+
+    private record RoleIdDto(long Id);
+
+    private record BanJoinError(string? Error, bool Banned, string? Reason);
 }
