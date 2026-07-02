@@ -73,6 +73,24 @@ public class UnreadCountFlowTests : ApiTestBase, IClassFixture<HarmonyWebApplica
         c.EnsureSuccessStatusCode();
         var channel = await c.Content.ReadFromJsonAsync<IdResponse>();
 
+        // §5.31 posts a `member_join` system message on every guild join, authored by the joining
+        // member — which legitimately increments the OWNER's unread and races the owner's SignalR
+        // connect (the message may be broadcast before or after ownerConn.StartAsync()). That confound
+        // is what made SendMessage_..._NotToSender flaky. Suppress system messages so these tests
+        // isolate the unread fan-out they actually exercise.
+        var w = await Client.PatchAsync(
+            $"/api/guilds/{guild.Id}/welcome",
+            JsonContent.Create(
+                new
+                {
+                    welcomeChannelId = (long?)null,
+                    welcomeMessage = (string?)null,
+                    systemMessagesEnabled = false,
+                }
+            )
+        );
+        w.EnsureSuccessStatusCode();
+
         return (guild.Id, channel!.Id, await CreateInviteCodeAsync(guild.Id));
     }
 
