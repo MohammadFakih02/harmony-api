@@ -33,7 +33,7 @@ public record FileDownloadResponse(
 
 public record FileAttachmentResponse(
     [property: JsonNumberHandling(JsonNumberHandling.WriteAsString)] long Id,
-    [property: JsonNumberHandling(JsonNumberHandling.WriteAsString)] long ChannelId,
+    [property: JsonNumberHandling(JsonNumberHandling.WriteAsString)] long? ChannelId,
     [property: JsonNumberHandling(JsonNumberHandling.WriteAsString)] long? GuildId,
     string Filename,
     string ContentType,
@@ -43,3 +43,7 @@ public record FileAttachmentResponse(
     bool IsConfirmed,
     long CreatedAt
 );
+
+// Returned when a user asset (avatar/banner) upload is confirmed — the storage key now set on the
+// profile. The client renders it through GET /api/files/public/{key}.
+public record UserAssetResponse(string Key);

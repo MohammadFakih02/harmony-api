@@ -189,6 +189,14 @@ public interface IChatClient
     /// channel group. A coarse "something changed, resync" signal, not a delta.
     /// </summary>
     Task DmChannelUpdated(DmChannelUpdatedPayload payload);
+
+    /// <summary>
+    /// Fired when a user changes their profile avatar (uploaded or removed). Fanned out to every
+    /// guild the user is a member of (guild groups) plus their friends and their own tabs — the
+    /// surfaces that render the avatar live (member lists, chat authors, DM list, the user deck).
+    /// Carries the new key (null = removed) so clients patch it in place without a refetch.
+    /// </summary>
+    Task ProfileUpdated(ProfileUpdatedPayload payload);
 }
 
 /// <summary>Minimal delete notification — no content, just identity. GuildId is null for DMs.</summary>
@@ -299,3 +307,7 @@ public record MemberRoleUpdatedPayload(long GuildId, long UserId, IEnumerable<lo
 
 /// <summary>A DM/group channel whose membership changed — the recipient should resync its DM list.</summary>
 public record DmChannelUpdatedPayload(long ChannelId);
+
+/// <summary>A user's profile avatar changed. <see cref="AvatarKey"/> is the new storage key, or null
+/// when the avatar was removed.</summary>
+public record ProfileUpdatedPayload(long UserId, string? AvatarKey);

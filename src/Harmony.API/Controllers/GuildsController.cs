@@ -89,6 +89,21 @@ public class GuildsController : ControllerBase
 
         await _roles.AddAsync(everyone);
 
+        // Default #general text channel — a fresh guild needs somewhere to talk, and the
+        // member-join welcome flow needs a target channel. Also pinned as the welcome channel.
+        var general = new Channel
+        {
+            Id = _snowflake.NextId(),
+            GuildId = guild.Id,
+            Name = "general",
+            Type = "text",
+            Position = 0,
+            CreatedAt = guild.CreatedAt
+        };
+
+        await _channels.AddAsync(general);
+        guild.WelcomeChannelId = general.Id;
+
         await _guilds.SaveChangesAsync();
 
         return CreatedAtAction(nameof(GetById), new { id = guild.Id }, ToResponse(guild));

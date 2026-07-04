@@ -216,4 +216,16 @@ public class HubBroadcaster : IHubBroadcaster
         _hubContext
             .Clients.Users(userIds.Select(id => id.ToString()).ToList())
             .DmChannelUpdated(payload);
+
+    public Task BroadcastProfileUpdatedToGuildAsync(
+        long guildId,
+        ProfileUpdatedPayload payload,
+        CancellationToken ct = default
+    ) => _hubContext.Clients.Group(ChatHub.GuildGroup(guildId)).ProfileUpdated(payload);
+
+    public Task BroadcastProfileUpdatedToUserAsync(
+        long userId,
+        ProfileUpdatedPayload payload,
+        CancellationToken ct = default
+    ) => _hubContext.Clients.User(userId.ToString()).ProfileUpdated(payload);
 }
