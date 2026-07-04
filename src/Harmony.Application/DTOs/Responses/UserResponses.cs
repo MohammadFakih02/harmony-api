@@ -7,6 +7,7 @@ public record UserProfileResponse(
     string Email,
     string? AvatarKey,
     string? BannerKey,
+    string? BannerColor,
     string? Bio,
     string? StatusMessage,
     long? StatusMessageExpiresAt,
@@ -29,6 +30,7 @@ public record PublicUserResponse(
     string Username,
     string? AvatarKey,
     string? BannerKey,
+    string? BannerColor,
     string? Bio,
     string? StatusMessage,
     // Computed years from DOB (not the raw date — others don't see your birthday); null = unset.

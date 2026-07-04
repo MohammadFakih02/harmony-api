@@ -5,7 +5,10 @@ public record UpdateUserRequest(
     string? Bio,
     string? StatusMessage,
     // ISO date "yyyy-MM-dd". Null = leave unchanged; the empty string clears it.
-    string? DateOfBirth
+    string? DateOfBirth,
+    // Profile banner colour "#rrggbb" — user-picked, independent of theme/role colours.
+    // Null = leave unchanged; the empty string clears it (back to the default banner).
+    string? BannerColor
 );
 
 // PATCH /api/users/me/status — durable preferred status (online|away|dnd|invisible).

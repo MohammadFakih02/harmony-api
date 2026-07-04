@@ -91,6 +91,30 @@ public static class RateLimitingExtensions
                 }
             );
 
+            // ----------------------------------------------------------------
+            // Public asset limiter — avatars/banners are fetched by bare <img>
+            // tags (no auth header → always anonymous), and one member list can
+            // burst dozens of them. IP-partitioned, generous; the endpoint is
+            // cheap (one indexed row read + a local HMAC presign, no MinIO IO).
+            // ----------------------------------------------------------------
+            options.AddPolicy(
+                "assets",
+                context =>
+                {
+                    var ip = context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+                    return RateLimitPartition.GetFixedWindowLimiter(
+                        partitionKey: $"assets:{ip}",
+                        factory: _ => new FixedWindowRateLimiterOptions
+                        {
+                            PermitLimit = 300,
+                            Window = TimeSpan.FromSeconds(10),
+                            QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                            QueueLimit = 0,
+                        }
+                    );
+                }
+            );
+
             // Return 429 with a Retry-After header instead of the default empty response
             options.OnRejected = async (context, cancellationToken) =>
             {

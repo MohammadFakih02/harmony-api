@@ -81,11 +81,11 @@ public class InviteTests : ApiTestBase, IClassFixture<HarmonyWebApplicationFacto
     }
 
     [Fact]
-    public async Task PlainMember_HasCreateInvite_ButNotManageInvites()
+    public async Task PlainMember_HasCreateInvite_AndListsOnlyTheirOwnInvites()
     {
         var (ownerToken, _) = await RegisterAsync("inv_owner2", "inv_owner2@test.com");
         var guildId = await CreateGuildAsync(ownerToken);
-        var seed = await CreateInviteAsync(ownerToken, guildId);
+        var seed = await CreateInviteAsync(ownerToken, guildId); // the owner's invite
 
         var (memberToken, _) = await RegisterAsync("inv_member2", "inv_member2@test.com");
         Auth(memberToken);
@@ -96,10 +96,38 @@ public class InviteTests : ApiTestBase, IClassFixture<HarmonyWebApplicationFacto
         Auth(memberToken);
         var create = await Client.PostAsJsonAsync($"/api/guilds/{guildId}/invites", new { });
         create.StatusCode.Should().Be(HttpStatusCode.OK);
+        var memberInvite = (await create.Content.ReadFromJsonAsync<InviteResponse>())!;
 
-        // ManageInvites is not in the default set → listing is forbidden.
-        var list = await Client.GetAsync($"/api/guilds/{guildId}/invites");
-        list.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        // A CreateInvite-only member can list — but sees ONLY their own invites, never the owner's.
+        var list = await Client.GetFromJsonAsync<List<InviteResponse>>(
+            $"/api/guilds/{guildId}/invites"
+        );
+        list.Should().ContainSingle(i => i.Code == memberInvite.Code);
+        list.Should().NotContain(i => i.Code == seed.Code);
+    }
+
+    [Fact]
+    public async Task Owner_WithManageInvites_ListsEveryonesInvites()
+    {
+        var (ownerToken, _) = await RegisterAsync("inv_owner2b", "inv_owner2b@test.com");
+        var guildId = await CreateGuildAsync(ownerToken);
+        var ownerInvite = await CreateInviteAsync(ownerToken, guildId);
+
+        var (memberToken, _) = await RegisterAsync("inv_member2b", "inv_member2b@test.com");
+        Auth(memberToken);
+        (await Client.PostAsJsonAsync($"/api/invites/{ownerInvite.Code}/join", new { }))
+            .EnsureSuccessStatusCode();
+        var memberInvite = (await (
+            await Client.PostAsJsonAsync($"/api/guilds/{guildId}/invites", new { })
+        ).Content.ReadFromJsonAsync<InviteResponse>())!;
+
+        // The owner holds ManageInvites → sees every member's invites, not just their own.
+        Auth(ownerToken);
+        var list = await Client.GetFromJsonAsync<List<InviteResponse>>(
+            $"/api/guilds/{guildId}/invites"
+        );
+        list.Should().Contain(i => i.Code == ownerInvite.Code);
+        list.Should().Contain(i => i.Code == memberInvite.Code);
     }
 
     [Fact]

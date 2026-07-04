@@ -47,4 +47,37 @@ public interface IFileService
         long fileId,
         CancellationToken ct = default
     );
+
+    /// <summary>
+    /// Presigns a profile-asset upload (<paramref name="kind"/> = "avatar" | "banner"). Image types
+    /// only, tighter size cap than chat attachments, keyed under avatars/{userId}/… or
+    /// banners/{userId}/…. Throws <see cref="ArgumentException"/> on a bad kind/type/size.
+    /// </summary>
+    Task<PresignFileResponse> PresignUserAssetAsync(
+        long userId,
+        string kind,
+        PresignFileRequest request,
+        CancellationToken ct = default
+    );
+
+    /// <summary>
+    /// Confirms an uploaded profile asset (store-as-truth + ImageSharp validation, like ConfirmAsync),
+    /// then points the user's AvatarKey/BannerKey at it and best-effort deletes the replaced object.
+    /// </summary>
+    Task<UserAssetResponse> ConfirmUserAssetAsync(
+        long userId,
+        string kind,
+        long fileId,
+        CancellationToken ct = default
+    );
+
+    /// <summary>Clears the user's avatar/banner and best-effort deletes the stored object + row.</summary>
+    Task RemoveUserAssetAsync(long userId, string kind, CancellationToken ct = default);
+
+    /// <summary>
+    /// Mints a presigned GET URL for a public profile asset. Only confirmed rows whose key sits
+    /// under avatars/ or banners/ resolve (chat attachments can never be served through this);
+    /// anything else throws <see cref="KeyNotFoundException"/>.
+    /// </summary>
+    Task<string> GetPublicFileUrlAsync(string key, CancellationToken ct = default);
 }
