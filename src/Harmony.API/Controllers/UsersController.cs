@@ -85,6 +85,22 @@ public class UsersController : ControllerBase
         if (request.StatusMessage is not null)
             user.StatusMessage = request.StatusMessage;
 
+        if (request.BannerColor is not null)
+        {
+            if (request.BannerColor.Length == 0)
+            {
+                user.BannerColor = null; // empty string clears it
+            }
+            else if (System.Text.RegularExpressions.Regex.IsMatch(request.BannerColor, "^#[0-9a-fA-F]{6}$"))
+            {
+                user.BannerColor = request.BannerColor.ToLowerInvariant();
+            }
+            else
+            {
+                return BadRequest(new { error = "Banner colour must be a #rrggbb hex value." });
+            }
+        }
+
         if (request.DateOfBirth is not null)
         {
             if (request.DateOfBirth.Length == 0)
@@ -423,6 +439,7 @@ public class UsersController : ControllerBase
             u.Email!,
             u.AvatarKey,
             u.BannerKey,
+            u.BannerColor,
             u.Bio,
             u.StatusMessage,
             u.StatusMessageExpiresAt,
@@ -435,7 +452,7 @@ public class UsersController : ControllerBase
         );
 
     private static PublicUserResponse ToPublicResponse(User u) =>
-        new(u.Id, u.UserName!, u.AvatarKey, u.BannerKey, u.Bio, u.StatusMessage,
+        new(u.Id, u.UserName!, u.AvatarKey, u.BannerKey, u.BannerColor, u.Bio, u.StatusMessage,
             AgeFrom(u.DateOfBirth), u.DmPrivacy);
 
     /// <summary>Whole years between a DOB and today (UTC), or null when DOB is unset.</summary>

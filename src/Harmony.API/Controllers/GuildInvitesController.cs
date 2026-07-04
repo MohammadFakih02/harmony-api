@@ -110,11 +110,20 @@ public class GuildInvitesController : ControllerBase
     }
 
     // GET /api/guilds/{guildId}/invites
+    // No [RequirePermission] — listing is authorized in-body: ManageInvites sees all of the guild's
+    // invites, while a CreateInvite-only member sees only their own (mirrors the Create/Delete
+    // OR-pattern above). This lets a plain member view — not just blindly revoke — the invites they
+    // minted, which the modal needs to render.
     [HttpGet]
-    [RequirePermission(Permission.ManageInvites)]
     public async Task<IActionResult> List(long guildId)
     {
-        var invites = await _invites.GetByGuildAsync(guildId);
+        var userId = GetUserId();
+        var canManage = await _permissions.HasAsync(userId, guildId, Permission.ManageInvites);
+        if (!canManage && !await _permissions.HasAsync(userId, guildId, Permission.CreateInvite))
+            return Forbid();
+
+        var all = await _invites.GetByGuildAsync(guildId);
+        var invites = canManage ? all : all.Where(i => i.CreatorId == userId).ToList();
         var creators = await _users.GetByIdsAsync(invites.Select(i => i.CreatorId).Distinct());
         return Ok(invites.Select(i => ToResponse(i, creators)));
     }

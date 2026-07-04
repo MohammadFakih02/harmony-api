@@ -47,7 +47,17 @@ public class FileServiceTests
                 It.IsAny<string>(), It.IsAny<TimeSpan>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync("http://minio/download");
 
-        var sut = new FileService(files.Object, channels.Object, storage.Object, snowflake.Object);
+        var users = new Mock<IUserRepository>();
+        users.Setup(u => u.GetByIdAsync(UserId)).ReturnsAsync(new User { Id = UserId });
+
+        var guilds = new Mock<IGuildRepository>();
+        guilds.Setup(g => g.GetGuildIdsForUserAsync(It.IsAny<long>())).ReturnsAsync(new List<long>());
+        var friends = new Mock<IFriendRepository>();
+        friends.Setup(f => f.GetFriendIdsAsync(It.IsAny<long>())).ReturnsAsync(new List<long>());
+
+        var sut = new FileService(
+            files.Object, channels.Object, users.Object, guilds.Object, friends.Object,
+            storage.Object, snowflake.Object, Mock.Of<IHubBroadcaster>());
         return (sut, files, channels, storage);
     }
 

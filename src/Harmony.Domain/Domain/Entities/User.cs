@@ -9,6 +9,10 @@ public class User : IdentityUser<long>
 
     public string? AvatarKey { get; set; }
     public string? BannerKey { get; set; }
+
+    /// <summary>User-picked profile banner colour ("#rrggbb"); shown when no banner image is set.
+    /// Independent of theme/role colours. Null = default banner.</summary>
+    public string? BannerColor { get; set; }
     public string? Bio { get; set; }
     public string? StatusMessage { get; set; }
 

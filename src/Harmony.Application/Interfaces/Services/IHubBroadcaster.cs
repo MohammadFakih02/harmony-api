@@ -251,4 +251,24 @@ public interface IHubBroadcaster
         DmChannelUpdatedPayload payload,
         CancellationToken ct = default
     );
+
+    /// <summary>
+    /// Broadcasts a profile-avatar change to an entire guild's group (every connected member who
+    /// has joined it) — so co-members' member lists and chat authors update live.
+    /// </summary>
+    Task BroadcastProfileUpdatedToGuildAsync(
+        long guildId,
+        ProfileUpdatedPayload payload,
+        CancellationToken ct = default
+    );
+
+    /// <summary>
+    /// Sends a profile-avatar change to a single user (all their tabs) — used for the user's own
+    /// connections and each of their friends, so DM lists / friends lists / the user deck update live.
+    /// </summary>
+    Task BroadcastProfileUpdatedToUserAsync(
+        long userId,
+        ProfileUpdatedPayload payload,
+        CancellationToken ct = default
+    );
 }
