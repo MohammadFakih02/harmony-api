@@ -22,7 +22,7 @@ public class AuditLogRepository : IAuditLogRepository
         string? actionType = null
     )
     {
-        var query = _db.AuditLogs.Where(a => a.GuildId == guildId);
+        var query = _db.AuditLogs.AsNoTracking().Where(a => a.GuildId == guildId);
 
         // Keyset pagination: snowflake ids are time-ordered, so "older than the cursor" is id < before.
         if (before is { } cursor)

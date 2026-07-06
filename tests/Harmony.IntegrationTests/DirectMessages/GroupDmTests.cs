@@ -196,6 +196,65 @@ public class GroupDmTests : ApiTestBase, IClassFixture<HarmonyWebApplicationFact
             .Be(HttpStatusCode.Forbidden);
     }
 
+    [Fact]
+    public async Task RenameGroup_ByAParticipant_IsReflectedForEveryone()
+    {
+        var (tokenA, _) = await RegisterAsync("gdm_rn_a", "gdm_rn_a@test.com");
+        var (tokenB, idB) = await RegisterAsync("gdm_rn_b", "gdm_rn_b@test.com");
+        var (_, idC) = await RegisterAsync("gdm_rn_c", "gdm_rn_c@test.com");
+
+        Authorize(tokenA);
+        var create = await CreateGroupAsync("Before", idB, idC);
+        var group = await create.Content.ReadFromJsonAsync<DmDto>();
+
+        // Any participant (not just the creator) can rename.
+        Authorize(tokenB);
+        var rename = await Client.PatchAsJsonAsync(
+            $"/api/dm/{group!.ChannelId}/name",
+            new { name = "After" }
+        );
+        rename.StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        Authorize(tokenA);
+        var list = await ListDmsAsync();
+        list.Should().ContainSingle(d => d.ChannelId == group.ChannelId && d.Name == "After");
+    }
+
+    [Fact]
+    public async Task RenameGroup_ByANonParticipant_IsForbidden()
+    {
+        var (tokenA, _) = await RegisterAsync("gdm_rf_a", "gdm_rf_a@test.com");
+        var (_, idB) = await RegisterAsync("gdm_rf_b", "gdm_rf_b@test.com");
+        var (_, idC) = await RegisterAsync("gdm_rf_c", "gdm_rf_c@test.com");
+        var (tokenD, _) = await RegisterAsync("gdm_rf_d", "gdm_rf_d@test.com");
+
+        Authorize(tokenA);
+        var create = await CreateGroupAsync("Locked", idB, idC);
+        var group = await create.Content.ReadFromJsonAsync<DmDto>();
+
+        Authorize(tokenD);
+        var rename = await Client.PatchAsJsonAsync(
+            $"/api/dm/{group!.ChannelId}/name",
+            new { name = "Hijacked" }
+        );
+        rename.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+    }
+
+    [Fact]
+    public async Task RenameOneToOneDm_IsRejected()
+    {
+        var (tokenA, _) = await RegisterAsync("gdm_r1_a", "gdm_r1_a@test.com");
+        var (_, idB) = await RegisterAsync("gdm_r1_b", "gdm_r1_b@test.com");
+
+        Authorize(tokenA);
+        var open = await Client.PostAsJsonAsync("/api/dm", new { targetUserId = idB });
+        open.EnsureSuccessStatusCode();
+        var dm = await open.Content.ReadFromJsonAsync<DmDto>();
+
+        var rename = await Client.PatchAsJsonAsync($"/api/dm/{dm!.ChannelId}/name", new { name = "Nope" });
+        rename.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
     private record AuthResponse(string AccessToken, UserDto User);
 
     private record UserDto(long Id);

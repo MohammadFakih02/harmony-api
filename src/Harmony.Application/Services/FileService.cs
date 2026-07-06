@@ -446,11 +446,182 @@ public sealed class FileService : IFileService
         }
     }
 
+    // ---- guild assets (icon/banner) — same pipeline, guild-scoped, ManageGuild at the route ----
+
+    public async Task<PresignFileResponse> PresignGuildAssetAsync(
+        long actorId,
+        long guildId,
+        string kind,
+        PresignFileRequest request,
+        CancellationToken ct = default
+    )
+    {
+        var prefix = GuildAssetPrefix(kind);
+
+        if (!UserAssetContentTypes.Contains(request.ContentType))
+            throw new ArgumentException("Icons and banners must be png, jpeg, gif, or webp.");
+
+        if (request.SizeBytes <= 0 || request.SizeBytes > MaxUserAssetSizeBytes)
+            throw new ArgumentException("File size is out of the allowed range.");
+
+        if (await _guilds.GetByIdAsync(guildId) is null)
+            throw new KeyNotFoundException("Guild not found.");
+
+        var fileId = _snowflake.NextId();
+        var objectKey = $"{prefix}/{guildId}/{fileId}";
+
+        await _files.AddAsync(
+            new FileAttachment
+            {
+                Id = fileId,
+                UploaderId = actorId,
+                GuildId = guildId,
+                ChannelId = null, // guild assets have no channel container
+                MinioKey = objectKey,
+                Filename = request.Filename,
+                ContentType = request.ContentType,
+                SizeBytes = request.SizeBytes,
+                IsConfirmed = false,
+                CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            }
+        );
+        await _files.SaveChangesAsync();
+
+        var url = await _storage.GetPresignedPutUrlAsync(
+            objectKey,
+            request.ContentType,
+            PresignExpiry,
+            ct
+        );
+
+        var expiresAt = DateTimeOffset.UtcNow.Add(PresignExpiry).ToUnixTimeMilliseconds();
+        return new PresignFileResponse(fileId, url, objectKey, expiresAt);
+    }
+
+    public async Task<UserAssetResponse> ConfirmGuildAssetAsync(
+        long guildId,
+        string kind,
+        long fileId,
+        CancellationToken ct = default
+    )
+    {
+        var prefix = GuildAssetPrefix(kind);
+
+        var file = await _files.GetByIdAsync(fileId);
+        // The key must sit under THIS guild's asset prefix — a chat attachment, profile asset, or
+        // another guild's asset can never be confirmed through this route. 404, don't leak.
+        if (file is null || !file.MinioKey.StartsWith($"{prefix}/{guildId}/", StringComparison.Ordinal))
+            throw new KeyNotFoundException("File not found.");
+
+        if (!file.IsConfirmed)
+        {
+            var stat = await _storage.StatObjectAsync(file.MinioKey, ct);
+            if (stat is null)
+                throw new ArgumentException("Uploaded object was not found in storage.");
+
+            if (stat.Size <= 0 || stat.Size > MaxUserAssetSizeBytes)
+                throw new ArgumentException("Uploaded object exceeds the maximum allowed size.");
+
+            file.SizeBytes = stat.Size;
+            file.ContentType = stat.ContentType;
+
+            if (!UserAssetContentTypes.Contains(file.ContentType))
+                throw new ArgumentException("Icons and banners must be png, jpeg, gif, or webp.");
+
+            var dims = await _storage.TryReadImageDimensionsAsync(file.MinioKey, ct);
+            if (dims is not { } d)
+                throw new ArgumentException("Uploaded object is not a valid image.");
+
+            file.Width = d.Width;
+            file.Height = d.Height;
+            file.IsConfirmed = true;
+        }
+
+        var guild = await _guilds.GetByIdAsync(guildId)
+            ?? throw new KeyNotFoundException("Guild not found.");
+
+        var oldKey = kind == "icon" ? guild.IconKey : guild.BannerKey;
+        if (kind == "icon")
+            guild.IconKey = file.MinioKey;
+        else
+            guild.BannerKey = file.MinioKey;
+
+        if (oldKey is not null && oldKey != file.MinioKey
+            && oldKey.StartsWith($"{prefix}/", StringComparison.Ordinal))
+        {
+            try
+            {
+                await _storage.DeleteObjectAsync(oldKey, ct);
+            }
+            catch
+            {
+                // best-effort — a stale object in the store is harmless
+            }
+
+            if (TryParseAssetFileId(oldKey, out var oldFileId)
+                && await _files.GetByIdAsync(oldFileId) is { } oldRow)
+            {
+                _files.RemoveRange([oldRow]);
+            }
+        }
+
+        await _files.SaveChangesAsync();
+
+        return new UserAssetResponse(file.MinioKey);
+    }
+
+    public async Task RemoveGuildAssetAsync(long guildId, string kind, CancellationToken ct = default)
+    {
+        var prefix = GuildAssetPrefix(kind);
+
+        var guild = await _guilds.GetByIdAsync(guildId)
+            ?? throw new KeyNotFoundException("Guild not found.");
+
+        var key = kind == "icon" ? guild.IconKey : guild.BannerKey;
+        if (key is null)
+            return; // idempotent
+
+        if (kind == "icon")
+            guild.IconKey = null;
+        else
+            guild.BannerKey = null;
+
+        if (key.StartsWith($"{prefix}/", StringComparison.Ordinal))
+        {
+            try
+            {
+                await _storage.DeleteObjectAsync(key, ct);
+            }
+            catch
+            {
+                // best-effort — see ConfirmGuildAssetAsync
+            }
+
+            if (TryParseAssetFileId(key, out var fileId)
+                && await _files.GetByIdAsync(fileId) is { } row)
+            {
+                _files.RemoveRange([row]);
+            }
+        }
+
+        await _files.SaveChangesAsync();
+    }
+
+    private static string GuildAssetPrefix(string kind) =>
+        kind switch
+        {
+            "icon" => "guild-icons",
+            "banner" => "guild-banners",
+            _ => throw new ArgumentException("Asset kind must be 'icon' or 'banner'."),
+        };
+
     public async Task<string> GetPublicFileUrlAsync(string key, CancellationToken ct = default)
     {
-        // Only profile assets are publicly servable — chat attachments stay channel-gated.
+        // Only profile/guild assets are publicly servable — chat attachments stay channel-gated.
         if (!key.StartsWith("avatars/", StringComparison.Ordinal)
-            && !key.StartsWith("banners/", StringComparison.Ordinal))
+            && !key.StartsWith("banners/", StringComparison.Ordinal)
+            && !key.StartsWith("guild-icons/", StringComparison.Ordinal)
+            && !key.StartsWith("guild-banners/", StringComparison.Ordinal))
             throw new KeyNotFoundException("File not found.");
 
         if (!TryParseAssetFileId(key, out var fileId))

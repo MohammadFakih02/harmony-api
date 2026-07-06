@@ -246,6 +246,31 @@ public class DirectMessagesController : ControllerBase
         return Ok(result);
     }
 
+    // PATCH /api/dm/{channelId}/name — rename a group DM (any participant, Discord-style;
+    // empty name clears back to the joined participant names on the client)
+    [HttpPatch("{channelId:long}/name")]
+    public async Task<IActionResult> RenameGroup(long channelId, [FromBody] RenameGroupDmRequest request)
+    {
+        var me = GetUserId();
+        if (!await _dms.IsParticipantAsync(channelId, me))
+            return Forbid();
+
+        var channel = await _channels.GetByIdAsync(channelId);
+        if (channel is null || channel.Type != "group_dm")
+            return BadRequest(new { error = "Only group conversations can be renamed." });
+
+        var name = (request.Name ?? string.Empty).Trim();
+        if (name.Length > 100)
+            return BadRequest(new { error = "Group name is too long." });
+
+        channel.Name = name;
+        await _channels.SaveChangesAsync();
+
+        // Same coarse "resync your DM list" signal as create/add/leave.
+        await NotifyParticipantsAsync(await _dms.GetParticipantIdsAsync(channelId), channelId);
+        return NoContent();
+    }
+
     // PATCH /api/dm/{channelId}/hide — hide the DM from the caller's list
     [HttpPatch("{channelId:long}/hide")]
     public async Task<IActionResult> Hide(long channelId)
@@ -397,7 +422,8 @@ public class DirectMessagesController : ControllerBase
     private Task NotifyParticipantsAsync(IReadOnlyList<long> userIds, long channelId) =>
         _broadcaster.BroadcastDmChannelUpdatedAsync(userIds, new DmChannelUpdatedPayload(channelId));
 
-    private static DirectMessageChannelResponse BuildResponse(
+    // Internal so BootstrapController can reuse the exact same mapping (single source of truth).
+    internal static DirectMessageChannelResponse BuildResponse(
         DmChannelSummary summary,
         Dictionary<long, List<long>> participantsByChannel,
         Dictionary<long, User> users,

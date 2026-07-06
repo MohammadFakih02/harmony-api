@@ -20,7 +20,8 @@ public class UserMuteRepository : IUserMuteRepository
 
     public async Task<List<UserMute>> GetActiveMutesAsync(long userId, long nowUnixMs) =>
         await _db
-            .UserMutes.Where(m =>
+            .UserMutes.AsNoTracking()
+            .Where(m =>
                 m.UserId == userId && (m.MutedUntil == null || m.MutedUntil > nowUnixMs)
             )
             .OrderByDescending(m => m.CreatedAt)

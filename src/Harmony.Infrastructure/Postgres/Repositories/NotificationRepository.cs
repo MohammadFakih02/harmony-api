@@ -23,7 +23,8 @@ public class NotificationRepository : INotificationRepository
 
     public async Task<List<Notification>> GetForUserAsync(long userId, int limit) =>
         await _db
-            .Notifications.Where(n => n.UserId == userId)
+            .Notifications.AsNoTracking()
+            .Where(n => n.UserId == userId)
             .OrderByDescending(n => n.CreatedAt)
             .Take(limit)
             .ToListAsync();

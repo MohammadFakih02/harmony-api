@@ -161,15 +161,18 @@ public class ChannelsController : ControllerBase
     )
     {
         // DECOUPLED TRANSACTION: Map requests to basic C# Value Tuples
-        var updates = request.Select(r => (r.ChannelId, r.Position));
+        var updates = request.Select(r => (r.ChannelId, r.Position)).ToList();
         await _channels.ReorderAsync(updates);
 
         var channels = await _channels.GetByGuildIdAsync(guildId);
 
-        // REAL-TIME BROADCAST: Trigger single sidebar invalidation on channel reordering
-        if (channels.Count > 0)
+        // REAL-TIME BROADCAST: push each moved channel so other clients' stores re-sort.
+        // (A single-channel "invalidation" broadcast isn't enough — the client's
+        // ChannelUpdated handler patches that one channel, it doesn't refetch the list.)
+        var movedIds = updates.Select(u => u.ChannelId).ToHashSet();
+        foreach (var channel in channels.Where(c => movedIds.Contains(c.Id)))
         {
-            await _broadcaster.BroadcastChannelUpdatedAsync(ToResponse(channels[0]), guildId);
+            await _broadcaster.BroadcastChannelUpdatedAsync(ToResponse(channel), guildId);
         }
 
         return Ok(channels.OrderBy(c => c.Position).Select(ToResponse));

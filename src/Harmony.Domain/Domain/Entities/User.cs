@@ -29,6 +29,10 @@ public class User : IdentityUser<long>
 
     /// <summary>Who may open a new DM with this user: "everyone" | "friends_only". Default "everyone".</summary>
     public string DmPrivacy { get; set; } = "everyone";
+
+    /// <summary>The user's personal guild-rail order (guild ids, first = top). Guilds not in the
+    /// list (new joins) append after it in join order; null = pure join order.</summary>
+    public long[]? GuildOrder { get; set; }
     public long CreatedAt { get; set; }
 
     // Navigation

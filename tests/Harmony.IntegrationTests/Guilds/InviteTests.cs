@@ -301,6 +301,56 @@ public class InviteTests : ApiTestBase, IClassFixture<HarmonyWebApplicationFacto
 
     private record GuildResponse(long Id, string Name);
 
+    [Fact]
+    public async Task InviteCleanup_SweepsExpiredAndExhausted_KeepsAliveInvites()
+    {
+        var (ownerToken, _) = await RegisterAsync("inv_clean", "inv_clean@test.com");
+        var guildId = await CreateGuildAsync(ownerToken);
+        var ownerId = OwnerIdOf(guildId);
+
+        var alive = await CreateInviteAsync(ownerToken, guildId);
+
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        using (var scope = Factory.Services.CreateScope())
+        {
+            var invites = scope.ServiceProvider.GetRequiredService<IGuildInviteRepository>();
+            await invites.AddAsync(new GuildInvite
+            {
+                Code = "cleanexp",
+                GuildId = guildId,
+                CreatorId = ownerId,
+                ExpiresAt = now - 1000,
+                CreatedAt = now - 2000,
+            });
+            await invites.AddAsync(new GuildInvite
+            {
+                Code = "cleanused",
+                GuildId = guildId,
+                CreatorId = ownerId,
+                MaxUses = 1,
+                UseCount = 1,
+                CreatedAt = now - 2000,
+            });
+            await invites.SaveChangesAsync();
+        }
+
+        // The sweep body InviteCleanupService runs hourly (the hosted service itself is
+        // gated out of the Test environment, so exercise the repository seam directly).
+        using (var scope = Factory.Services.CreateScope())
+        {
+            var invites = scope.ServiceProvider.GetRequiredService<IGuildInviteRepository>();
+            var removed = await invites.DeleteDeadAsync(now);
+            removed.Should().Be(2);
+        }
+
+        Auth(ownerToken);
+        var list = await Client.GetFromJsonAsync<List<InviteResponse>>(
+            $"/api/guilds/{guildId}/invites"
+        );
+        list!.Select(i => i.Code).Should().Contain(alive.Code)
+            .And.NotContain(new[] { "cleanexp", "cleanused" });
+    }
+
     private record InviteResponse(
         string Code,
         long GuildId,

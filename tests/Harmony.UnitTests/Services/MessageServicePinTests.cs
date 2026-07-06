@@ -51,7 +51,7 @@ public class MessageServicePinTests
                 Channels.Object, Guilds.Object, Publisher.Object, Snowflake.Object,
                 Messages.Object, Users.Object, Permissions.Object, Files.Object,
                 Dms.Object, Blocks.Object, Mock.Of<IFriendRepository>(), Presence.Object, AuditLog.Object,
-                Broadcaster.Object, Mock.Of<IRoleRepository>()
+                Broadcaster.Object, Mock.Of<IRoleRepository>(), Mock.Of<ISlowmodeGate>()
             );
 
         /// <summary>Guild channel exists; the actor holds (or lacks) PinMessages; the message lives here.</summary>

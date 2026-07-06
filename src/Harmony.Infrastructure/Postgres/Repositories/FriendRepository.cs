@@ -33,7 +33,8 @@ public class FriendRepository : IFriendRepository
 
     public async Task<List<Friend>> GetAcceptedAsync(long userId) =>
         await _db
-            .Friends.Where(f =>
+            .Friends.AsNoTracking()
+            .Where(f =>
                 f.Status == Accepted
                 && (f.RequesterId == userId || f.AddresseeId == userId)
             )
@@ -42,7 +43,8 @@ public class FriendRepository : IFriendRepository
 
     public async Task<List<Friend>> GetPendingForAsync(long userId) =>
         await _db
-            .Friends.Where(f =>
+            .Friends.AsNoTracking()
+            .Where(f =>
                 f.Status == Pending
                 && (f.RequesterId == userId || f.AddresseeId == userId)
             )

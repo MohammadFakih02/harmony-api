@@ -254,4 +254,76 @@ public class NotificationService : INotificationService
         foreach (var notification in toNotify)
             await PushUnlessDndAsync(notification, ct);
     }
+
+    /// <inheritdoc />
+    public async Task CreateReplyNotificationAsync(
+        long recipientId,
+        long actorId,
+        long? guildId,
+        long channelId,
+        long messageId,
+        long createdAt,
+        CancellationToken ct = default
+    )
+    {
+        if (recipientId == actorId)
+            return;
+
+        // Missing preference row = default enabled; only an explicit false suppresses.
+        var pref = await _notificationPreferences.GetAsync(recipientId);
+        if (pref is { RepliesEnabled: false })
+            return;
+
+        // Per-guild/channel level (guild only): channel-scope wins; "nothing" silences replies too.
+        if (guildId.HasValue)
+        {
+            var settingRows = await _notificationSettings.GetForResolutionAsync(
+                [recipientId],
+                guildId.Value,
+                channelId
+            );
+            string? channelLevel = null;
+            string? guildLevel = null;
+            foreach (var row in settingRows)
+            {
+                if (row.ScopeType == NotificationScope.Channel)
+                    channelLevel = row.Level;
+                else
+                    guildLevel = row.Level;
+            }
+            if ((channelLevel ?? guildLevel ?? NotificationLevel.Default) == NotificationLevel.Nothing)
+                return;
+        }
+
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        if (await _userMute.IsMutedAsync(recipientId, actorId, MuteTargetType.User, now))
+            return;
+        if (await _userMute.IsMutedAsync(recipientId, channelId, MuteTargetType.Channel, now))
+            return;
+        if (
+            guildId.HasValue
+            && await _userMute.IsMutedAsync(recipientId, guildId.Value, MuteTargetType.Guild, now)
+        )
+            return;
+        if (await _userBlock.AreBlockedAsync(actorId, recipientId))
+            return;
+
+        var notification = new Notification
+        {
+            Id = _snowflake.NextId(),
+            UserId = recipientId,
+            Type = "reply",
+            ActorId = actorId,
+            GuildId = guildId,
+            ChannelId = channelId,
+            MessageId = messageId,
+            IsRead = false,
+            CreatedAt = createdAt,
+        };
+
+        await _notifications.AddAsync(notification);
+        await _notifications.SaveChangesAsync();
+
+        await PushUnlessDndAsync(notification, ct);
+    }
 }
