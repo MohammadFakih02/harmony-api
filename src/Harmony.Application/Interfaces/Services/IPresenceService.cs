@@ -98,4 +98,12 @@ public interface IPresenceService
     /// Returns the number of users reaped. Fails open (Redis unavailable → 0, never throws).
     /// </summary>
     Task<int> SweepStaleAsync(TimeSpan staleThreshold, CancellationToken ct = default);
+
+    /// <summary>
+    /// Whether the user has any active SignalR connection (non-empty session set) —
+    /// the gate for offline-only web push. Fails CLOSED for push: Redis unavailable
+    /// returns true ("assume connected"), so an uncertain state skips the push rather
+    /// than risk buzzing a user who is looking at the app.
+    /// </summary>
+    Task<bool> IsConnectedAsync(long userId, CancellationToken ct = default);
 }

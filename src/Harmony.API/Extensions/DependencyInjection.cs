@@ -168,6 +168,8 @@ public static class DependencyInjection
         services.AddScoped<IGuildInviteRepository, GuildInviteRepository>();
         services.AddScoped<IGuildBanRepository, GuildBanRepository>();
         services.AddScoped<IMessageSearchRepository, MessageSearchRepository>();
+        services.AddScoped<IPushOutboxRepository, PushOutboxRepository>();
+        services.AddScoped<IPushSubscriptionRepository, PushSubscriptionRepository>();
 
         // Application & infrastructure services
         services.AddScoped<IIdentityService, IdentityService>();
@@ -183,6 +185,11 @@ public static class DependencyInjection
         services.AddScoped<IGuildMemberService, GuildMemberService>();
         services.AddScoped<IRoleService, RoleService>();
         services.AddScoped<ISearchService, SearchService>();
+
+        // Web push — the sender owns the VAPID client (WebPush config section, SDK confined
+        // to Infrastructure); the nudge is the producers' wake-up line to the dispatcher.
+        services.AddSingleton<IWebPushSender, WebPushSender>();
+        services.AddSingleton<IPushDispatchNudge, PushDispatchNudge>();
 
         // File storage — S3FileStorageService builds its own IAmazonS3 from config (ObjectStorage
         // section), so the AWS SDK types stay confined to Infrastructure (not referenced here).
@@ -205,6 +212,7 @@ public static class DependencyInjection
             services.AddHostedService<StatusExpiryService>();
             services.AddHostedService<PresenceSweepService>();
             services.AddHostedService<InviteCleanupService>();
+            services.AddHostedService<PushNotificationService>();
         }
 
         // -----------------------------------------------------------------------

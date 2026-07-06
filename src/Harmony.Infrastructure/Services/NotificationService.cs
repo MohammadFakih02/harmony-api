@@ -24,6 +24,8 @@ public class NotificationService : INotificationService
     private readonly INotificationPreferenceRepository _notificationPreferences;
     private readonly INotificationSettingRepository _notificationSettings;
     private readonly IPresenceService _presence;
+    private readonly IPushOutboxRepository _pushOutbox;
+    private readonly IPushDispatchNudge _pushNudge;
     private readonly ISnowflakeIdGenerator _snowflake;
     private readonly ILogger<NotificationService> _logger;
 
@@ -35,6 +37,8 @@ public class NotificationService : INotificationService
         INotificationPreferenceRepository notificationPreferenceRepository,
         INotificationSettingRepository notificationSettingRepository,
         IPresenceService presence,
+        IPushOutboxRepository pushOutboxRepository,
+        IPushDispatchNudge pushNudge,
         ISnowflakeIdGenerator snowflake,
         ILogger<NotificationService> logger
     )
@@ -46,8 +50,35 @@ public class NotificationService : INotificationService
         _notificationPreferences = notificationPreferenceRepository;
         _notificationSettings = notificationSettingRepository;
         _presence = presence;
+        _pushOutbox = pushOutboxRepository;
+        _pushNudge = pushNudge;
         _snowflake = snowflake;
         _logger = logger;
+    }
+
+    /// <summary>
+    /// Stages a PushOutbox row mirroring the notification, WITHOUT saving — it commits in
+    /// the caller's SaveChangesAsync alongside the Notification row itself (transactional
+    /// outbox: the push intent can never exist without the row, or vice versa). The
+    /// dispatcher applies the offline/preference gates at send time.
+    /// </summary>
+    private async Task StagePushAsync(Notification notification)
+    {
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        await _pushOutbox.AddAsync(
+            new PushOutboxMessage
+            {
+                Id = _snowflake.NextId(),
+                Kind = notification.Type,
+                RecipientId = notification.UserId,
+                ActorId = notification.ActorId,
+                GuildId = notification.GuildId,
+                ChannelId = notification.ChannelId,
+                MessageId = notification.MessageId,
+                NextAttemptAt = now,
+                CreatedAt = now,
+            }
+        );
     }
 
     /// <summary>
@@ -134,7 +165,9 @@ public class NotificationService : INotificationService
         };
 
         await _notifications.AddAsync(notification);
+        await StagePushAsync(notification);
         await _notifications.SaveChangesAsync();
+        _pushNudge.Signal();
 
         await PushUnlessDndAsync(notification, ct);
     }
@@ -247,9 +280,13 @@ public class NotificationService : INotificationService
         // Single SaveChangesAsync for the whole batch — one round trip regardless of
         // how many recipients survived the suppression chain above.
         foreach (var notification in toNotify)
+        {
             await _notifications.AddAsync(notification);
+            await StagePushAsync(notification);
+        }
 
         await _notifications.SaveChangesAsync();
+        _pushNudge.Signal();
 
         foreach (var notification in toNotify)
             await PushUnlessDndAsync(notification, ct);
@@ -322,7 +359,9 @@ public class NotificationService : INotificationService
         };
 
         await _notifications.AddAsync(notification);
+        await StagePushAsync(notification);
         await _notifications.SaveChangesAsync();
+        _pushNudge.Signal();
 
         await PushUnlessDndAsync(notification, ct);
     }

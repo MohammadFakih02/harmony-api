@@ -44,6 +44,7 @@ public class HarmonyDbContext
     public DbSet<NotificationPreference> NotificationPreferences => Set<NotificationPreference>();
     public DbSet<NotificationSetting> NotificationSettings => Set<NotificationSetting>();
     public DbSet<UserPushSubscription> UserPushSubscriptions => Set<UserPushSubscription>();
+    public DbSet<PushOutboxMessage> PushOutbox => Set<PushOutboxMessage>();
     public DbSet<GuildInvite> GuildInvites => Set<GuildInvite>();
     public DbSet<VoiceState> VoiceStates => Set<VoiceState>();
     public DbSet<AuditLog> AuditLogs => Set<AuditLog>();

@@ -308,6 +308,29 @@ public sealed class RedisPresenceService : IPresenceService
         }
     }
 
+    public async Task<bool> IsConnectedAsync(long userId, CancellationToken ct = default)
+    {
+        // Fails CLOSED for the push gate: an uncertain state reads as "connected" so the
+        // caller skips the push rather than risk buzzing a user who is looking at the app.
+        if (!_redisProvider.IsConnected)
+            return true;
+
+        try
+        {
+            var db = _redisProvider.Connection!.GetDatabase();
+            return await db.SetLengthAsync(SessionKey(userId)) > 0;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Presence: failed reading session set for user {UserId}",
+                userId
+            );
+            return true;
+        }
+    }
+
     public async Task<IReadOnlyDictionary<long, string>> GetStatusesAsync(
         IEnumerable<long> userIds,
         CancellationToken ct = default
