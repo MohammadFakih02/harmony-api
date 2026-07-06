@@ -231,3 +231,21 @@ public sealed class CreateInviteRequestValidator : AbstractValidator<CreateInvit
             .When(x => x.ExpiresInSeconds.HasValue);
     }
 }
+
+public sealed class SavePushSubscriptionRequestValidator
+    : AbstractValidator<SavePushSubscriptionRequest>
+{
+    public SavePushSubscriptionRequestValidator()
+    {
+        // Shape only — the endpoint is opaque push-service state; the only real proof of
+        // validity is a successful delivery (dead endpoints get pruned on 404/410 anyway).
+        RuleFor(x => x.Endpoint)
+            .NotEmpty().WithMessage("Endpoint is required.")
+            .MaximumLength(2048).WithMessage("Endpoint must be 2048 characters or fewer.")
+            .Must(e => Uri.TryCreate(e, UriKind.Absolute, out var uri) && uri.Scheme == Uri.UriSchemeHttps)
+            .WithMessage("Endpoint must be an absolute https URL.");
+
+        RuleFor(x => x.P256dh).NotEmpty().WithMessage("P256dh key is required.");
+        RuleFor(x => x.AuthKey).NotEmpty().WithMessage("Auth key is required.");
+    }
+}

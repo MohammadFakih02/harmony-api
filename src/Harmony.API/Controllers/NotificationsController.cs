@@ -1,6 +1,8 @@
 using System.Security.Claims;
 using Harmony.Application.DTOs.Requests;
 using Harmony.Application.DTOs.Responses;
+using Harmony.Application.Interfaces.Services;
+using Harmony.Application.Services;
 using Harmony.Domain.Domain.Entities;
 using Harmony.Domain.Interfaces.Repositories;
 using Microsoft.AspNetCore.Authorization;
@@ -24,14 +26,23 @@ public class NotificationsController : ControllerBase
 {
     private readonly INotificationRepository _notifications;
     private readonly INotificationPreferenceRepository _preferences;
+    private readonly IPushSubscriptionRepository _pushSubscriptions;
+    private readonly IWebPushSender _webPush;
+    private readonly ISnowflakeIdGenerator _snowflake;
 
     public NotificationsController(
         INotificationRepository notifications,
-        INotificationPreferenceRepository preferences
+        INotificationPreferenceRepository preferences,
+        IPushSubscriptionRepository pushSubscriptions,
+        IWebPushSender webPush,
+        ISnowflakeIdGenerator snowflake
     )
     {
         _notifications = notifications;
         _preferences = preferences;
+        _pushSubscriptions = pushSubscriptions;
+        _webPush = webPush;
+        _snowflake = snowflake;
     }
 
     // GET /api/notifications?limit=20 — most recent first.
@@ -164,6 +175,74 @@ public class NotificationsController : ControllerBase
 
         await _preferences.SaveChangesAsync();
         return Ok(ToResponse(pref));
+    }
+
+    // GET /api/notifications/push/public-key — the VAPID key the client subscribes with.
+    // 404 when unconfigured so the client can hide/disable the push toggle honestly.
+    [HttpGet("push/public-key")]
+    public IActionResult GetPushPublicKey() =>
+        string.IsNullOrEmpty(_webPush.PublicKey)
+            ? NotFound()
+            : Ok(new PushPublicKeyResponse(_webPush.PublicKey));
+
+    // PUT /api/notifications/push-subscription — upsert keyed by Endpoint. An endpoint is
+    // device+origin-scoped, so a row already registered by a DIFFERENT user (same browser,
+    // new login) is reassigned to the caller rather than duplicated; re-subscribing just
+    // refreshes the encryption keys.
+    [HttpPut("push-subscription")]
+    public async Task<IActionResult> SavePushSubscription(
+        [FromBody] SavePushSubscriptionRequest request
+    )
+    {
+        var userId = GetUserId();
+        if (userId is null)
+            return Unauthorized();
+
+        var existing = await _pushSubscriptions.GetByEndpointAsync(request.Endpoint);
+        if (existing is not null)
+        {
+            existing.UserId = userId.Value;
+            existing.P256dh = request.P256dh;
+            existing.AuthKey = request.AuthKey;
+        }
+        else
+        {
+            await _pushSubscriptions.AddAsync(
+                new UserPushSubscription
+                {
+                    Id = _snowflake.NextId(),
+                    UserId = userId.Value,
+                    Endpoint = request.Endpoint,
+                    P256dh = request.P256dh,
+                    AuthKey = request.AuthKey,
+                    CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                }
+            );
+        }
+
+        await _pushSubscriptions.SaveChangesAsync();
+        return NoContent();
+    }
+
+    // DELETE /api/notifications/push-subscription?endpoint= — idempotent; only the owner's
+    // own row is removed (someone else's endpoint is left alone and still returns 204,
+    // so the response never leaks whether a foreign endpoint exists).
+    [HttpDelete("push-subscription")]
+    public async Task<IActionResult> DeletePushSubscription([FromQuery] string endpoint)
+    {
+        var userId = GetUserId();
+        if (userId is null)
+            return Unauthorized();
+        if (string.IsNullOrEmpty(endpoint))
+            return BadRequest();
+
+        var existing = await _pushSubscriptions.GetByEndpointAsync(endpoint);
+        if (existing is not null && existing.UserId == userId.Value)
+        {
+            _pushSubscriptions.Remove(existing);
+            await _pushSubscriptions.SaveChangesAsync();
+        }
+        return NoContent();
     }
 
     // A null row means "every preference at its default (enabled)".

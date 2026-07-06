@@ -132,6 +132,29 @@ public class NotificationSettingConfiguration : IEntityTypeConfiguration<Notific
     }
 }
 
+public class PushOutboxMessageConfiguration : IEntityTypeConfiguration<PushOutboxMessage>
+{
+    public void Configure(EntityTypeBuilder<PushOutboxMessage> builder)
+    {
+        builder.ToTable("PushOutbox");
+        builder.HasKey(p => p.Id);
+        builder.Property(p => p.Id).HasColumnName("id").ValueGeneratedNever();
+        builder.Property(p => p.Kind).HasColumnName("kind").HasMaxLength(16).IsRequired();
+        builder.Property(p => p.RecipientId).HasColumnName("recipient_id");
+        builder.Property(p => p.ActorId).HasColumnName("actor_id");
+        builder.Property(p => p.GuildId).HasColumnName("guild_id");
+        builder.Property(p => p.ChannelId).HasColumnName("channel_id");
+        builder.Property(p => p.MessageId).HasColumnName("message_id");
+        builder.Property(p => p.ExcludeUserIds).HasColumnName("exclude_user_ids");
+        builder.Property(p => p.Attempts).HasColumnName("attempts");
+        builder.Property(p => p.NextAttemptAt).HasColumnName("next_attempt_at");
+        builder.Property(p => p.CreatedAt).HasColumnName("created_at");
+
+        // The dispatcher's due-row poll filters on this every cycle.
+        builder.HasIndex(p => p.NextAttemptAt);
+    }
+}
+
 public class UserPushSubscriptionConfiguration : IEntityTypeConfiguration<UserPushSubscription>
 {
     public void Configure(EntityTypeBuilder<UserPushSubscription> builder)
