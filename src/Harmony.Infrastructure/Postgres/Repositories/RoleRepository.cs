@@ -13,12 +13,17 @@ public class RoleRepository : IRoleRepository
         _db = db;
     }
 
+    // Read-only (permission resolution + create-role default bits) — role *edits* go through
+    // GetByIdAsync, which stays tracked.
     public async Task<Role?> GetDefaultRoleAsync(long guildId) =>
-        await _db.GuildRoles.FirstOrDefaultAsync(r => r.GuildId == guildId && r.IsDefault);
+        await _db
+            .GuildRoles.AsNoTracking()
+            .FirstOrDefaultAsync(r => r.GuildId == guildId && r.IsDefault);
 
     public async Task<List<Role>> GetMemberRolesAsync(long guildId, long userId) =>
         await _db
-            .RoleAssignments.Where(a => a.GuildId == guildId && a.UserId == userId)
+            .RoleAssignments.AsNoTracking()
+            .Where(a => a.GuildId == guildId && a.UserId == userId)
             .Join(
                 _db.GuildRoles,
                 a => a.RoleId,
@@ -30,6 +35,8 @@ public class RoleRepository : IRoleRepository
     public async Task<Role?> GetByIdAsync(long roleId) =>
         await _db.GuildRoles.FirstOrDefaultAsync(r => r.Id == roleId);
 
+    // Deliberately TRACKED: RoleService.ReorderRolesAsync mutates the returned roles' positions
+    // and saves — AsNoTracking here would silently break reordering.
     public async Task<List<Role>> GetByGuildAsync(long guildId) =>
         await _db
             .GuildRoles.Where(r => r.GuildId == guildId)

@@ -15,5 +15,9 @@ public interface IGuildInviteRepository
 
     void Remove(GuildInvite invite);
 
+    /// <summary>Bulk-deletes dead invites — expired (<paramref name="nowMs"/> past expires_at) or
+    /// exhausted (use_count reached max_uses). Returns the number of rows removed.</summary>
+    Task<int> DeleteDeadAsync(long nowMs);
+
     Task SaveChangesAsync();
 }

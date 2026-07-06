@@ -13,9 +13,12 @@ public class ChannelPermissionOverrideRepository : IChannelPermissionOverrideRep
         _db = db;
     }
 
+    // Read-only (permission resolution + the list endpoint) — the upsert path mutates rows
+    // fetched via GetByChannelAndTargetAsync, which stays tracked.
     public async Task<List<ChannelPermissionOverride>> GetByChannelAsync(long channelId) =>
         await _db
-            .ChannelPermissionOverrides.Where(o => o.ChannelId == channelId)
+            .ChannelPermissionOverrides.AsNoTracking()
+            .Where(o => o.ChannelId == channelId)
             .ToListAsync();
 
     public async Task<ChannelPermissionOverride?> GetByChannelAndTargetAsync(

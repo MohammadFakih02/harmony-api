@@ -119,8 +119,8 @@ public class InvitesController : ControllerBase
 
         await _guilds.SaveChangesAsync();
 
-        await PostWelcomeMessageAsync(guild, userId);
-        await BroadcastMemberJoinedAsync(guild.Id, userId, member.JoinedAt);
+        await PostWelcomeMessageAsync(guild, userId, _channels, _messages, _logger);
+        await BroadcastMemberJoinedAsync(guild.Id, userId, member.JoinedAt, _users, _broadcaster, _logger);
 
         return Ok(ToResponse(guild));
     }
@@ -129,8 +129,15 @@ public class InvitesController : ControllerBase
     /// Best-effort member-join system message. Posts to the configured welcome channel (or the
     /// first text channel by position) when the guild has system messages enabled. A failure here
     /// must never turn a successful join into an error — the join is already committed.
+    /// Internal static so every join path (invite redeem, public-guild join) shares it.
     /// </summary>
-    private async Task PostWelcomeMessageAsync(Guild guild, long joinerId)
+    internal static async Task PostWelcomeMessageAsync(
+        Guild guild,
+        long joinerId,
+        IChannelRepository channels,
+        IMessageService messages,
+        ILogger logger
+    )
     {
         if (!guild.SystemMessagesEnabled)
             return;
@@ -140,8 +147,8 @@ public class InvitesController : ControllerBase
             var targetChannelId = guild.WelcomeChannelId;
             if (targetChannelId is null)
             {
-                var channels = await _channels.GetByGuildIdAsync(guild.Id);
-                targetChannelId = channels
+                var guildChannels = await channels.GetByGuildIdAsync(guild.Id);
+                targetChannelId = guildChannels
                     .Where(c => c.Type == "text")
                     .OrderBy(c => c.Position)
                     .Select(c => (long?)c.Id)
@@ -155,7 +162,7 @@ public class InvitesController : ControllerBase
             // identity is what the client renders as "X joined". Empty content = plain join notice.
             var content = guild.WelcomeMessage ?? string.Empty;
 
-            await _messages.PublishSystemMessageAsync(
+            await messages.PublishSystemMessageAsync(
                 guild.Id,
                 channelId,
                 joinerId,
@@ -165,7 +172,7 @@ public class InvitesController : ControllerBase
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(
+            logger.LogWarning(
                 ex,
                 "Failed to post welcome message for user {UserId} joining guild {GuildId}",
                 joinerId,
@@ -178,12 +185,20 @@ public class InvitesController : ControllerBase
     /// Best-effort: announce the join to the guild group so every connected member inserts the new
     /// member into their list live. A fresh join has no roles/nickname/timeout yet. Failure here
     /// must never fail the join itself — the member is already persisted.
+    /// Internal static so every join path (invite redeem, public-guild join) shares it.
     /// </summary>
-    private async Task BroadcastMemberJoinedAsync(long guildId, long userId, long joinedAt)
+    internal static async Task BroadcastMemberJoinedAsync(
+        long guildId,
+        long userId,
+        long joinedAt,
+        IUserRepository users,
+        IHubBroadcaster broadcaster,
+        ILogger logger
+    )
     {
         try
         {
-            var user = await _users.GetByIdAsync(userId);
+            var user = await users.GetByIdAsync(userId);
             var member = new GuildMemberResponse(
                 userId,
                 user?.UserName ?? "Unknown",
@@ -194,14 +209,14 @@ public class InvitesController : ControllerBase
                 CommunicationDisabledUntil: null,
                 RoleIds: Array.Empty<long>()
             );
-            await _broadcaster.BroadcastMemberJoinedAsync(
+            await broadcaster.BroadcastMemberJoinedAsync(
                 guildId,
                 new MemberJoinedPayload(guildId, member)
             );
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(
+            logger.LogWarning(
                 ex,
                 "Failed to broadcast MemberJoined for user {UserId} joining guild {GuildId}",
                 userId,

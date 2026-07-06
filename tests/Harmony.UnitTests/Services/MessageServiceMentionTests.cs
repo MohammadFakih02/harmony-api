@@ -72,7 +72,7 @@ public class MessageServiceMentionTests
                 Channels.Object, Guilds.Object, Publisher.Object, Snowflake.Object,
                 Messages.Object, Users.Object, Permissions.Object, Files.Object,
                 Dms.Object, Blocks.Object, Friends.Object, Presence.Object, AuditLog.Object,
-                Mock.Of<IHubBroadcaster>(), Roles.Object
+                Mock.Of<IHubBroadcaster>(), Roles.Object, Mock.Of<ISlowmodeGate>()
             );
         }
 

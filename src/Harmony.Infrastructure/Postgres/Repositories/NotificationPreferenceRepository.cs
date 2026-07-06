@@ -16,8 +16,13 @@ public class NotificationPreferenceRepository : INotificationPreferenceRepositor
     public async Task<NotificationPreference?> GetAsync(long userId) =>
         await _db.NotificationPreferences.FirstOrDefaultAsync(p => p.UserId == userId);
 
+    // Read-only bulk fetch for mention suppression — the PATCH path mutates the single row
+    // from GetAsync, which stays tracked.
     public async Task<List<NotificationPreference>> GetForUsersAsync(List<long> userIds) =>
-        await _db.NotificationPreferences.Where(p => userIds.Contains(p.UserId)).ToListAsync();
+        await _db
+            .NotificationPreferences.AsNoTracking()
+            .Where(p => userIds.Contains(p.UserId))
+            .ToListAsync();
 
     public async Task AddAsync(NotificationPreference preference) =>
         await _db.NotificationPreferences.AddAsync(preference);

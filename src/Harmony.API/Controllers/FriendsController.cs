@@ -254,7 +254,8 @@ public class FriendsController : ControllerBase
         return NoContent();
     }
 
-    private static long Other(Friend f, long me) => f.RequesterId == me ? f.AddresseeId : f.RequesterId;
+    // Internal so BootstrapController can reuse it when composing the boot payload.
+    internal static long Other(Friend f, long me) => f.RequesterId == me ? f.AddresseeId : f.RequesterId;
 
     private static FriendUserPayload ToPayload(User u) =>
         new(u.Id, u.UserName!, u.AvatarKey, u.BannerKey);

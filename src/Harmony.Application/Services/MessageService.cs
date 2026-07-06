@@ -29,6 +29,7 @@ public class MessageService : IMessageService
     private readonly IAuditLogService _auditLog;
     private readonly IHubBroadcaster _broadcaster;
     private readonly IRoleRepository _roles;
+    private readonly ISlowmodeGate _slowmode;
 
     /// <summary>Max attachments per message (Discord parity).</summary>
     public const int MaxAttachments = 10;
@@ -51,7 +52,8 @@ public class MessageService : IMessageService
         IPresenceService presence,
         IAuditLogService auditLog,
         IHubBroadcaster broadcaster,
-        IRoleRepository roles
+        IRoleRepository roles,
+        ISlowmodeGate slowmode
     )
     {
         _channelRepository = channelRepository;
@@ -69,6 +71,7 @@ public class MessageService : IMessageService
         _auditLog = auditLog;
         _broadcaster = broadcaster;
         _roles = roles;
+        _slowmode = slowmode;
     }
 
     /// <summary>
@@ -176,6 +179,11 @@ public class MessageService : IMessageService
         CancellationToken ct = default
     )
     {
+        // Slowmode context, captured in the guild branch and consumed just before publish (after
+        // every validation) so an invalid send never burns the sender's cooldown slot.
+        var slowmodeSeconds = 0;
+        var slowmodeExempt = true;
+
         if (guildId is { } gid)
         {
             // Verify channel exists and belongs to guild natively via repository
@@ -193,12 +201,25 @@ public class MessageService : IMessageService
                     "You do not have permission to send messages in this channel."
                 );
 
+            // A reply additionally requires the SendReply bit (in the @everyone default set, so
+            // this only bites when a role/override explicitly removes it).
+            if (request.ReplyToId is not null && (bits & (long)Permission.SendReply) == 0)
+                throw new UnauthorizedAccessException(
+                    "You do not have permission to reply in this channel."
+                );
+
             // Timeout gate (deliberately excluded from the cached resolver, §27): a member whose
             // CommunicationDisabledUntil is in the future cannot send, even with the permission.
             var member = await _guildRepository.GetMemberAsync(gid, userId);
             if (member?.CommunicationDisabledUntil is { } until
                 && until > DateTimeOffset.UtcNow.ToUnixTimeMilliseconds())
                 throw new UnauthorizedAccessException("You are timed out and cannot send messages.");
+
+            // Slowmode applies to plain members only — moderators (ManageMessages or ManageChannels,
+            // and therefore owner/Administrator via the resolver) are exempt, Discord-style.
+            slowmodeSeconds = channel.SlowmodeSeconds;
+            slowmodeExempt =
+                (bits & (long)(Permission.ManageMessages | Permission.ManageChannels)) != 0;
         }
         else
         {
@@ -232,6 +253,13 @@ public class MessageService : IMessageService
             throw new ArgumentException("Message content must be 2000 characters or fewer.");
         if (string.IsNullOrWhiteSpace(content) && attachmentIds.Count == 0)
             throw new ArgumentException("Message must have content or at least one attachment.");
+
+        // Slowmode — consumed last so only a send that would otherwise succeed claims the slot.
+        if (slowmodeSeconds > 0 && !slowmodeExempt
+            && !await _slowmode.TryConsumeAsync(channelId, userId, slowmodeSeconds, ct))
+            throw new UnauthorizedAccessException(
+                $"Slowmode is enabled — you can send a message every {slowmodeSeconds}s in this channel."
+            );
 
         var messageId = _snowflake.NextId();
         var sentAt = DateTimeOffset.UtcNow;

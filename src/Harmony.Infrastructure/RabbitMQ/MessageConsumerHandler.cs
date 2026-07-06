@@ -80,6 +80,42 @@ public class MessageConsumerHandler : IMessageConsumerHandler
             }
         }
 
+        // Reply notification — same best-effort posture. The replied-to author is resolved from
+        // the already-persisted messages_by_id row; skipped when they're also @mentioned in this
+        // message (the mention notification above already covers them — no double ping).
+        if (evt.ReplyToId is { } replyToId)
+        {
+            try
+            {
+                var original = await _messageRepository.GetByIdAsync(replyToId, ct);
+                if (
+                    original is not null
+                    && !original.IsDeleted
+                    && original.UserId != evt.UserId
+                    && !evt.MentionIds.Contains(original.UserId)
+                )
+                {
+                    await _notificationService.CreateReplyNotificationAsync(
+                        original.UserId,
+                        evt.UserId,
+                        evt.GuildId,
+                        evt.ChannelId,
+                        evt.MessageId,
+                        evt.SentAt.ToUnixTimeMilliseconds(),
+                        ct
+                    );
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "MessageSent: reply-notification creation failed for MessageId {MessageId} — message persisted, continuing",
+                    evt.MessageId
+                );
+            }
+        }
+
         _logger.LogInformation(
             "MessageSent handled (Scylla) — MessageId: {MessageId}",
             evt.MessageId

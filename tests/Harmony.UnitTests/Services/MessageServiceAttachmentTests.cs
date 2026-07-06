@@ -62,7 +62,7 @@ public class MessageServiceAttachmentTests
             channels.Object, guilds.Object, publisher.Object, snowflake.Object,
             messages.Object, users.Object, permissions.Object, files.Object,
             dms.Object, blocks.Object, friends.Object, presence.Object, auditLog.Object,
-            Mock.Of<IHubBroadcaster>(), roles.Object
+            Mock.Of<IHubBroadcaster>(), roles.Object, Mock.Of<ISlowmodeGate>()
         );
         return (sut, publisher, files);
     }

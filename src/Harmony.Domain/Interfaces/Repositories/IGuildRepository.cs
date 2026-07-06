@@ -26,5 +26,12 @@ public interface IGuildRepository
     /// see their status live, not just their friends.
     /// </summary>
     Task<List<long>> GetGuildIdsForUserAsync(long userId);
+
+    /// <summary>
+    /// Discoverable (is_public) guilds, biggest first, optionally name-filtered.
+    /// Read-only (no tracking); capped by <paramref name="limit"/>.
+    /// </summary>
+    Task<List<Guild>> GetPublicGuildsAsync(string? query, int limit);
+
     Task SaveChangesAsync();
 }

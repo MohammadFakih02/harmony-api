@@ -20,7 +20,8 @@ public class UserBlockRepository : IUserBlockRepository
 
     public async Task<List<UserBlock>> GetByBlockerAsync(long blockerId) =>
         await _db
-            .UserBlocks.Where(b => b.BlockerId == blockerId)
+            .UserBlocks.AsNoTracking()
+            .Where(b => b.BlockerId == blockerId)
             .OrderByDescending(b => b.CreatedAt)
             .ToListAsync();
 

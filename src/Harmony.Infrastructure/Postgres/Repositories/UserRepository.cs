@@ -19,7 +19,9 @@ public class UserRepository : IUserRepository
     public async Task<Dictionary<long, User>> GetByIdsAsync(IEnumerable<long> userIds)
     {
         var ids = userIds.Distinct().ToList();
+        // Batch identity resolution — read-only everywhere (mapping to responses), never mutated.
         return await _db.Users
+            .AsNoTracking()
             .Where(u => ids.Contains(u.Id))
             .ToDictionaryAsync(u => u.Id);
     }

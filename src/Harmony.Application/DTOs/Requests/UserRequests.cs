@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace Harmony.Application.DTOs.Requests;
 
 public record UpdateUserRequest(
@@ -23,6 +25,9 @@ public record UpdateCustomStatusRequest(string? Message, int? ExpiresInMinutes);
 // PATCH /api/users/me/dm-privacy — who may open a new DM with me: "everyone" | "friends_only".
 public record UpdateDmPrivacyRequest(string DmPrivacy);
 
+// PATCH /api/users/me/guild-order — the caller's personal guild-rail order (guild ids, first = top).
+public record UpdateGuildOrderRequest(List<long> GuildOrder);
+
 // PATCH /api/notifications/preferences — partial update; each null flag is left unchanged.
 public record UpdateNotificationPreferenceRequest(
     bool? MentionsEnabled,
@@ -34,4 +39,9 @@ public record UpdateNotificationPreferenceRequest(
 
 // POST /api/mutes — mute a guild, channel, or user. MutedUntil is an absolute
 // unix-ms timestamp; null mutes indefinitely (until manual unmute).
-public record CreateMuteRequest(string TargetType, long TargetId, long? MutedUntil);
+// The client sends snowflake ids as strings (full precision), so read them back from strings.
+public record CreateMuteRequest(
+    string TargetType,
+    [property: JsonNumberHandling(JsonNumberHandling.AllowReadingFromString)] long TargetId,
+    long? MutedUntil
+);

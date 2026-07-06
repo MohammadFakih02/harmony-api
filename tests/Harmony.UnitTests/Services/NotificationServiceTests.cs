@@ -541,4 +541,91 @@ public class NotificationServiceTests
 
         notifications.Verify(n => n.AddAsync(It.IsAny<Notification>()), Times.Once);
     }
+
+    // ------------------------------------------------------------------
+    // Reply notifications — the "reply" chain (self, RepliesEnabled, level,
+    // mutes, block), one recipient per call.
+    // ------------------------------------------------------------------
+
+    [Fact]
+    public async Task CreateReplyNotificationAsync_HappyPath_PersistsAndPushes()
+    {
+        var (sut, notifications, _, _, broadcaster, _, _, _) = BuildSut();
+
+        await sut.CreateReplyNotificationAsync(
+            MentionedUserId, ActorId, GuildId, ChannelId, MessageId, CreatedAt);
+
+        notifications.Verify(
+            n => n.AddAsync(It.Is<Notification>(x =>
+                x.UserId == MentionedUserId && x.Type == "reply" && x.ActorId == ActorId
+                && x.ChannelId == ChannelId && x.MessageId == MessageId)),
+            Times.Once);
+        notifications.Verify(n => n.SaveChangesAsync(), Times.Once);
+        broadcaster.Verify(
+            b => b.BroadcastNotificationReceivedAsync(
+                MentionedUserId, It.IsAny<NotificationPayload>(), It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task CreateReplyNotificationAsync_SelfReply_DoesNotCreate()
+    {
+        var (sut, notifications, _, _, _, _, _, _) = BuildSut();
+
+        await sut.CreateReplyNotificationAsync(
+            ActorId, ActorId, GuildId, ChannelId, MessageId, CreatedAt);
+
+        notifications.Verify(n => n.AddAsync(It.IsAny<Notification>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task CreateReplyNotificationAsync_RepliesDisabled_DoesNotCreate()
+    {
+        var (sut, notifications, _, _, _, preferences, _, _) = BuildSut();
+        preferences
+            .Setup(p => p.GetAsync(MentionedUserId))
+            .ReturnsAsync(new NotificationPreference { UserId = MentionedUserId, RepliesEnabled = false });
+
+        await sut.CreateReplyNotificationAsync(
+            MentionedUserId, ActorId, GuildId, ChannelId, MessageId, CreatedAt);
+
+        notifications.Verify(n => n.AddAsync(It.IsAny<Notification>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task CreateReplyNotificationAsync_ChannelLevelNothing_DoesNotCreate()
+    {
+        var (sut, notifications, _, _, _, _, _, settings) = BuildSut();
+        settings
+            .Setup(s => s.GetForResolutionAsync(It.IsAny<List<long>>(), GuildId, ChannelId))
+            .ReturnsAsync(
+                new List<NotificationSetting>
+                {
+                    new()
+                    {
+                        UserId = MentionedUserId,
+                        ScopeType = NotificationScope.Channel,
+                        ScopeId = ChannelId,
+                        Level = NotificationLevel.Nothing,
+                    },
+                }
+            );
+
+        await sut.CreateReplyNotificationAsync(
+            MentionedUserId, ActorId, GuildId, ChannelId, MessageId, CreatedAt);
+
+        notifications.Verify(n => n.AddAsync(It.IsAny<Notification>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task CreateReplyNotificationAsync_Blocked_DoesNotCreate()
+    {
+        var (sut, notifications, blocks, _, _, _, _, _) = BuildSut();
+        blocks.Setup(b => b.AreBlockedAsync(ActorId, MentionedUserId)).ReturnsAsync(true);
+
+        await sut.CreateReplyNotificationAsync(
+            MentionedUserId, ActorId, GuildId, ChannelId, MessageId, CreatedAt);
+
+        notifications.Verify(n => n.AddAsync(It.IsAny<Notification>()), Times.Never);
+    }
 }

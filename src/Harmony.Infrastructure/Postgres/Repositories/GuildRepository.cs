@@ -21,7 +21,12 @@ public class GuildRepository : IGuildRepository
 
     public async Task<List<Guild>> GetByUserIdAsync(long userId) =>
         await _db
-            .GuildMembers.Where(m => m.UserId == userId)
+            .GuildMembers.AsNoTracking()
+            .Where(m => m.UserId == userId)
+            // Deterministic join order (snowflake id breaks same-ms ties) — the base order the
+            // user's personal guild_order is applied over, and where unranked guilds land.
+            .OrderBy(m => m.JoinedAt)
+            .ThenBy(m => m.GuildId)
             .Include(m => m.Guild)
             .Select(m => m.Guild)
             .ToListAsync();
@@ -36,7 +41,8 @@ public class GuildRepository : IGuildRepository
 
     public async Task<List<GuildMember>> GetMembersAsync(long guildId) =>
         await _db
-            .GuildMembers.Where(m => m.GuildId == guildId)
+            .GuildMembers.AsNoTracking()
+            .Where(m => m.GuildId == guildId)
             .Include(m => m.User)
             .OrderBy(m => m.JoinedAt)
             .ToListAsync();
@@ -88,6 +94,21 @@ public class GuildRepository : IGuildRepository
             .Where(m => m.UserId == userId)
             .Select(m => m.GuildId)
             .ToListAsync();
+
+    public async Task<List<Guild>> GetPublicGuildsAsync(string? query, int limit)
+    {
+        var guilds = _db.Guilds.AsNoTracking().Where(g => g.IsPublic);
+        if (!string.IsNullOrWhiteSpace(query))
+        {
+            var q = query.Trim();
+            guilds = guilds.Where(g => EF.Functions.ILike(g.Name, $"%{q}%"));
+        }
+        return await guilds
+            .OrderByDescending(g => g.MemberCount)
+            .ThenByDescending(g => g.Id)
+            .Take(limit)
+            .ToListAsync();
+    }
 
     public async Task SaveChangesAsync() => await _db.SaveChangesAsync();
 }

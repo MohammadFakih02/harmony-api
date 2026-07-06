@@ -43,4 +43,21 @@ public interface INotificationService
         long requesterId,
         CancellationToken ct = default
     );
+
+    /// <summary>
+    /// Creates (and pushes) a "reply" notification for the author of the message being
+    /// replied to, unless suppressed — self-reply, disabled RepliesEnabled preference,
+    /// a "nothing" notification level on the channel/guild, a mute (the sender as a user,
+    /// the channel, or the guild), or a block between the two. The caller is expected to
+    /// skip authors already covered by a mention notification for the same message.
+    /// </summary>
+    Task CreateReplyNotificationAsync(
+        long recipientId,
+        long actorId,
+        long? guildId,
+        long channelId,
+        long messageId,
+        long createdAt,
+        CancellationToken ct = default
+    );
 }
