@@ -4,6 +4,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Harmony.Application.Exceptions;
 using Harmony.Application.Interfaces.Services;
+using Harmony.Application.Services;
 using Harmony.Domain.Domain.Entities;
 using Harmony.Domain.Interfaces;
 using Harmony.Domain.Interfaces.Repositories;
@@ -15,16 +16,25 @@ public class MessageConsumerHandler : IMessageConsumerHandler
 {
     private readonly IMessageRepository _messageRepository;
     private readonly INotificationService _notificationService;
+    private readonly IPushOutboxRepository _pushOutbox;
+    private readonly IPushDispatchNudge _pushNudge;
+    private readonly ISnowflakeIdGenerator _snowflake;
     private readonly ILogger<MessageConsumerHandler> _logger;
 
     public MessageConsumerHandler(
         IMessageRepository messageRepository,
         INotificationService notificationService,
+        IPushOutboxRepository pushOutboxRepository,
+        IPushDispatchNudge pushNudge,
+        ISnowflakeIdGenerator snowflake,
         ILogger<MessageConsumerHandler> logger
     )
     {
         _messageRepository = messageRepository;
         _notificationService = notificationService;
+        _pushOutbox = pushOutboxRepository;
+        _pushNudge = pushNudge;
+        _snowflake = snowflake;
         _logger = logger;
     }
 
@@ -83,6 +93,7 @@ public class MessageConsumerHandler : IMessageConsumerHandler
         // Reply notification — same best-effort posture. The replied-to author is resolved from
         // the already-persisted messages_by_id row; skipped when they're also @mentioned in this
         // message (the mention notification above already covers them — no double ping).
+        long? replyRecipientId = null;
         if (evt.ReplyToId is { } replyToId)
         {
             try
@@ -95,6 +106,7 @@ public class MessageConsumerHandler : IMessageConsumerHandler
                     && !evt.MentionIds.Contains(original.UserId)
                 )
                 {
+                    replyRecipientId = original.UserId;
                     await _notificationService.CreateReplyNotificationAsync(
                         original.UserId,
                         evt.UserId,
@@ -111,6 +123,47 @@ public class MessageConsumerHandler : IMessageConsumerHandler
                 _logger.LogWarning(
                     ex,
                     "MessageSent: reply-notification creation failed for MessageId {MessageId} — message persisted, continuing",
+                    evt.MessageId
+                );
+            }
+        }
+
+        // DM offline-push intent — same best-effort posture. One outbox row per DM/group
+        // message; the dispatcher fans out to the channel's participants (minus the sender
+        // and anyone already covered by a mention/reply push above) and applies the
+        // offline/preference/mute/block gates at send time. No Notification row exists for
+        // plain DM messages — this is offline delivery only.
+        if (evt.GuildId is null)
+        {
+            try
+            {
+                var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                var excludes = evt.MentionIds.ToList();
+                if (replyRecipientId is { } replied)
+                    excludes.Add(replied);
+
+                await _pushOutbox.AddAsync(
+                    new PushOutboxMessage
+                    {
+                        Id = _snowflake.NextId(),
+                        Kind = PushKind.Dm,
+                        RecipientId = 0,
+                        ActorId = evt.UserId,
+                        ChannelId = evt.ChannelId,
+                        MessageId = evt.MessageId,
+                        ExcludeUserIds = excludes.Count > 0 ? string.Join(',', excludes) : null,
+                        NextAttemptAt = now,
+                        CreatedAt = now,
+                    }
+                );
+                await _pushOutbox.SaveChangesAsync();
+                _pushNudge.Signal();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "MessageSent: DM push-outbox staging failed for MessageId {MessageId} — message persisted, continuing",
                     evt.MessageId
                 );
             }

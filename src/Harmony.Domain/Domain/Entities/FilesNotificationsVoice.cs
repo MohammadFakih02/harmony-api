@@ -67,6 +67,28 @@ public class NotificationSetting
     public User User { get; set; } = null!;
 }
 
+/// <summary>
+/// A pending web-push intent (transactional outbox). Producers add a row in the same
+/// SaveChanges as the Notification row it mirrors (atomic), and PushNotificationService
+/// dispatches due rows — so a crash between "row committed" and "push sent" is recovered
+/// on restart (at-least-once; duplicate pushes collapse client-side via the notification tag).
+/// Rows are deleted on successful dispatch or after MaxAttempts transient failures.
+/// </summary>
+public class PushOutboxMessage
+{
+    public long Id { get; set; }
+    public string Kind { get; set; } = null!; // "mention" | "reply" | "friend_request" | "dm"
+    public long RecipientId { get; set; } // 0 for "dm" — fan-out resolved at dispatch time
+    public long? ActorId { get; set; }
+    public long? GuildId { get; set; }
+    public long? ChannelId { get; set; }
+    public long? MessageId { get; set; }
+    public string? ExcludeUserIds { get; set; } // comma-joined snowflakes; "dm" only
+    public int Attempts { get; set; }
+    public long NextAttemptAt { get; set; } // unix-ms; due when <= now
+    public long CreatedAt { get; set; }
+}
+
 public class UserPushSubscription
 {
     public long Id { get; set; }

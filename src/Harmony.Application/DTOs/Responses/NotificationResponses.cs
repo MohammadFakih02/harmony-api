@@ -29,3 +29,6 @@ public record GuildNotificationSettingsResponse(
 );
 
 public record ChannelNotificationSettingResponse(long ChannelId, string Level);
+
+/// <summary>The VAPID public key the client passes to PushManager.subscribe.</summary>
+public record PushPublicKeyResponse(string PublicKey);

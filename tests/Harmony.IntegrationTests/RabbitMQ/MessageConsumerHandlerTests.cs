@@ -61,6 +61,11 @@ public class MessageConsumerHandlerTests : ScyllaAndPostgresTestBase
             .Setup(p => p.GetStatusAsync(It.IsAny<long>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync("online");
 
+        // The push outbox is real too (same test Db) — outbox rows commit in the same
+        // SaveChanges as the Notification rows, which the atomicity assertions rely on.
+        var pushOutbox = new PushOutboxRepository(Db);
+        var snowflake = new SnowflakeIdGenerator(0, 0);
+
         var notificationService = new NotificationService(
             new NotificationRepository(Db),
             new UserBlockRepository(Db),
@@ -69,13 +74,18 @@ public class MessageConsumerHandlerTests : ScyllaAndPostgresTestBase
             new NotificationPreferenceRepository(Db),
             new NotificationSettingRepository(Db),
             presence.Object,
-            new SnowflakeIdGenerator(0, 0),
+            pushOutbox,
+            Mock.Of<IPushDispatchNudge>(),
+            snowflake,
             NullLogger<NotificationService>.Instance
         );
 
         _handler = new MessageConsumerHandler(
             _messageRepository,
             notificationService,
+            pushOutbox,
+            Mock.Of<IPushDispatchNudge>(),
+            snowflake,
             NullLogger<MessageConsumerHandler>.Instance
         );
 
