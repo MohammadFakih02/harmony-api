@@ -199,6 +199,25 @@ public class UsersController : ControllerBase
         return Ok(ToProfileResponse(user));
     }
 
+    // PATCH /api/users/me/guild-order — the caller's personal guild-rail order.
+    // Lenient by design (a personal preference, like mutes): ids are stored as sent; stale ids
+    // (left guilds) are ignored at read time and guilds missing from the list append after it.
+    [HttpPatch("me/guild-order")]
+    public async Task<IActionResult> UpdateGuildOrder([FromBody] UpdateGuildOrderRequest request)
+    {
+        if (request.GuildOrder is null || request.GuildOrder.Count > 500)
+            return BadRequest(new { error = "Invalid guild order." });
+
+        var user = await _users.GetByIdAsync(GetUserId());
+        if (user is null)
+            return NotFound();
+
+        user.GuildOrder = request.GuildOrder.Distinct().ToArray();
+        await _users.SaveChangesAsync();
+
+        return NoContent();
+    }
+
     // GET /api/users/presence?ids=1,2,3 — effective status + custom message for the member list
     [HttpGet("presence")]
     public async Task<IActionResult> GetPresence([FromQuery] string? ids)
@@ -239,11 +258,13 @@ public class UsersController : ControllerBase
         return Ok(ToPublicResponse(user));
     }
 
-    // GET /api/users/me/guilds
+    // GET /api/users/me/guilds — sorted by the caller's personal rail order.
     [HttpGet("me/guilds")]
     public async Task<IActionResult> GetMyGuilds()
     {
-        var guilds = await _guilds.GetByUserIdAsync(GetUserId());
+        var me = GetUserId();
+        var user = await _users.GetByIdAsync(me);
+        var guilds = ApplyGuildOrder(await _guilds.GetByUserIdAsync(me), user?.GuildOrder);
         return Ok(
             guilds.Select(g => new GuildResponse(
                 g.Id,
@@ -432,7 +453,25 @@ public class UsersController : ControllerBase
 
     private long GetUserId() => long.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
 
-    private static UserProfileResponse ToProfileResponse(User u) =>
+    /// <summary>
+    /// Sorts guilds by the user's saved rail order; guilds not in the list (new joins) keep
+    /// their current (join) order after the ranked ones — OrderBy is stable. Internal so
+    /// BootstrapController applies the identical ordering.
+    /// </summary>
+    internal static List<Guild> ApplyGuildOrder(List<Guild> guilds, long[]? order)
+    {
+        if (order is null || order.Length == 0)
+            return guilds;
+        var rank = new Dictionary<long, int>(order.Length);
+        for (var i = 0; i < order.Length; i++)
+            rank.TryAdd(order[i], i);
+        return guilds
+            .OrderBy(g => rank.TryGetValue(g.Id, out var r) ? r : int.MaxValue)
+            .ToList();
+    }
+
+    // Internal so BootstrapController can reuse the exact same mapping (single source of truth).
+    internal static UserProfileResponse ToProfileResponse(User u) =>
         new(
             u.Id,
             u.UserName!,

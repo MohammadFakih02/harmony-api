@@ -75,9 +75,36 @@ public interface IFileService
     Task RemoveUserAssetAsync(long userId, string kind, CancellationToken ct = default);
 
     /// <summary>
-    /// Mints a presigned GET URL for a public profile asset. Only confirmed rows whose key sits
-    /// under avatars/ or banners/ resolve (chat attachments can never be served through this);
-    /// anything else throws <see cref="KeyNotFoundException"/>.
+    /// Presigns a guild-asset upload (<paramref name="kind"/> = "icon" | "banner"). Same image-only
+    /// rules and size cap as profile assets, keyed under guild-icons/{guildId}/… or
+    /// guild-banners/{guildId}/…. ManageGuild is enforced at the route.
+    /// </summary>
+    Task<PresignFileResponse> PresignGuildAssetAsync(
+        long actorId,
+        long guildId,
+        string kind,
+        PresignFileRequest request,
+        CancellationToken ct = default
+    );
+
+    /// <summary>
+    /// Confirms an uploaded guild asset, points the guild's IconKey/BannerKey at it, and
+    /// best-effort deletes the replaced object + row.
+    /// </summary>
+    Task<UserAssetResponse> ConfirmGuildAssetAsync(
+        long guildId,
+        string kind,
+        long fileId,
+        CancellationToken ct = default
+    );
+
+    /// <summary>Clears the guild's icon/banner and best-effort deletes the stored object + row.</summary>
+    Task RemoveGuildAssetAsync(long guildId, string kind, CancellationToken ct = default);
+
+    /// <summary>
+    /// Mints a presigned GET URL for a public asset. Only confirmed rows whose key sits under
+    /// avatars/, banners/, guild-icons/ or guild-banners/ resolve (chat attachments can never be
+    /// served through this); anything else throws <see cref="KeyNotFoundException"/>.
     /// </summary>
     Task<string> GetPublicFileUrlAsync(string key, CancellationToken ct = default);
 }

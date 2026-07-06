@@ -140,6 +140,9 @@ public static class DependencyInjection
         // -----------------------------------------------------------------------
         services.AddSingleton<IMessageDeduplicator, RedisMessageDeduplicator>();
 
+        // Slowmode cooldowns — same Redis connection, same fail-open posture
+        services.AddSingleton<ISlowmodeGate, RedisSlowmodeGate>();
+
         // Repositories
         services.AddScoped<IGuildRepository, GuildRepository>();
         services.AddScoped<IChannelRepository, ChannelRepository>();
@@ -201,6 +204,7 @@ public static class DependencyInjection
             services.AddHostedService<OrphanFileSweepService>();
             services.AddHostedService<StatusExpiryService>();
             services.AddHostedService<PresenceSweepService>();
+            services.AddHostedService<InviteCleanupService>();
         }
 
         // -----------------------------------------------------------------------

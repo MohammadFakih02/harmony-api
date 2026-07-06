@@ -31,6 +31,8 @@ public class UserConfiguration : IEntityTypeConfiguration<User>
             .HasColumnName("dm_privacy")
             .HasMaxLength(16)
             .HasDefaultValue("everyone");
+        // Npgsql maps long[] to a native bigint[] column — no jsonb/converter needed.
+        builder.Property(u => u.GuildOrder).HasColumnName("guild_order");
         builder.Property(u => u.CreatedAt).IsRequired();
 
         // Use snake_case column names to match the schema

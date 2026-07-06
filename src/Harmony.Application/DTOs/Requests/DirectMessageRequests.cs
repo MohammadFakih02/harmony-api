@@ -9,3 +9,6 @@ public record CreateGroupDmRequest(string? Name, IReadOnlyList<long> UserIds);
 
 // POST /api/dm/{channelId}/participants — add a user to a group DM.
 public record AddGroupParticipantRequest(long UserId);
+
+// PATCH /api/dm/{channelId}/name — rename a group DM (empty clears back to the joined names).
+public record RenameGroupDmRequest(string? Name);

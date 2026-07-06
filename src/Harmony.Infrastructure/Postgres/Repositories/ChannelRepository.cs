@@ -23,7 +23,11 @@ public class ChannelRepository : IChannelRepository
         await _db.Channels.FirstOrDefaultAsync(c => c.Id == channelId && c.GuildId == guildId);
 
     public async Task<List<Channel>> GetByGuildIdAsync(long guildId) =>
-        await _db.Channels.Where(c => c.GuildId == guildId).OrderBy(c => c.Position).ToListAsync();
+        await _db
+            .Channels.AsNoTracking()
+            .Where(c => c.GuildId == guildId)
+            .OrderBy(c => c.Position)
+            .ToListAsync();
 
     public async Task AddAsync(Channel channel) => await _db.Channels.AddAsync(channel);
 
@@ -72,10 +76,11 @@ public class ChannelRepository : IChannelRepository
         if (ids.Count == 0)
             return [];
 
+        // ToDictionaryAsync materializes full Channel entities before projecting — without
+        // AsNoTracking every text channel of every guild would land in the change tracker.
         return await _db
-            .Channels.Where(c =>
-                c.GuildId != null && ids.Contains(c.GuildId.Value) && c.Type == "text"
-            )
+            .Channels.AsNoTracking()
+            .Where(c => c.GuildId != null && ids.Contains(c.GuildId.Value) && c.Type == "text")
             .ToDictionaryAsync(c => c.Id, c => c.GuildId!.Value);
     }
 
