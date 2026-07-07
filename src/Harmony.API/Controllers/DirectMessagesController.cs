@@ -35,6 +35,7 @@ public class DirectMessagesController : ControllerBase
     private readonly IUserRepository _users;
     private readonly IUserBlockRepository _blocks;
     private readonly IFriendRepository _friends;
+    private readonly IGuildRepository _guilds;
     private readonly IChannelRepository _channels;
     private readonly ISnowflakeIdGenerator _snowflake;
     private readonly IMessageService _messageService;
@@ -47,6 +48,7 @@ public class DirectMessagesController : ControllerBase
         IUserRepository users,
         IUserBlockRepository blocks,
         IFriendRepository friends,
+        IGuildRepository guilds,
         IChannelRepository channels,
         ISnowflakeIdGenerator snowflake,
         IMessageService messageService,
@@ -59,12 +61,23 @@ public class DirectMessagesController : ControllerBase
         _users = users;
         _blocks = blocks;
         _friends = friends;
+        _guilds = guilds;
         _channels = channels;
         _snowflake = snowflake;
         _messageService = messageService;
         _unread = unread;
         _files = files;
         _broadcaster = broadcaster;
+    }
+
+    /// <summary>Checks the target's DM-privacy checklist against the caller (friendship + shared guild).</summary>
+    private async Task<bool> CanContactAsync(long me, long targetId, string? targetPrivacyCsv)
+    {
+        if (DmPrivacy.Parse(targetPrivacyCsv).Contains(DmPrivacy.Everyone))
+            return true;
+        var isFriend = await AreFriendsAsync(me, targetId);
+        var sharesGuild = await _guilds.ShareAnyGuildAsync(me, targetId);
+        return DmPrivacy.CanReceiveFrom(targetPrivacyCsv, isFriend, sharesGuild);
     }
 
     // POST /api/dm — open or reuse a 1:1 DM with another user
@@ -92,18 +105,14 @@ public class DirectMessagesController : ControllerBase
         }
         else
         {
-            // Opening a *new* conversation: honour the target's DM-privacy. "friends_only"
-            // blocks strangers; an accepted friendship (either direction) always passes.
-            // Existing conversations above are exempt — this only gates first contact.
-            if (target.DmPrivacy == DmPrivacy.FriendsOnly)
-            {
-                var friendship = await _friends.GetBetweenAsync(me, request.TargetUserId);
-                if (friendship is not { Status: "accepted" })
-                    return StatusCode(
-                        StatusCodes.Status403Forbidden,
-                        new { error = "This user only accepts direct messages from friends." }
-                    );
-            }
+            // Opening a *new* conversation: honour the target's DM-privacy checklist (friends /
+            // guild members / everyone). Existing conversations above are exempt — this only
+            // gates first contact.
+            if (!await CanContactAsync(me, request.TargetUserId, target.DmPrivacy))
+                return StatusCode(
+                    StatusCodes.Status403Forbidden,
+                    new { error = "This user only accepts direct messages from friends or server members." }
+                );
 
             channelId = _snowflake.NextId();
             await _dms.CreateAsync(
@@ -137,13 +146,14 @@ public class DirectMessagesController : ControllerBase
         if (users.Count != others.Count)
             return BadRequest(new { error = "One or more users were not found." });
 
-        // A "friends_only" user can't be pulled into a group by a non-friend (the group-DM backdoor).
+        // A restrictive user can't be pulled into a group by someone their checklist excludes
+        // (the group-DM backdoor around the 1:1 checklist).
         foreach (var uid in others)
         {
-            if (users[uid].DmPrivacy == DmPrivacy.FriendsOnly && !await AreFriendsAsync(me, uid))
+            if (!await CanContactAsync(me, uid, users[uid].DmPrivacy))
                 return StatusCode(
                     StatusCodes.Status403Forbidden,
-                    new { error = $"{users[uid].UserName} only accepts messages from friends." }
+                    new { error = $"{users[uid].UserName} only accepts messages from friends or server members." }
                 );
         }
 
@@ -185,11 +195,11 @@ public class DirectMessagesController : ControllerBase
         if (target is null)
             return NotFound(new { error = "User not found." });
 
-        // A "friends_only" user can't be added to a group by a non-friend (the group-DM backdoor).
-        if (target.DmPrivacy == DmPrivacy.FriendsOnly && !await AreFriendsAsync(me, request.UserId))
+        // A restrictive user can't be added to a group by someone their checklist excludes.
+        if (!await CanContactAsync(me, request.UserId, target.DmPrivacy))
             return StatusCode(
                 StatusCodes.Status403Forbidden,
-                new { error = $"{target.UserName} only accepts messages from friends." }
+                new { error = $"{target.UserName} only accepts messages from friends or server members." }
             );
 
         var current = await _dms.GetParticipantIdsAsync(channelId);

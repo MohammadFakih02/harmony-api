@@ -22,8 +22,9 @@ public record UpdateStatusRequest(string Status, int? ExpiresInMinutes);
 // A null/empty Message clears it. ExpiresInMinutes (optional) auto-clears it later.
 public record UpdateCustomStatusRequest(string? Message, int? ExpiresInMinutes);
 
-// PATCH /api/users/me/dm-privacy — who may open a new DM with me: "everyone" | "friends_only".
-public record UpdateDmPrivacyRequest(string DmPrivacy);
+// PATCH /api/users/me/dm-privacy — the checklist of who may open a new DM with me, e.g.
+// ["friends", "guild_members"] or ["everyone"]. See DmPrivacy for the token set + semantics.
+public record UpdateDmPrivacyRequest(List<string> Audiences);
 
 // PATCH /api/users/me/guild-order — the caller's personal guild-rail order (guild ids, first = top).
 public record UpdateGuildOrderRequest(List<long> GuildOrder);

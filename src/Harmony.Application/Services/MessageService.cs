@@ -795,14 +795,20 @@ public class MessageService : IMessageService
                 if (await _blocks.AreBlockedAsync(userId, peerId))
                     throw new UnauthorizedAccessException("You cannot send messages to this user.");
 
-                // A "friends_only" peer only accepts DMs from accepted friends. Enforced HERE (on
-                // every send), not just at channel creation — so unfriending closes an existing DM,
-                // and a stranger can't keep messaging through a channel that already exists.
+                // The peer's DM-privacy checklist only gates NEW contact. Enforced HERE (on every
+                // send), not just at channel creation — so unfriending/leaving a shared guild closes
+                // an existing DM, and a stranger can't keep messaging through a channel that already
+                // exists.
                 var peer = await _userRepository.GetByIdAsync(peerId);
-                if (peer?.DmPrivacy == DmPrivacy.FriendsOnly && !await AreFriendsAsync(userId, peerId))
-                    throw new UnauthorizedAccessException(
-                        "This user only accepts direct messages from friends."
-                    );
+                if (peer is not null && !DmPrivacy.Parse(peer.DmPrivacy).Contains(DmPrivacy.Everyone))
+                {
+                    var isFriend = await AreFriendsAsync(userId, peerId);
+                    var sharesGuild = await _guildRepository.ShareAnyGuildAsync(userId, peerId);
+                    if (!DmPrivacy.CanReceiveFrom(peer.DmPrivacy, isFriend, sharesGuild))
+                        throw new UnauthorizedAccessException(
+                            "This user only accepts direct messages from friends or server members."
+                        );
+                }
             }
         }
     }

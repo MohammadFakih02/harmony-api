@@ -152,6 +152,47 @@ public class ChannelsController : ControllerBase
         return NoContent();
     }
 
+    // PATCH /api/guilds/{guildId}/channels/{channelId}/category
+    // Moves a channel into a category, or clears it back to top-level when CategoryId is null.
+    // Separate from Update above because that endpoint's "null = don't change" convention can't
+    // express "clear the category" — this one always applies exactly what's provided. Places the
+    // moved channel at the bottom of its new group (Discord's drop behavior).
+    [HttpPatch("{channelId:long}/category")]
+    [RequirePermission(Permission.ManageChannels)]
+    public async Task<IActionResult> MoveToCategory(
+        long guildId,
+        long channelId,
+        [FromBody] MoveChannelCategoryRequest request
+    )
+    {
+        var channel = await _channels.GetByIdAsync(channelId);
+        if (channel is null || channel.GuildId != guildId)
+            return NotFound();
+
+        if (request.CategoryId is { } categoryId)
+        {
+            var category = await _channels.GetByIdAsync(categoryId);
+            if (category is null || category.GuildId != guildId || category.Type != "category")
+                return BadRequest(new { error = "Target category does not exist in this guild." });
+        }
+
+        var siblings = await _channels.GetByGuildIdAsync(guildId);
+        var maxPosition = siblings
+            .Where(c => c.Id != channelId && c.CategoryId == request.CategoryId && c.Type != "category")
+            .Select(c => (int?)c.Position)
+            .DefaultIfEmpty(-1)
+            .Max()!.Value;
+
+        channel.CategoryId = request.CategoryId;
+        channel.Position = maxPosition + 1;
+        await _channels.SaveChangesAsync();
+
+        var response = ToResponse(channel);
+        await _broadcaster.BroadcastChannelUpdatedAsync(response, guildId);
+
+        return Ok(response);
+    }
+
     // PATCH /api/guilds/{guildId}/channels/reorder
     [HttpPatch("reorder")]
     [RequirePermission(Permission.ManageChannels)]

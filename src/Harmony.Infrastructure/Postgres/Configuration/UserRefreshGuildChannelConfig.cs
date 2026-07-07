@@ -28,8 +28,11 @@ public class UserConfiguration : IEntityTypeConfiguration<User>
         builder.Property(u => u.AccountStatus).HasMaxLength(16).HasDefaultValue("active");
         builder
             .Property(u => u.DmPrivacy)
+            // Widened from 16 (AddUserDmPrivacy, §5.30) to fit a checklist CSV — the longest
+            // combination, "friends,guild_members", is 21 chars; 32 leaves room for a future
+            // audience token without another migration.
             .HasColumnName("dm_privacy")
-            .HasMaxLength(16)
+            .HasMaxLength(32)
             .HasDefaultValue("everyone");
         // Npgsql maps long[] to a native bigint[] column — no jsonb/converter needed.
         builder.Property(u => u.GuildOrder).HasColumnName("guild_order");

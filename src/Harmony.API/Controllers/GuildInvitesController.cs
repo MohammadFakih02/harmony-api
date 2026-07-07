@@ -29,13 +29,17 @@ public class GuildInvitesController : ControllerBase
     private readonly IUserRepository _users;
     private readonly IAuditLogService _audit;
     private readonly IPermissionService _permissions;
+    private readonly IHubBroadcaster _broadcaster;
+    private readonly ILogger<GuildInvitesController> _logger;
 
     public GuildInvitesController(
         IGuildInviteRepository invites,
         IChannelRepository channels,
         IUserRepository users,
         IAuditLogService audit,
-        IPermissionService permissions
+        IPermissionService permissions,
+        IHubBroadcaster broadcaster,
+        ILogger<GuildInvitesController> logger
     )
     {
         _invites = invites;
@@ -43,6 +47,8 @@ public class GuildInvitesController : ControllerBase
         _users = users;
         _audit = audit;
         _permissions = permissions;
+        _broadcaster = broadcaster;
+        _logger = logger;
     }
 
     // POST /api/guilds/{guildId}/invites
@@ -105,6 +111,8 @@ public class GuildInvitesController : ControllerBase
             }
         );
 
+        await BroadcastInvitesChangedAsync(guildId);
+
         var creators = await _users.GetByIdsAsync(new[] { userId });
         return Ok(ToResponse(invite, creators));
     }
@@ -160,6 +168,8 @@ public class GuildInvitesController : ControllerBase
             changes: new { code }
         );
 
+        await BroadcastInvitesChangedAsync(guildId);
+
         return NoContent();
     }
 
@@ -168,6 +178,22 @@ public class GuildInvitesController : ControllerBase
     // -------------------------------------------------------------------------
 
     private long GetUserId() => long.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
+
+    /// <summary>
+    /// Best-effort "invites changed" nudge to the guild group so any open invite modal refetches.
+    /// A broadcast failure must never fail the already-committed create/revoke.
+    /// </summary>
+    private async Task BroadcastInvitesChangedAsync(long guildId)
+    {
+        try
+        {
+            await _broadcaster.BroadcastGuildInvitesChangedAsync(guildId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to broadcast GuildInvitesChanged for guild {GuildId}", guildId);
+        }
+    }
 
     private static InviteResponse ToResponse(GuildInvite i, IReadOnlyDictionary<long, User> creators)
     {

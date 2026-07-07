@@ -182,18 +182,18 @@ public class UsersController : ControllerBase
         return Ok(ToProfileResponse(user));
     }
 
-    // PATCH /api/users/me/dm-privacy — who may open a new DM with me ("everyone" | "friends_only").
+    // PATCH /api/users/me/dm-privacy — the checklist of who may open a new DM with me.
     [HttpPatch("me/dm-privacy")]
     public async Task<IActionResult> UpdateDmPrivacy([FromBody] UpdateDmPrivacyRequest request)
     {
-        if (!DmPrivacy.IsValid(request.DmPrivacy))
-            return BadRequest(new { error = "Invalid DM privacy value." });
+        if (!(request.Audiences ?? []).All(DmPrivacy.AllowedTokens.Contains))
+            return BadRequest(new { error = "Invalid DM privacy selection." });
 
         var user = await _users.GetByIdAsync(GetUserId());
         if (user is null)
             return NotFound();
 
-        user.DmPrivacy = request.DmPrivacy;
+        user.DmPrivacy = DmPrivacy.Normalize(request.Audiences ?? []);
         await _users.SaveChangesAsync();
 
         return Ok(ToProfileResponse(user));
@@ -255,7 +255,17 @@ public class UsersController : ControllerBase
         if (user is null)
             return NotFound();
 
-        return Ok(ToPublicResponse(user));
+        var me = GetUserId();
+        var canMessage =
+            me == id
+            || DmPrivacy.Parse(user.DmPrivacy).Contains(DmPrivacy.Everyone)
+            || DmPrivacy.CanReceiveFrom(
+                user.DmPrivacy,
+                isFriend: (await _friends.GetBetweenAsync(me, id)) is { Status: "accepted" },
+                sharesGuild: await _guilds.ShareAnyGuildAsync(me, id)
+            );
+
+        return Ok(ToPublicResponse(user, canMessage));
     }
 
     // GET /api/users/me/guilds — sorted by the caller's personal rail order.
@@ -490,9 +500,9 @@ public class UsersController : ControllerBase
             u.DmPrivacy
         );
 
-    private static PublicUserResponse ToPublicResponse(User u) =>
+    private static PublicUserResponse ToPublicResponse(User u, bool canMessage) =>
         new(u.Id, u.UserName!, u.AvatarKey, u.BannerKey, u.BannerColor, u.Bio, u.StatusMessage,
-            AgeFrom(u.DateOfBirth), u.DmPrivacy);
+            AgeFrom(u.DateOfBirth), u.DmPrivacy, canMessage);
 
     /// <summary>Whole years between a DOB and today (UTC), or null when DOB is unset.</summary>
     private static int? AgeFrom(DateOnly? dob)

@@ -17,7 +17,8 @@ public record UserProfileResponse(
     long CreatedAt,
     // ISO "yyyy-MM-dd" — private; only the owner sees their raw DOB (others see Age below).
     string? DateOfBirth,
-    // "everyone" | "friends_only" — who may open a new DM with the owner. Private setting.
+    // Comma-separated audience checklist (any of "everyone" | "friends" | "guild_members") —
+    // who may open a new DM with the owner. Private setting; see DmPrivacy for the token set.
     string DmPrivacy
 );
 
@@ -35,9 +36,14 @@ public record PublicUserResponse(
     string? StatusMessage,
     // Computed years from DOB (not the raw date — others don't see your birthday); null = unset.
     int? Age,
-    // "everyone" | "friends_only" — lets the client hide the DM/Message action for a stranger when
-    // the target only accepts DMs from friends (the server still enforces on send regardless).
-    string DmPrivacy
+    // The target's raw DM-privacy checklist (audience tokens, comma-separated) — kept for any
+    // caller that wants the raw setting; CanMessage below is the one the client should actually
+    // gate the Message button on (it's already resolved against the CALLER's relationship to them).
+    string DmPrivacy,
+    // Whether the CALLER specifically may open a new DM with this user right now (self, friend,
+    // shares a guild, or the target allows everyone). Server-computed so the client never has to
+    // reason about DmPrivacy tokens itself.
+    bool CanMessage
 );
 
 // Returned for /api/users/me/blocks — the blocked user's public identity + when blocked
