@@ -28,3 +28,9 @@ public record InvitePreviewResponse(
     int MemberCount,
     long? ChannelId
 );
+
+/// <summary>
+/// Soft preview for inline chat embeds. Always paired with a 200 — a dead code in an old
+/// message is an expected state, not an error (<c>Status</c>: ok | expired | invalid).
+/// </summary>
+public record InviteEmbedResponse(string Status, InvitePreviewResponse? Invite);

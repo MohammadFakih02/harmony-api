@@ -222,6 +222,57 @@ public class InviteTests : ApiTestBase, IClassFixture<HarmonyWebApplicationFacto
     }
 
     [Fact]
+    public async Task PreviewEmbed_AlwaysReturns200_WithStatus()
+    {
+        var (ownerToken, _) = await RegisterAsync("inv_owner6e", "inv_owner6e@test.com");
+        var guildId = await CreateGuildAsync(ownerToken);
+        var ownerId = OwnerIdOf(guildId);
+        var alive = await CreateInviteAsync(ownerToken, guildId);
+
+        // Seed an already-expired invite directly — deterministic, no waiting.
+        using (var scope = Factory.Services.CreateScope())
+        {
+            var invites = scope.ServiceProvider.GetRequiredService<IGuildInviteRepository>();
+            await invites.AddAsync(
+                new GuildInvite
+                {
+                    Code = "embexp6",
+                    GuildId = guildId,
+                    ChannelId = null,
+                    CreatorId = ownerId,
+                    MaxUses = null,
+                    UseCount = 0,
+                    ExpiresAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - 1000,
+                    CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - 2000,
+                }
+            );
+            await invites.SaveChangesAsync();
+        }
+
+        var (memberToken, _) = await RegisterAsync("inv_member6e", "inv_member6e@test.com");
+        Auth(memberToken);
+
+        // The soft embed route never 4xxs — dead codes are a status, not an error.
+        var ok = await Client.GetFromJsonAsync<InviteEmbedResponse>(
+            $"/api/invites/{alive.Code}/embed"
+        );
+        ok!.Status.Should().Be("ok");
+        ok.Invite!.GuildId.Should().Be(guildId);
+
+        var expired = await Client.GetFromJsonAsync<InviteEmbedResponse>(
+            "/api/invites/embexp6/embed"
+        );
+        expired!.Status.Should().Be("expired");
+        expired.Invite.Should().BeNull();
+
+        var invalid = await Client.GetFromJsonAsync<InviteEmbedResponse>(
+            "/api/invites/nosuchcode/embed"
+        );
+        invalid!.Status.Should().Be("invalid");
+        invalid.Invite.Should().BeNull();
+    }
+
+    [Fact]
     public async Task Delete_RemovesInvite_AndIsScopedToGuild()
     {
         var (ownerToken, _) = await RegisterAsync("inv_owner7", "inv_owner7@test.com");
@@ -370,4 +421,6 @@ public class InviteTests : ApiTestBase, IClassFixture<HarmonyWebApplicationFacto
         int MemberCount,
         long? ChannelId
     );
+
+    private record InviteEmbedResponse(string Status, InvitePreviewResponse? Invite);
 }
