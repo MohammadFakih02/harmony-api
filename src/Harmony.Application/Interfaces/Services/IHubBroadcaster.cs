@@ -271,4 +271,11 @@ public interface IHubBroadcaster
         ProfileUpdatedPayload payload,
         CancellationToken ct = default
     );
+
+    /// <summary>
+    /// Broadcasts a coarse "this guild's invites changed" signal (create / revoke / redeem) to the
+    /// guild group. Carries no invite data — clients with invite UI open refetch the list through
+    /// the permission-enforcing GET.
+    /// </summary>
+    Task BroadcastGuildInvitesChangedAsync(long guildId, CancellationToken ct = default);
 }

@@ -95,6 +95,18 @@ public class GuildRepository : IGuildRepository
             .Select(m => m.GuildId)
             .ToListAsync();
 
+    public async Task<bool> ShareAnyGuildAsync(long userA, long userB) =>
+        await _db
+            .GuildMembers.AsNoTracking()
+            .Where(m => m.UserId == userA)
+            .Join(
+                _db.GuildMembers.AsNoTracking().Where(m => m.UserId == userB),
+                a => a.GuildId,
+                b => b.GuildId,
+                (a, b) => 1
+            )
+            .AnyAsync();
+
     public async Task<List<Guild>> GetPublicGuildsAsync(string? query, int limit)
     {
         var guilds = _db.Guilds.AsNoTracking().Where(g => g.IsPublic);

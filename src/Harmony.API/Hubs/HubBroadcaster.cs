@@ -228,4 +228,9 @@ public class HubBroadcaster : IHubBroadcaster
         ProfileUpdatedPayload payload,
         CancellationToken ct = default
     ) => _hubContext.Clients.User(userId.ToString()).ProfileUpdated(payload);
+
+    public Task BroadcastGuildInvitesChangedAsync(long guildId, CancellationToken ct = default) =>
+        _hubContext
+            .Clients.Group(ChatHub.GuildGroup(guildId))
+            .GuildInvitesChanged(new GuildInvitesChangedPayload(guildId));
 }

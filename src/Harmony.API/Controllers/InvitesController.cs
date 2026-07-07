@@ -122,6 +122,16 @@ public class InvitesController : ControllerBase
         await PostWelcomeMessageAsync(guild, userId, _channels, _messages, _logger);
         await BroadcastMemberJoinedAsync(guild.Id, userId, member.JoinedAt, _users, _broadcaster, _logger);
 
+        // Best-effort: the redeem bumped the invite's use count, so any open invite modal refetches.
+        try
+        {
+            await _broadcaster.BroadcastGuildInvitesChangedAsync(guild.Id);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to broadcast GuildInvitesChanged for guild {GuildId}", guild.Id);
+        }
+
         return Ok(ToResponse(guild));
     }
 

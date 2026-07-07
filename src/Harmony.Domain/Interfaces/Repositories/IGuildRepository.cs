@@ -33,5 +33,11 @@ public interface IGuildRepository
     /// </summary>
     Task<List<Guild>> GetPublicGuildsAsync(string? query, int limit);
 
+    /// <summary>
+    /// True if the two users are members of at least one common guild. Backs the
+    /// "guild_members" DM-privacy audience — an EXISTS join, not a full id-list comparison.
+    /// </summary>
+    Task<bool> ShareAnyGuildAsync(long userA, long userB);
+
     Task SaveChangesAsync();
 }
