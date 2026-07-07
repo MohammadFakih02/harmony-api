@@ -73,6 +73,30 @@ public class InvitesController : ControllerBase
         );
     }
 
+    // GET /api/invites/{code}/embed — soft preview for inline chat embeds. Always 200:
+    // dead codes in old messages are an expected state, and a 404/410 here would log a
+    // browser console error for every expired invite link in visible history.
+    [HttpGet("{code}/embed")]
+    public async Task<IActionResult> PreviewEmbed(string code)
+    {
+        var invite = await _invites.GetByCodeAsync(code);
+        if (invite is null)
+            return Ok(new InviteEmbedResponse("invalid", null));
+        if (!IsAlive(invite))
+            return Ok(new InviteEmbedResponse("expired", null));
+
+        var guild = await _guilds.GetByIdAsync(invite.GuildId);
+        if (guild is null)
+            return Ok(new InviteEmbedResponse("invalid", null));
+
+        return Ok(
+            new InviteEmbedResponse(
+                "ok",
+                new InvitePreviewResponse(invite.Code, guild.Id, guild.Name, guild.IconKey, guild.MemberCount, invite.ChannelId)
+            )
+        );
+    }
+
     // POST /api/invites/{code}/join — redeem the invite and join the guild.
     [HttpPost("{code}/join")]
     public async Task<IActionResult> Join(string code)
