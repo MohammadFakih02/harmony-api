@@ -197,6 +197,14 @@ public interface IChatClient
     /// Carries the new key (null = removed) so clients patch it in place without a refetch.
     /// </summary>
     Task ProfileUpdated(ProfileUpdatedPayload payload);
+
+    /// <summary>
+    /// Fired when a guild's invite set changes (created, revoked, or redeemed — a use-count bump).
+    /// Broadcast to the guild group as a coarse "resync" signal, like <see cref="DmChannelUpdated"/>:
+    /// it deliberately carries no invite data, so codes never reach members who can't list them —
+    /// a client with the invite modal open refetches through the permission-enforcing GET instead.
+    /// </summary>
+    Task GuildInvitesChanged(GuildInvitesChangedPayload payload);
 }
 
 /// <summary>Minimal delete notification — no content, just identity. GuildId is null for DMs.</summary>
@@ -311,3 +319,6 @@ public record DmChannelUpdatedPayload(long ChannelId);
 /// <summary>A user's profile avatar changed. <see cref="AvatarKey"/> is the new storage key, or null
 /// when the avatar was removed.</summary>
 public record ProfileUpdatedPayload(long UserId, string? AvatarKey);
+
+/// <summary>A guild's invite set changed — clients with invite UI open should refetch the list.</summary>
+public record GuildInvitesChangedPayload(long GuildId);

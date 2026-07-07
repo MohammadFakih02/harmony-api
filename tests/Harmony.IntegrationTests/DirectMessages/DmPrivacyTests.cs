@@ -8,9 +8,10 @@ using Xunit;
 namespace Harmony.IntegrationTests.DirectMessages;
 
 /// <summary>
-/// DM-privacy enforcement: a "friends_only" user can only be DM'd by an accepted friend,
-/// but existing conversations stay reachable; "everyone" (the default) always allows.
-/// Plus the PATCH /me/dm-privacy persistence + validation.
+/// DM-privacy checklist enforcement: a user restricted to "friends" can only be DM'd by an
+/// accepted friend, "guild_members" by anyone sharing a guild, but existing conversations stay
+/// reachable regardless; "everyone" (the default) always allows. Plus the PATCH /me/dm-privacy
+/// persistence + validation.
 /// </summary>
 public class DmPrivacyTests : ApiTestBase, IClassFixture<HarmonyWebApplicationFactory>
 {
@@ -42,11 +43,32 @@ public class DmPrivacyTests : ApiTestBase, IClassFixture<HarmonyWebApplicationFa
     private Task<HttpResponseMessage> OpenDmAsync(long targetUserId) =>
         Client.PostAsJsonAsync("/api/dm", new { targetUserId });
 
-    private Task<HttpResponseMessage> SetDmPrivacyAsync(string dmPrivacy) =>
-        Client.PatchAsJsonAsync("/api/users/me/dm-privacy", new { dmPrivacy });
+    private Task<HttpResponseMessage> SetDmPrivacyAsync(params string[] audiences) =>
+        Client.PatchAsJsonAsync("/api/users/me/dm-privacy", new { audiences });
 
     private Task<HttpResponseMessage> SendDmAsync(long channelId, string content) =>
         Client.PostAsJsonAsync($"/api/dm/{channelId}/messages", new { content });
+
+    private async Task<long> CreateGuildAsync(string name)
+    {
+        var resp = await Client.PostAsJsonAsync("/api/guilds", new { name });
+        resp.EnsureSuccessStatusCode();
+        return (await resp.Content.ReadFromJsonAsync<GuildDto>())!.Id;
+    }
+
+    /// <summary>Puts both users in a common guild — `a` creates it, `b` joins via invite.</summary>
+    private async Task ShareAGuildAsync(
+        (string token, long id, string name) a,
+        (string token, long id, string name) b
+    )
+    {
+        Authorize(a.token);
+        var guildId = await CreateGuildAsync($"shared-{a.name}-{b.name}");
+        var code = await CreateInviteCodeAsync(guildId);
+
+        Authorize(b.token);
+        (await Client.PostAsync($"/api/invites/{code}/join", null)).EnsureSuccessStatusCode();
+    }
 
     private async Task BefriendAsync(
         (string token, long id, string name) a,
@@ -67,7 +89,7 @@ public class DmPrivacyTests : ApiTestBase, IClassFixture<HarmonyWebApplicationFa
         var b = await RegisterAsync("dmp_b1", "dmp_b1@test.com");
 
         Authorize(b.token);
-        (await SetDmPrivacyAsync("friends_only")).EnsureSuccessStatusCode();
+        (await SetDmPrivacyAsync("friends")).EnsureSuccessStatusCode();
 
         Authorize(a.token);
         (await OpenDmAsync(b.userId)).StatusCode.Should().Be(HttpStatusCode.Forbidden);
@@ -82,7 +104,7 @@ public class DmPrivacyTests : ApiTestBase, IClassFixture<HarmonyWebApplicationFa
         await BefriendAsync((a.token, a.userId, a.username), (b.token, b.userId, b.username));
 
         Authorize(b.token);
-        (await SetDmPrivacyAsync("friends_only")).EnsureSuccessStatusCode();
+        (await SetDmPrivacyAsync("friends")).EnsureSuccessStatusCode();
 
         Authorize(a.token);
         (await OpenDmAsync(b.userId)).StatusCode.Should().Be(HttpStatusCode.OK);
@@ -100,7 +122,7 @@ public class DmPrivacyTests : ApiTestBase, IClassFixture<HarmonyWebApplicationFa
 
         // B locks down to friends-only — but the existing conversation must remain reachable.
         Authorize(b.token);
-        (await SetDmPrivacyAsync("friends_only")).EnsureSuccessStatusCode();
+        (await SetDmPrivacyAsync("friends")).EnsureSuccessStatusCode();
 
         Authorize(a.token);
         (await OpenDmAsync(b.userId)).StatusCode.Should().Be(HttpStatusCode.OK);
@@ -134,7 +156,7 @@ public class DmPrivacyTests : ApiTestBase, IClassFixture<HarmonyWebApplicationFa
         (await SendDmAsync(channelId, "hi")).EnsureSuccessStatusCode();
 
         Authorize(b.token);
-        (await SetDmPrivacyAsync("friends_only")).EnsureSuccessStatusCode();
+        (await SetDmPrivacyAsync("friends")).EnsureSuccessStatusCode();
 
         // Now A (a non-friend) can no longer send in the existing channel.
         Authorize(a.token);
@@ -149,7 +171,7 @@ public class DmPrivacyTests : ApiTestBase, IClassFixture<HarmonyWebApplicationFa
         await BefriendAsync((a.token, a.userId, a.username), (b.token, b.userId, b.username));
 
         Authorize(b.token);
-        (await SetDmPrivacyAsync("friends_only")).EnsureSuccessStatusCode();
+        (await SetDmPrivacyAsync("friends")).EnsureSuccessStatusCode();
 
         Authorize(a.token);
         var open = await OpenDmAsync(b.userId);
@@ -162,13 +184,13 @@ public class DmPrivacyTests : ApiTestBase, IClassFixture<HarmonyWebApplicationFa
     [Fact]
     public async Task FriendsOnly_BlocksBeingAddedToAGroup_ByANonFriend()
     {
-        // The group-DM backdoor: a "friends_only" user can't be pulled into a group by a non-friend.
+        // The group-DM backdoor: a "friends" user can't be pulled into a group by a non-friend.
         var a = await RegisterAsync("dmp_a8", "dmp_a8@test.com");
         var b = await RegisterAsync("dmp_b8", "dmp_b8@test.com"); // a plain second member
         var c = await RegisterAsync("dmp_c8", "dmp_c8@test.com"); // friends_only, not A's friend
 
         Authorize(c.token);
-        (await SetDmPrivacyAsync("friends_only")).EnsureSuccessStatusCode();
+        (await SetDmPrivacyAsync("friends")).EnsureSuccessStatusCode();
 
         Authorize(a.token);
         var resp = await Client.PostAsJsonAsync(
@@ -176,6 +198,55 @@ public class DmPrivacyTests : ApiTestBase, IClassFixture<HarmonyWebApplicationFa
             new { userIds = new[] { b.userId, c.userId } }
         );
         resp.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+    }
+
+    [Fact]
+    public async Task GuildMembersOnly_BlocksAStranger_ButAllowsAFellowMember()
+    {
+        var a = await RegisterAsync("dmp_a9", "dmp_a9@test.com"); // stranger
+        var b = await RegisterAsync("dmp_b9", "dmp_b9@test.com"); // shares a guild with the target
+        var c = await RegisterAsync("dmp_c9", "dmp_c9@test.com"); // the restricted target
+
+        await ShareAGuildAsync((c.token, c.userId, c.username), (b.token, b.userId, b.username));
+
+        Authorize(c.token);
+        (await SetDmPrivacyAsync("guild_members")).EnsureSuccessStatusCode();
+
+        Authorize(a.token);
+        (await OpenDmAsync(c.userId)).StatusCode.Should().Be(HttpStatusCode.Forbidden);
+
+        Authorize(b.token);
+        (await OpenDmAsync(c.userId)).StatusCode.Should().Be(HttpStatusCode.OK);
+    }
+
+    [Fact]
+    public async Task Checklist_AllowsBothFriendsAndGuildMembers_WhenBothTokensSet()
+    {
+        var friend = await RegisterAsync("dmp_a10", "dmp_a10@test.com");
+        var fellowMember = await RegisterAsync("dmp_b10", "dmp_b10@test.com");
+        var stranger = await RegisterAsync("dmp_c10", "dmp_c10@test.com");
+        var target = await RegisterAsync("dmp_d10", "dmp_d10@test.com");
+
+        await BefriendAsync(
+            (friend.token, friend.userId, friend.username),
+            (target.token, target.userId, target.username)
+        );
+        await ShareAGuildAsync(
+            (target.token, target.userId, target.username),
+            (fellowMember.token, fellowMember.userId, fellowMember.username)
+        );
+
+        Authorize(target.token);
+        (await SetDmPrivacyAsync("friends", "guild_members")).EnsureSuccessStatusCode();
+
+        Authorize(friend.token);
+        (await OpenDmAsync(target.userId)).StatusCode.Should().Be(HttpStatusCode.OK);
+
+        Authorize(fellowMember.token);
+        (await OpenDmAsync(target.userId)).StatusCode.Should().Be(HttpStatusCode.OK);
+
+        Authorize(stranger.token);
+        (await OpenDmAsync(target.userId)).StatusCode.Should().Be(HttpStatusCode.Forbidden);
     }
 
     [Fact]
@@ -188,10 +259,10 @@ public class DmPrivacyTests : ApiTestBase, IClassFixture<HarmonyWebApplicationFa
         var me = await Client.GetFromJsonAsync<MeDto>("/api/users/me");
         me!.DmPrivacy.Should().Be("everyone");
 
-        (await SetDmPrivacyAsync("friends_only")).EnsureSuccessStatusCode();
+        (await SetDmPrivacyAsync("friends")).EnsureSuccessStatusCode();
         (await Client.GetFromJsonAsync<MeDto>("/api/users/me"))!
             .DmPrivacy.Should()
-            .Be("friends_only");
+            .Be("friends");
 
         (await SetDmPrivacyAsync("nonsense")).StatusCode.Should().Be(HttpStatusCode.BadRequest);
     }
@@ -203,4 +274,6 @@ public class DmPrivacyTests : ApiTestBase, IClassFixture<HarmonyWebApplicationFa
     private record MeDto(string DmPrivacy);
 
     private record DmChannelDto(long ChannelId);
+
+    private record GuildDto(long Id);
 }
