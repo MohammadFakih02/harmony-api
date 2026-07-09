@@ -15,7 +15,7 @@ public class PresenceServiceTests
         RedisPresenceService sut,
         Mock<IDatabase> db,
         Mock<IHubBroadcaster> broadcaster
-    ) BuildSut(bool redisConnected = true)
+    ) BuildSut(bool redisConnected = true, Mock<IFriendRepository>? friends = null)
     {
         var dbMock = new Mock<IDatabase>();
         var multiplexerMock = new Mock<IConnectionMultiplexer>();
@@ -30,8 +30,11 @@ public class PresenceServiceTests
 
         var broadcaster = new Mock<IHubBroadcaster>();
         var users = new Mock<IUserRepository>(); // GetByIdAsync → null ⇒ preferred defaults to "online"
-        var friends = new Mock<IFriendRepository>(); // no friends ⇒ broadcasts reach no recipients
-        friends.Setup(f => f.GetFriendIdsAsync(It.IsAny<long>())).ReturnsAsync(new List<long>());
+        if (friends is null)
+        {
+            friends = new Mock<IFriendRepository>(); // no friends ⇒ broadcasts reach no recipients
+            friends.Setup(f => f.GetFriendIdsAsync(It.IsAny<long>())).ReturnsAsync(new List<long>());
+        }
         var guilds = new Mock<IGuildRepository>(); // no shared guilds ⇒ guild fan-out reaches no groups
         guilds.Setup(g => g.GetGuildIdsForUserAsync(It.IsAny<long>())).ReturnsAsync(new List<long>());
 
@@ -127,6 +130,37 @@ public class PresenceServiceTests
                 It.IsAny<CancellationToken>()
             ),
             Times.Never
+        );
+    }
+
+    [Fact]
+    public async Task SetOnlineAsync_FirstConnection_CarriesTheCachedStatusMessage()
+    {
+        var friends = new Mock<IFriendRepository>();
+        friends.Setup(f => f.GetFriendIdsAsync(1)).ReturnsAsync(new List<long> { 2 });
+        var (sut, db, broadcaster) = BuildSut(friends: friends);
+        SetupSessionCount(db, userId: 1, count: 1);
+        db.Setup(d =>
+                d.StringGetAsync(
+                    It.Is<RedisKey>(k => k.ToString() == RedisPresenceService.StatusMessageKey(1)),
+                    It.IsAny<CommandFlags>()
+                )
+            )
+            .ReturnsAsync((RedisValue)"brb, coffee");
+
+        await sut.SetOnlineAsync(userId: 1, connectionId: "conn-1");
+
+        // The coming-online broadcast carries the cached custom status message, so friends
+        // see it immediately instead of waiting for the next StatusChanged.
+        broadcaster.Verify(
+            b => b.BroadcastOnlineStatusAsync(
+                2,
+                It.Is<OnlineStatusPayload>(p =>
+                    p.UserId == 1 && p.Status == "online" && p.StatusMessage == "brb, coffee"
+                ),
+                It.IsAny<CancellationToken>()
+            ),
+            Times.Once
         );
     }
 

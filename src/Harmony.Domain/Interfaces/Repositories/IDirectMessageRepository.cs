@@ -2,10 +2,11 @@ namespace Harmony.Domain.Interfaces.Repositories;
 
 /// <summary>
 /// A DM channel from one user's perspective: the channel id, its type ("dm" 1:1 or
-/// "group_dm"), the group name (empty for 1:1), and the caller's last-read marker.
-/// Participant identity is resolved separately so this stays one row per channel.
+/// "group_dm"), the group name (empty for 1:1), the group icon key (null for 1:1 or when
+/// unset), and the caller's last-read marker. Participant identity is resolved separately
+/// so this stays one row per channel.
 /// </summary>
-public record DmChannelSummary(long ChannelId, string Type, string Name, long LastReadId);
+public record DmChannelSummary(long ChannelId, string Type, string Name, string? IconKey, long LastReadId);
 
 public interface IDirectMessageRepository
 {
