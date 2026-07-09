@@ -241,8 +241,13 @@ public record UnreadCountPayload(long ChannelId, long? GuildId, int UnreadCount)
 /// <summary>Failure notification sent to the original sender of an undeliverable message. GuildId is null for DMs.</summary>
 public record MessageFailedPayload(long MessageId, long ChannelId, long? GuildId);
 
-/// <summary>A user came online (their first connection was established).</summary>
-public record OnlineStatusPayload(long UserId, string Status);
+/// <summary>
+/// A user came online (their first connection was established). StatusMessage rides along so
+/// observers see the custom status immediately — the broadcast is already suppressed for
+/// invisible users, so every state this fires for is message-visible (same masking outcome as
+/// StatusChanged's "null when observer-sees-offline").
+/// </summary>
+public record OnlineStatusPayload(long UserId, string Status, string? StatusMessage);
 
 /// <summary>A user went offline (their last connection dropped).</summary>
 public record OfflineStatusPayload(long UserId);

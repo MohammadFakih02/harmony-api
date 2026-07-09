@@ -132,8 +132,9 @@ public class MessageConsumerHandler : IMessageConsumerHandler
         // message; the dispatcher fans out to the channel's participants (minus the sender
         // and anyone already covered by a mention/reply push above) and applies the
         // offline/preference/mute/block gates at send time. No Notification row exists for
-        // plain DM messages — this is offline delivery only.
-        if (evt.GuildId is null)
+        // plain DM messages — this is offline delivery only. System notices (group join/
+        // leave) are not pushable content — only real "text" messages stage a row.
+        if (evt.GuildId is null && evt.MessageType == "text")
         {
             try
             {

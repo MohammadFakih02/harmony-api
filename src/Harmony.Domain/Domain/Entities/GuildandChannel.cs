@@ -35,8 +35,12 @@ public class Channel
     public long? GuildId { get; set; }
     public string Name { get; set; } = null!;
     public string? Topic { get; set; }
-    public string Type { get; set; } = null!; // "text" | "voice" | "category" | "dm"
+    public string Type { get; set; } = null!; // "text" | "voice" | "category" | "dm" | "group_dm"
     public int Position { get; set; }
+
+    // Group-DM icon (storage key under channel-icons/{channelId}/...). Null for every other
+    // channel type — guild channels have no per-channel icon.
+    public string? IconKey { get; set; }
     public long? CategoryId { get; set; }
     public bool IsNsfw { get; set; }
     public int SlowmodeSeconds { get; set; }

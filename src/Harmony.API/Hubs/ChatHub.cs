@@ -199,7 +199,6 @@ public class ChatHub : Hub<IChatClient>
                 channelId,
                 new SendMessageRequest(
                     Content: content,
-                    MessageType: "text",
                     ReplyToId: null,
                     AttachmentIds: null
                 )

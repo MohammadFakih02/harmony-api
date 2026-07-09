@@ -106,7 +106,13 @@ public class DirectMessageRepository : IDirectMessageRepository
             from mine in _db.DirectMessageChannels
             where mine.UserId == userId && !mine.IsHidden
             join channel in _db.Channels on mine.ChannelId equals channel.Id
-            select new DmChannelSummary(mine.ChannelId, channel.Type, channel.Name, mine.LastReadId)
+            select new DmChannelSummary(
+                mine.ChannelId,
+                channel.Type,
+                channel.Name,
+                channel.IconKey,
+                mine.LastReadId
+            )
         ).ToListAsync();
 
     public async Task<Dictionary<long, List<long>>> GetParticipantsForChannelsAsync(

@@ -86,7 +86,7 @@ public class MessageServiceSendGateTests
     }
 
     private static SendMessageRequest Msg(string content = "hi", long? replyToId = null) =>
-        new(content, "text", replyToId);
+        new(content, replyToId);
 
     // ---- slowmode ----
 

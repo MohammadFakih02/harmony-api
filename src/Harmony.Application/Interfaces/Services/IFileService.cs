@@ -102,9 +102,35 @@ public interface IFileService
     Task RemoveGuildAssetAsync(long guildId, string kind, CancellationToken ct = default);
 
     /// <summary>
+    /// Presigns a group-DM icon upload. Same image-only rules and size cap as profile assets,
+    /// keyed under channel-icons/{channelId}/…. Participant + group-type gating is enforced at
+    /// the route (the flat group model — any participant may change the icon).
+    /// </summary>
+    Task<PresignFileResponse> PresignGroupDmIconAsync(
+        long actorId,
+        long channelId,
+        PresignFileRequest request,
+        CancellationToken ct = default
+    );
+
+    /// <summary>
+    /// Confirms an uploaded group-DM icon, points the channel's IconKey at it, and best-effort
+    /// deletes the replaced object + row.
+    /// </summary>
+    Task<UserAssetResponse> ConfirmGroupDmIconAsync(
+        long channelId,
+        long fileId,
+        CancellationToken ct = default
+    );
+
+    /// <summary>Clears the group-DM icon and best-effort deletes the stored object + row.</summary>
+    Task RemoveGroupDmIconAsync(long channelId, CancellationToken ct = default);
+
+    /// <summary>
     /// Mints a presigned GET URL for a public asset. Only confirmed rows whose key sits under
-    /// avatars/, banners/, guild-icons/ or guild-banners/ resolve (chat attachments can never be
-    /// served through this); anything else throws <see cref="KeyNotFoundException"/>.
+    /// avatars/, banners/, guild-icons/, guild-banners/ or channel-icons/ resolve (chat
+    /// attachments can never be served through this); anything else throws
+    /// <see cref="KeyNotFoundException"/>.
     /// </summary>
     Task<string> GetPublicFileUrlAsync(string key, CancellationToken ct = default);
 }
