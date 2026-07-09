@@ -3,6 +3,7 @@ using Harmony.Application.DTOs.Requests;
 using Harmony.Application.DTOs.Responses;
 using Harmony.Application.Hubs;
 using Harmony.Application.Interfaces.Services;
+using Harmony.Domain.Domain.Entities;
 using Harmony.Domain.Domain.Enums;
 using Harmony.Domain.Interfaces.Repositories;
 using Harmony.Domain.Interfaces.Services;
@@ -28,6 +29,7 @@ public class ChatHub : Hub<IChatClient>
     private readonly IChannelRepository _channelRepository;
     private readonly IPermissionService _permissions;
     private readonly IPresenceService _presence;
+    private readonly IVoiceStateService _voice;
     private readonly IDirectMessageRepository _dms;
     private readonly IHubBroadcaster _broadcaster;
     private readonly ILogger<ChatHub> _logger;
@@ -38,6 +40,7 @@ public class ChatHub : Hub<IChatClient>
         IChannelRepository channelRepository,
         IPermissionService permissions,
         IPresenceService presence,
+        IVoiceStateService voice,
         IDirectMessageRepository dms,
         IHubBroadcaster broadcaster,
         ILogger<ChatHub> logger
@@ -48,6 +51,7 @@ public class ChatHub : Hub<IChatClient>
         _channelRepository = channelRepository;
         _permissions = permissions;
         _presence = presence;
+        _voice = voice;
         _dms = dms;
         _broadcaster = broadcaster;
         _logger = logger;
@@ -70,7 +74,15 @@ public class ChatHub : Hub<IChatClient>
 
     public override async Task OnDisconnectedAsync(Exception? exception)
     {
-        await _presence.SetOfflineAsync(GetUserId(), Context.ConnectionId);
+        var userId = GetUserId();
+        await _presence.SetOfflineAsync(userId, Context.ConnectionId);
+
+        // Drop voice state only once the user's LAST connection is gone — a second tab/device may
+        // still be in the call. IsConnectedAsync fails closed (true when uncertain), so we skip the
+        // leave rather than risk yanking a live participant; the VoiceStateSweepService backstops
+        // a genuine crash where no connection remains.
+        if (!await _presence.IsConnectedAsync(userId))
+            await _voice.LeaveAsync(userId);
 
         if (exception is not null)
             _logger.LogWarning(
@@ -265,6 +277,61 @@ public class ChatHub : Hub<IChatClient>
     {
         await _broadcaster.BroadcastTypingStoppedAsync(channelId, GetUserId());
     }
+
+    // -------------------------------------------------------------------------
+    // Voice signaling (ephemeral — rides the hub + broadcaster, like typing/presence)
+    // -------------------------------------------------------------------------
+
+    /// <summary>
+    /// Joins the caller to a voice channel/DM-call room (evicting any room they were already in).
+    /// Authorization mirrors CanAccessChannelAsync but gates on <see cref="Permission.ConnectVoice"/>
+    /// for a guild channel (a DM only needs participation). The LiveKit token itself is minted by the
+    /// REST endpoint; this method just publishes the participant into the shared Redis voice state.
+    /// </summary>
+    public async Task JoinVoice(long channelId)
+    {
+        var userId = GetUserId();
+        var channel = await _channelRepository.GetByIdAsync(channelId);
+        if (channel is null)
+            throw new HubException("Channel not found.");
+
+        if (!await CanConnectVoiceAsync(userId, channel))
+            throw new HubException("You do not have permission to join this voice channel.");
+
+        await _voice.JoinAsync(channelId, channel.GuildId, userId);
+        _logger.LogDebug("User {UserId} joined voice {ChannelId}", userId, channelId);
+    }
+
+    /// <summary>
+    /// Leaves whatever voice room the caller is in. The service is authoritative on the current room,
+    /// so no authorization is needed — you can always leave a call you're in; <paramref name="channelId"/>
+    /// is advisory (kept for client symmetry / the rate-limit key).
+    /// </summary>
+    public async Task LeaveVoice(long channelId)
+    {
+        await _voice.LeaveAsync(GetUserId());
+        _logger.LogDebug("User {UserId} left voice {ChannelId}", GetUserId(), channelId);
+    }
+
+    /// <summary>
+    /// Updates the caller's self-reported voice flags in their current room (mute / deafen / camera /
+    /// screenshare). No-op if the caller isn't in a room. Moderating <em>other</em> members' state is
+    /// a deferred follow-up (not in Slice 1).
+    /// </summary>
+    public async Task UpdateVoiceState(bool isMuted, bool isDeafened, bool isVideoOn, bool isStreaming)
+    {
+        await _voice.UpdateStateAsync(GetUserId(), isMuted, isDeafened, isVideoOn, isStreaming);
+    }
+
+    /// <summary>
+    /// Whether a user may connect to voice in a channel: guild channel → ConnectVoice (overrides
+    /// applied); guild-less DM → the caller must be a participant. Mirrors CanAccessChannelAsync but
+    /// with the voice permission bit instead of ViewChannel.
+    /// </summary>
+    private async Task<bool> CanConnectVoiceAsync(long userId, Channel channel) =>
+        channel.GuildId is { } guildId
+            ? await _permissions.HasAsync(userId, guildId, Permission.ConnectVoice, channel.Id)
+            : await _dms.IsParticipantAsync(channel.Id, userId);
 
     // -------------------------------------------------------------------------
     // Group name helpers — used by HubBroadcaster too

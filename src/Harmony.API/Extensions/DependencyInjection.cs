@@ -178,6 +178,7 @@ public static class DependencyInjection
         services.AddScoped<IMessageService, MessageService>();
         services.AddScoped<IUnreadCountService, RedisUnreadCountService>();
         services.AddScoped<IPresenceService, RedisPresenceService>();
+        services.AddScoped<IVoiceStateService, RedisVoiceStateService>();
         services.AddScoped<IPermissionService, PermissionService>();
         services.AddScoped<IFileService, FileService>();
         services.AddScoped<INotificationService, NotificationService>();
@@ -190,6 +191,10 @@ public static class DependencyInjection
         // to Infrastructure); the nudge is the producers' wake-up line to the dispatcher.
         services.AddSingleton<IWebPushSender, WebPushSender>();
         services.AddSingleton<IPushDispatchNudge, PushDispatchNudge>();
+
+        // Voice — the token service owns the LiveKit signing keys (LiveKit config section, SDK
+        // confined to Infrastructure). Singleton: immutable config, thread-safe, mints per call.
+        services.AddSingleton<ILiveKitTokenService, LiveKitTokenService>();
 
         // File storage — S3FileStorageService builds its own IAmazonS3 from config (ObjectStorage
         // section), so the AWS SDK types stay confined to Infrastructure (not referenced here).
@@ -211,6 +216,7 @@ public static class DependencyInjection
             services.AddHostedService<OrphanFileSweepService>();
             services.AddHostedService<StatusExpiryService>();
             services.AddHostedService<PresenceSweepService>();
+            services.AddHostedService<VoiceStateSweepService>();
             services.AddHostedService<InviteCleanupService>();
             services.AddHostedService<PushNotificationService>();
         }
