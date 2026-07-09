@@ -179,6 +179,58 @@ public class GroupDmTests : ApiTestBase, IClassFixture<HarmonyWebApplicationFact
     }
 
     [Fact]
+    public async Task AddParticipant_PostsAGroupJoinNotice()
+    {
+        var (tokenA, _) = await RegisterAsync("gdm_jn_a", "gdm_jn_a@test.com");
+        var (_, idB) = await RegisterAsync("gdm_jn_b", "gdm_jn_b@test.com");
+        var (_, idC) = await RegisterAsync("gdm_jn_c", "gdm_jn_c@test.com");
+        var (_, idD) = await RegisterAsync("gdm_jn_d", "gdm_jn_d@test.com");
+
+        Authorize(tokenA);
+        var group = await (await CreateGroupAsync("Joiners", idB, idC)).Content.ReadFromJsonAsync<DmDto>();
+
+        var add = await Client.PostAsJsonAsync(
+            $"/api/dm/{group!.ChannelId}/participants",
+            new { userId = idD }
+        );
+        add.StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        // The notice rides the normal async pipeline — poll history until the consumer lands it.
+        // Author = the added user; the client renders "X joined the group" from the type.
+        await Eventually.GetAsync(
+            action: () => GetMessagesAsync(group.ChannelId),
+            predicate: msgs => msgs.Any(m => m.MessageType == "group_join" && m.UserId == idD),
+            retries: 100,
+            intervalMs: 100
+        );
+    }
+
+    [Fact]
+    public async Task Leave_PostsAGroupLeaveNotice()
+    {
+        var (tokenA, _) = await RegisterAsync("gdm_lv_a", "gdm_lv_a@test.com");
+        var (tokenB, idB) = await RegisterAsync("gdm_lv_b", "gdm_lv_b@test.com");
+        var (_, idC) = await RegisterAsync("gdm_lv_c", "gdm_lv_c@test.com");
+
+        Authorize(tokenA);
+        var group = await (await CreateGroupAsync("Quitters", idB, idC)).Content.ReadFromJsonAsync<DmDto>();
+
+        Authorize(tokenB);
+        (await Client.DeleteAsync($"/api/dm/{group!.ChannelId}/participants/me"))
+            .StatusCode.Should()
+            .Be(HttpStatusCode.NoContent);
+
+        // A remaining member sees the leave notice authored by the leaver.
+        Authorize(tokenA);
+        await Eventually.GetAsync(
+            action: () => GetMessagesAsync(group.ChannelId),
+            predicate: msgs => msgs.Any(m => m.MessageType == "group_leave" && m.UserId == idB),
+            retries: 100,
+            intervalMs: 100
+        );
+    }
+
+    [Fact]
     public async Task AddParticipant_ByNonMember_Returns403()
     {
         var (tokenA, _) = await RegisterAsync("gdm_a7", "gdm_a7@test.com");
@@ -273,5 +325,14 @@ public class GroupDmTests : ApiTestBase, IClassFixture<HarmonyWebApplicationFact
 
     private record MessagesDto(List<MessageDto> Messages, bool Degraded);
 
-    private record MessageDto(long MessageId, string Content);
+    private record MessageDto(long MessageId, long UserId, string Content, string MessageType);
+
+    private async Task<List<MessageDto>> GetMessagesAsync(long channelId)
+    {
+        var resp = await Client.GetAsync($"/api/dm/{channelId}/messages");
+        if (!resp.IsSuccessStatusCode)
+            return [];
+        var body = await resp.Content.ReadFromJsonAsync<MessagesDto>();
+        return body?.Messages.ToList() ?? [];
+    }
 }

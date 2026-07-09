@@ -119,7 +119,9 @@ public sealed class FileService : IFileService
         else
         {
             var channel = await _channels.GetByIdAsync(channelId);
-            if (channel is null || channel.GuildId is not null || channel.Type != "dm")
+            if (channel is null
+                || channel.GuildId is not null
+                || (channel.Type != "dm" && channel.Type != "group_dm"))
                 throw new KeyNotFoundException("Channel not found.");
         }
 
@@ -615,13 +617,170 @@ public sealed class FileService : IFileService
             _ => throw new ArgumentException("Asset kind must be 'icon' or 'banner'."),
         };
 
+    // ---- group-DM icon — same pipeline, channel-scoped, participant-gated at the route ----
+
+    private const string ChannelIconPrefix = "channel-icons";
+
+    public async Task<PresignFileResponse> PresignGroupDmIconAsync(
+        long actorId,
+        long channelId,
+        PresignFileRequest request,
+        CancellationToken ct = default
+    )
+    {
+        if (!UserAssetContentTypes.Contains(request.ContentType))
+            throw new ArgumentException("Icons must be png, jpeg, gif, or webp.");
+
+        if (request.SizeBytes <= 0 || request.SizeBytes > MaxUserAssetSizeBytes)
+            throw new ArgumentException("File size is out of the allowed range.");
+
+        var channel = await _channels.GetByIdAsync(channelId);
+        if (channel is null || channel.Type != "group_dm")
+            throw new KeyNotFoundException("Channel not found.");
+
+        var fileId = _snowflake.NextId();
+        var objectKey = $"{ChannelIconPrefix}/{channelId}/{fileId}";
+
+        await _files.AddAsync(
+            new FileAttachment
+            {
+                Id = fileId,
+                UploaderId = actorId,
+                // Both null: asset rows are identified by key prefix only, and a null ChannelId
+                // keeps the row un-attachable through the message send path.
+                GuildId = null,
+                ChannelId = null,
+                MinioKey = objectKey,
+                Filename = request.Filename,
+                ContentType = request.ContentType,
+                SizeBytes = request.SizeBytes,
+                IsConfirmed = false,
+                CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            }
+        );
+        await _files.SaveChangesAsync();
+
+        var url = await _storage.GetPresignedPutUrlAsync(
+            objectKey,
+            request.ContentType,
+            PresignExpiry,
+            ct
+        );
+
+        var expiresAt = DateTimeOffset.UtcNow.Add(PresignExpiry).ToUnixTimeMilliseconds();
+        return new PresignFileResponse(fileId, url, objectKey, expiresAt);
+    }
+
+    public async Task<UserAssetResponse> ConfirmGroupDmIconAsync(
+        long channelId,
+        long fileId,
+        CancellationToken ct = default
+    )
+    {
+        var file = await _files.GetByIdAsync(fileId);
+        // The key must sit under THIS channel's icon prefix — a chat attachment, profile asset,
+        // or another channel's icon can never be confirmed through this route. 404, don't leak.
+        if (file is null
+            || !file.MinioKey.StartsWith($"{ChannelIconPrefix}/{channelId}/", StringComparison.Ordinal))
+            throw new KeyNotFoundException("File not found.");
+
+        if (!file.IsConfirmed)
+        {
+            var stat = await _storage.StatObjectAsync(file.MinioKey, ct);
+            if (stat is null)
+                throw new ArgumentException("Uploaded object was not found in storage.");
+
+            if (stat.Size <= 0 || stat.Size > MaxUserAssetSizeBytes)
+                throw new ArgumentException("Uploaded object exceeds the maximum allowed size.");
+
+            file.SizeBytes = stat.Size;
+            file.ContentType = stat.ContentType;
+
+            if (!UserAssetContentTypes.Contains(file.ContentType))
+                throw new ArgumentException("Icons must be png, jpeg, gif, or webp.");
+
+            var dims = await _storage.TryReadImageDimensionsAsync(file.MinioKey, ct);
+            if (dims is not { } d)
+                throw new ArgumentException("Uploaded object is not a valid image.");
+
+            file.Width = d.Width;
+            file.Height = d.Height;
+            file.IsConfirmed = true;
+        }
+
+        var channel = await _channels.GetByIdAsync(channelId);
+        if (channel is null || channel.Type != "group_dm")
+            throw new KeyNotFoundException("Channel not found.");
+
+        var oldKey = channel.IconKey;
+        channel.IconKey = file.MinioKey;
+
+        if (oldKey is not null && oldKey != file.MinioKey
+            && oldKey.StartsWith($"{ChannelIconPrefix}/", StringComparison.Ordinal))
+        {
+            try
+            {
+                await _storage.DeleteObjectAsync(oldKey, ct);
+            }
+            catch
+            {
+                // best-effort — a stale object in the store is harmless
+            }
+
+            if (TryParseAssetFileId(oldKey, out var oldFileId)
+                && await _files.GetByIdAsync(oldFileId) is { } oldRow)
+            {
+                _files.RemoveRange([oldRow]);
+            }
+        }
+
+        await _files.SaveChangesAsync();
+
+        return new UserAssetResponse(file.MinioKey);
+    }
+
+    public async Task RemoveGroupDmIconAsync(long channelId, CancellationToken ct = default)
+    {
+        var channel = await _channels.GetByIdAsync(channelId);
+        if (channel is null || channel.Type != "group_dm")
+            throw new KeyNotFoundException("Channel not found.");
+
+        var key = channel.IconKey;
+        if (key is null)
+            return; // idempotent
+
+        channel.IconKey = null;
+
+        if (key.StartsWith($"{ChannelIconPrefix}/", StringComparison.Ordinal))
+        {
+            try
+            {
+                await _storage.DeleteObjectAsync(key, ct);
+            }
+            catch
+            {
+                // best-effort — see ConfirmGroupDmIconAsync
+            }
+
+            if (TryParseAssetFileId(key, out var fileId)
+                && await _files.GetByIdAsync(fileId) is { } row)
+            {
+                _files.RemoveRange([row]);
+            }
+        }
+
+        await _files.SaveChangesAsync();
+    }
+
     public async Task<string> GetPublicFileUrlAsync(string key, CancellationToken ct = default)
     {
-        // Only profile/guild assets are publicly servable — chat attachments stay channel-gated.
+        // Only profile/guild/group-DM assets are publicly servable — chat attachments stay
+        // channel-gated.
         if (!key.StartsWith("avatars/", StringComparison.Ordinal)
             && !key.StartsWith("banners/", StringComparison.Ordinal)
             && !key.StartsWith("guild-icons/", StringComparison.Ordinal)
-            && !key.StartsWith("guild-banners/", StringComparison.Ordinal))
+            && !key.StartsWith("guild-banners/", StringComparison.Ordinal)
+            && !key.StartsWith($"{ChannelIconPrefix}/", StringComparison.Ordinal))
             throw new KeyNotFoundException("File not found.");
 
         if (!TryParseAssetFileId(key, out var fileId))

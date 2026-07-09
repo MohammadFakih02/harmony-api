@@ -42,6 +42,7 @@ public class DirectMessagesController : ControllerBase
     private readonly IUnreadCountService _unread;
     private readonly IFileService _files;
     private readonly IHubBroadcaster _broadcaster;
+    private readonly ILogger<DirectMessagesController> _logger;
 
     public DirectMessagesController(
         IDirectMessageRepository dms,
@@ -54,7 +55,8 @@ public class DirectMessagesController : ControllerBase
         IMessageService messageService,
         IUnreadCountService unread,
         IFileService files,
-        IHubBroadcaster broadcaster
+        IHubBroadcaster broadcaster,
+        ILogger<DirectMessagesController> logger
     )
     {
         _dms = dms;
@@ -68,6 +70,7 @@ public class DirectMessagesController : ControllerBase
         _unread = unread;
         _files = files;
         _broadcaster = broadcaster;
+        _logger = logger;
     }
 
     /// <summary>Checks the target's DM-privacy checklist against the caller (friendship + shared guild).</summary>
@@ -175,7 +178,16 @@ public class DirectMessagesController : ControllerBase
         var participants = others
             .Select(uid => new DmParticipantResponse(uid, users[uid].UserName!, users[uid].AvatarKey))
             .ToList();
-        return Ok(new DirectMessageChannelResponse(channelId, IsGroup: true, name, LastReadId: 0, participants));
+        return Ok(
+            new DirectMessageChannelResponse(
+                channelId,
+                IsGroup: true,
+                name,
+                IconKey: null,
+                LastReadId: 0,
+                participants
+            )
+        );
     }
 
     // POST /api/dm/{channelId}/participants — add a user to a group DM (any participant may add)
@@ -213,6 +225,7 @@ public class DirectMessagesController : ControllerBase
         // Notify everyone who is now a member (existing + the new one) to resync.
         var recipients = current.Append(request.UserId).ToList();
         await NotifyParticipantsAsync(recipients, channelId);
+        await PostGroupNoticeAsync(channelId, request.UserId, "group_join");
         return NoContent();
     }
 
@@ -230,6 +243,7 @@ public class DirectMessagesController : ControllerBase
         var recipients = await _dms.GetParticipantIdsAsync(channelId);
         await _dms.RemoveParticipantAsync(channelId, me);
         await NotifyParticipantsAsync(recipients, channelId);
+        await PostGroupNoticeAsync(channelId, me, "group_leave");
         return NoContent();
     }
 
@@ -277,6 +291,57 @@ public class DirectMessagesController : ControllerBase
         await _channels.SaveChangesAsync();
 
         // Same coarse "resync your DM list" signal as create/add/leave.
+        await NotifyParticipantsAsync(await _dms.GetParticipantIdsAsync(channelId), channelId);
+        return NoContent();
+    }
+
+    // POST /api/dm/{channelId}/icon/presign — mint a presigned PUT for a group icon
+    // (any participant, Discord-style — same flat model as rename)
+    [HttpPost("{channelId:long}/icon/presign")]
+    public async Task<IActionResult> PresignIcon(
+        long channelId,
+        [FromBody] PresignFileRequest request,
+        CancellationToken ct
+    )
+    {
+        var me = GetUserId();
+        if (!await _dms.IsParticipantAsync(channelId, me))
+            return Forbid();
+        if (!await IsGroupAsync(channelId))
+            return BadRequest(new { error = "Only group conversations can have an icon." });
+
+        var response = await _files.PresignGroupDmIconAsync(me, channelId, request, ct);
+        return Ok(response);
+    }
+
+    // POST /api/dm/{channelId}/icon/{fileId}/confirm — finalize the icon upload
+    [HttpPost("{channelId:long}/icon/{fileId:long}/confirm")]
+    public async Task<IActionResult> ConfirmIcon(long channelId, long fileId, CancellationToken ct)
+    {
+        var me = GetUserId();
+        if (!await _dms.IsParticipantAsync(channelId, me))
+            return Forbid();
+        if (!await IsGroupAsync(channelId))
+            return BadRequest(new { error = "Only group conversations can have an icon." });
+
+        var response = await _files.ConfirmGroupDmIconAsync(channelId, fileId, ct);
+
+        // Same coarse "resync your DM list" signal as create/add/leave/rename.
+        await NotifyParticipantsAsync(await _dms.GetParticipantIdsAsync(channelId), channelId);
+        return Ok(response);
+    }
+
+    // DELETE /api/dm/{channelId}/icon — clear the group icon (idempotent)
+    [HttpDelete("{channelId:long}/icon")]
+    public async Task<IActionResult> RemoveIcon(long channelId, CancellationToken ct)
+    {
+        var me = GetUserId();
+        if (!await _dms.IsParticipantAsync(channelId, me))
+            return Forbid();
+        if (!await IsGroupAsync(channelId))
+            return BadRequest(new { error = "Only group conversations can have an icon." });
+
+        await _files.RemoveGroupDmIconAsync(channelId, ct);
         await NotifyParticipantsAsync(await _dms.GetParticipantIdsAsync(channelId), channelId);
         return NoContent();
     }
@@ -432,6 +497,35 @@ public class DirectMessagesController : ControllerBase
     private Task NotifyParticipantsAsync(IReadOnlyList<long> userIds, long channelId) =>
         _broadcaster.BroadcastDmChannelUpdatedAsync(userIds, new DmChannelUpdatedPayload(channelId));
 
+    /// <summary>
+    /// Best-effort "X joined / X left the group" notice through the normal message pipeline
+    /// (guild-less publish). The subject user is the author; the client renders the copy from
+    /// the message type. Failure must never fail the membership change itself.
+    /// </summary>
+    private async Task PostGroupNoticeAsync(long channelId, long subjectUserId, string messageType)
+    {
+        try
+        {
+            await _messageService.PublishSystemMessageAsync(
+                guildId: null,
+                channelId,
+                subjectUserId,
+                messageType,
+                string.Empty
+            );
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Failed to post {NoticeType} notice for user {UserId} in group DM {ChannelId}",
+                messageType,
+                subjectUserId,
+                channelId
+            );
+        }
+    }
+
     // Internal so BootstrapController can reuse the exact same mapping (single source of truth).
     internal static DirectMessageChannelResponse BuildResponse(
         DmChannelSummary summary,
@@ -454,6 +548,7 @@ public class DirectMessagesController : ControllerBase
             summary.ChannelId,
             isGroup,
             isGroup ? summary.Name : null,
+            isGroup ? summary.IconKey : null,
             summary.LastReadId,
             participants
         );
@@ -464,6 +559,7 @@ public class DirectMessagesController : ControllerBase
             channelId,
             IsGroup: false,
             Name: null,
+            IconKey: null,
             lastReadId,
             new List<DmParticipantResponse> { new(peer.Id, peer.UserName!, peer.AvatarKey) }
         );

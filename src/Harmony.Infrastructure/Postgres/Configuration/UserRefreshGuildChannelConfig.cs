@@ -123,6 +123,7 @@ public class ChannelConfiguration : IEntityTypeConfiguration<Channel>
         builder.Property(c => c.Topic).HasColumnName("topic").HasMaxLength(1024);
         builder.Property(c => c.Type).HasColumnName("type").HasMaxLength(16).IsRequired();
         builder.Property(c => c.Position).HasColumnName("position");
+        builder.Property(c => c.IconKey).HasColumnName("icon_key");
         builder.Property(c => c.CategoryId).HasColumnName("category_id");
         builder.Property(c => c.IsNsfw).HasColumnName("is_nsfw");
         builder.Property(c => c.SlowmodeSeconds).HasColumnName("slowmode_seconds");

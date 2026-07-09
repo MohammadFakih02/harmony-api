@@ -75,8 +75,9 @@ public sealed class RedisPresenceService : IPresenceService
             var idle = await IsIdleAsync(db, userId);
             var effective = ResolveEffective(preferred, idle);
             // Warm the custom-message cache from Postgres so the member-list bulk read can
-            // surface it while this user is online.
-            await ReadStatusMessageAsync(db, userId);
+            // surface it while this user is online — and carry it on the online broadcast
+            // below so observers see it the moment this user connects.
+            var statusMessage = await ReadStatusMessageAsync(db, userId);
 
             await db.StringSetAsync(StatusKey(userId), effective, StatusTtl);
             await db.SortedSetAddAsync(
@@ -94,7 +95,7 @@ public sealed class RedisPresenceService : IPresenceService
             if (preferred == PresenceStatus.Invisible)
                 return;
 
-            var onlinePayload = new OnlineStatusPayload(userId, effective);
+            var onlinePayload = new OnlineStatusPayload(userId, effective, statusMessage);
             await BroadcastToFriendsAsync(
                 userId,
                 onlinePayload,

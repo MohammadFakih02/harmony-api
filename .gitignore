@@ -452,3 +452,5 @@ publish/
 *.lscache
 
 repomix-output.xml
+
+HISTORY.md

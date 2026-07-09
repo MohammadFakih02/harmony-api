@@ -272,7 +272,8 @@ public class MessageService : IMessageService
                 GuildId: guildId,
                 UserId: userId,
                 Content: content,
-                MessageType: request.MessageType ?? "text",
+                // User sends are always "text"; system notices go through PublishSystemMessageAsync.
+                MessageType: "text",
                 AttachmentIds: attachmentIds,
                 MentionIds: mentionIds,
                 ReplyToId: request.ReplyToId,
@@ -291,7 +292,7 @@ public class MessageService : IMessageService
             GuildId: guildId,
             UserId: userId,
             Content: content,
-            MessageType: request.MessageType ?? "text",
+            MessageType: "text",
             ReplyToId: request.ReplyToId,
             MentionIds: mentionIds,
             AttachmentIds: attachmentIds,
@@ -301,7 +302,7 @@ public class MessageService : IMessageService
 
     /// <inheritdoc />
     public async Task<long> PublishSystemMessageAsync(
-        long guildId,
+        long? guildId,
         long channelId,
         long authorUserId,
         string messageType,
