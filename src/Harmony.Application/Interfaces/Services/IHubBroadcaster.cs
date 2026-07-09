@@ -278,4 +278,26 @@ public interface IHubBroadcaster
     /// the permission-enforcing GET.
     /// </summary>
     Task BroadcastGuildInvitesChangedAsync(long guildId, CancellationToken ct = default);
+
+    /// <summary>
+    /// Broadcasts a voice-participant join to the channel group and (when the payload carries a
+    /// guildId) the guild group, so both the in-call roster and the sidebar voice-channel roster
+    /// update live. Invoked by the voice-state service after Redis state is written.
+    /// </summary>
+    Task BroadcastVoiceParticipantJoinedAsync(
+        VoiceParticipantPayload payload,
+        CancellationToken ct = default
+    );
+
+    /// <summary>Broadcasts a voice-participant leave to the channel group and (if guild) the guild group.</summary>
+    Task BroadcastVoiceParticipantLeftAsync(
+        VoiceParticipantLeftPayload payload,
+        CancellationToken ct = default
+    );
+
+    /// <summary>Broadcasts a voice-participant state change (mute/deafen/video/screenshare) to the channel + guild groups.</summary>
+    Task BroadcastVoiceStateUpdatedAsync(
+        VoiceParticipantPayload payload,
+        CancellationToken ct = default
+    );
 }

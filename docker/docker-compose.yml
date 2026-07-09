@@ -70,15 +70,9 @@ services:
       timeout: 5s
       retries: 5
 
-  livekit:
-    image: livekit/livekit-server
-    ports:
-      - "7880:7880"
-      - "7881:7881"
-      - "7882:7882/udp"
-    volumes:
-      - ./configs/livekit.yaml:/etc/livekit.yaml
-    command: --config /etc/livekit.yaml
+  # NOTE: voice/video runs on LiveKit Cloud (cloud.livekit.io) for BOTH dev and prod —
+  # there is no local livekit-server. Set LIVEKIT_KEY/LIVEKIT_SECRET (dev: user-secrets,
+  # prod: env) and the LiveKit:Host to the Cloud project URL. See §5.57.
 
 volumes:
   postgres_data:
