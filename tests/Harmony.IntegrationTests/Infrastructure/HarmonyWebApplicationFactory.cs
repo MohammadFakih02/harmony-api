@@ -50,6 +50,12 @@ public class HarmonyWebApplicationFactory : WebApplicationFactory<Program>
                         // (unlike the Postgres/Scylla "harmony_test").
                         ["ObjectStorage:BucketName"] = "harmony-test",
                         ["ObjectStorage:UseSSL"] = "false",
+                        // Dummy LiveKit keys so ILiveKitTokenService.IsConfigured is true and the
+                        // voice token endpoint mints a (dummy-signed) JWT — no real LiveKit call is
+                        // made in tests; the token is only inspected, never used to connect.
+                        ["LiveKit:ApiKey"] = "test-livekit-key",
+                        ["LiveKit:ApiSecret"] = "test-livekit-secret-at-least-32-chars-long",
+                        ["LiveKit:Host"] = "wss://test.livekit.cloud",
                     }
                 );
             }

@@ -233,4 +233,46 @@ public class HubBroadcaster : IHubBroadcaster
         _hubContext
             .Clients.Group(ChatHub.GuildGroup(guildId))
             .GuildInvitesChanged(new GuildInvitesChangedPayload(guildId));
+
+    public async Task BroadcastVoiceParticipantJoinedAsync(
+        VoiceParticipantPayload payload,
+        CancellationToken ct = default
+    )
+    {
+        await _hubContext
+            .Clients.Group(ChatHub.ChannelGroup(payload.ChannelId))
+            .VoiceParticipantJoined(payload);
+        if (payload.GuildId is { } guildId)
+            await _hubContext
+                .Clients.Group(ChatHub.GuildGroup(guildId))
+                .VoiceParticipantJoined(payload);
+    }
+
+    public async Task BroadcastVoiceParticipantLeftAsync(
+        VoiceParticipantLeftPayload payload,
+        CancellationToken ct = default
+    )
+    {
+        await _hubContext
+            .Clients.Group(ChatHub.ChannelGroup(payload.ChannelId))
+            .VoiceParticipantLeft(payload);
+        if (payload.GuildId is { } guildId)
+            await _hubContext
+                .Clients.Group(ChatHub.GuildGroup(guildId))
+                .VoiceParticipantLeft(payload);
+    }
+
+    public async Task BroadcastVoiceStateUpdatedAsync(
+        VoiceParticipantPayload payload,
+        CancellationToken ct = default
+    )
+    {
+        await _hubContext
+            .Clients.Group(ChatHub.ChannelGroup(payload.ChannelId))
+            .VoiceStateUpdated(payload);
+        if (payload.GuildId is { } guildId)
+            await _hubContext
+                .Clients.Group(ChatHub.GuildGroup(guildId))
+                .VoiceStateUpdated(payload);
+    }
 }

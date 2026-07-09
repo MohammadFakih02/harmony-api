@@ -122,7 +122,7 @@ public class GuildInvite
 public class VoiceState
 {
     public long UserId { get; set; }
-    public long GuildId { get; set; }
+    public long? GuildId { get; set; } // null for a DM / group-DM call — those are guild-less
     public long ChannelId { get; set; }
     public bool IsMuted { get; set; }
     public bool IsDeafened { get; set; }
@@ -134,7 +134,7 @@ public class VoiceState
 
     // Navigation
     public User User { get; set; } = null!;
-    public Guild Guild { get; set; } = null!;
+    public Guild? Guild { get; set; }
     public Channel Channel { get; set; } = null!;
 }
 

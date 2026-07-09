@@ -205,6 +205,20 @@ public interface IChatClient
     /// a client with the invite modal open refetches through the permission-enforcing GET instead.
     /// </summary>
     Task GuildInvitesChanged(GuildInvitesChangedPayload payload);
+
+    /// <summary>
+    /// Fired when a user joins a voice channel/DM call. Broadcast to the channel group AND (for a
+    /// guild voice channel) the guild group — so the voice roster updates live both for people in
+    /// the call and for members watching the sidebar. Voice state is ephemeral (Redis), so a
+    /// client that missed the event catches up via GET .../voice/participants on load.
+    /// </summary>
+    Task VoiceParticipantJoined(VoiceParticipantPayload payload);
+
+    /// <summary>Fired when a user leaves a voice channel/DM call (manually, disconnect, or ghost sweep).</summary>
+    Task VoiceParticipantLeft(VoiceParticipantLeftPayload payload);
+
+    /// <summary>Fired when a participant's voice flags change (mute/deafen/video/screenshare toggles).</summary>
+    Task VoiceStateUpdated(VoiceParticipantPayload payload);
 }
 
 /// <summary>Minimal delete notification — no content, just identity. GuildId is null for DMs.</summary>
@@ -327,3 +341,21 @@ public record ProfileUpdatedPayload(long UserId, string? AvatarKey);
 
 /// <summary>A guild's invite set changed — clients with invite UI open should refetch the list.</summary>
 public record GuildInvitesChangedPayload(long GuildId);
+
+/// <summary>
+/// A participant's current state in a voice room. Carries the full flag set so applying a join or a
+/// state-change never needs a follow-up fetch. <see cref="GuildId"/> is null for a DM/group-DM call.
+/// </summary>
+public record VoiceParticipantPayload(
+    long ChannelId,
+    long? GuildId,
+    long UserId,
+    bool IsMuted,
+    bool IsDeafened,
+    bool IsVideoOn,
+    bool IsStreaming,
+    long JoinedAt
+);
+
+/// <summary>A participant left a voice room. Identity only — clients drop them from the roster.</summary>
+public record VoiceParticipantLeftPayload(long ChannelId, long? GuildId, long UserId);
