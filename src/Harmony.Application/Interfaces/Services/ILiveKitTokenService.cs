@@ -26,9 +26,39 @@ public interface ILiveKitTokenService
 
     /// <summary>
     /// Mints a join token for <paramref name="userId"/> into the room named after
-    /// <paramref name="channelId"/>. Grants roomJoin + publish/subscribe/publishData. The
+    /// <paramref name="channelId"/>. Grants roomJoin + publish/subscribe/publishData, with
+    /// publishing restricted to <paramref name="canPublishSources"/> (LiveKit enforces the
+    /// restriction Cloud-side — a camera/screen publish outside the list is rejected). The caller
+    /// resolves permissions into sources (UseVideo → camera, Stream → screen; DMs get all). The
     /// participant identity is the userId (so a second device with the same identity replaces the
     /// first — Discord's single-session-per-user voice behavior). Returns null when unconfigured.
     /// </summary>
-    string? CreateToken(long channelId, long userId, string displayName);
+    string? CreateToken(
+        long channelId,
+        long userId,
+        string displayName,
+        IReadOnlyList<string> canPublishSources
+    );
+}
+
+/// <summary>
+/// The LiveKit <c>TrackSource</c> wire names accepted in a token's <c>canPublishSources</c> grant.
+/// Kept here (not Infrastructure) so the endpoint can resolve permissions → sources without
+/// touching the SDK.
+/// </summary>
+public static class LiveKitTrackSources
+{
+    public const string Microphone = "microphone";
+    public const string Camera = "camera";
+    public const string ScreenShare = "screen_share";
+    public const string ScreenShareAudio = "screen_share_audio";
+
+    /// <summary>Every publishable source — the grant for DM/group-DM calls.</summary>
+    public static readonly IReadOnlyList<string> All =
+    [
+        Microphone,
+        Camera,
+        ScreenShare,
+        ScreenShareAudio,
+    ];
 }

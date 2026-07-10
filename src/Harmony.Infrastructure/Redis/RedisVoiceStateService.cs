@@ -204,6 +204,32 @@ public sealed class RedisVoiceStateService : IVoiceStateService
         }
     }
 
+    public async Task<VoiceRoomRef?> GetCurrentRoomAsync(long userId, CancellationToken ct = default)
+    {
+        if (!_redisProvider.IsConnected)
+            return null;
+
+        try
+        {
+            var db = _redisProvider.Connection!.GetDatabase();
+            var current = await db.StringGetAsync(UserKey(userId));
+            if (current.IsNullOrEmpty || !long.TryParse(current.ToString(), out var channelId))
+                return null;
+
+            var raw = await db.HashGetAsync(ChannelKey(channelId), userId.ToString());
+            if (raw.IsNullOrEmpty)
+                return null;
+
+            var state = Deserialize(raw!);
+            return state is null ? null : new VoiceRoomRef(channelId, state.GuildId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Voice: current-room read failed for user {UserId}", userId);
+            return null;
+        }
+    }
+
     public async Task<int> SweepGhostsAsync(CancellationToken ct = default)
     {
         if (!_redisProvider.IsConnected)

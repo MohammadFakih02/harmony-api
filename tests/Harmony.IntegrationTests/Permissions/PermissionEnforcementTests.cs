@@ -245,11 +245,14 @@ public class PermissionEnforcementTests : ApiTestBase, IClassFixture<HarmonyWebA
 
         var capsUrl = $"/api/guilds/{guildId}/channels/{channelId}/permissions";
 
-        // Plain member: can view + send, not timed out, no management.
+        // Plain member: can view + send + use camera/screenshare (DefaultEveryone carries
+        // UseVideo + Stream), not timed out, no management.
         Auth(memberToken);
         var caps = await Client.GetFromJsonAsync<CapsDto>(capsUrl);
         caps!.CanView.Should().BeTrue();
         caps.CanSend.Should().BeTrue();
+        caps.CanUseVideo.Should().BeTrue();
+        caps.CanStream.Should().BeTrue();
         caps.TimedOut.Should().BeFalse();
         caps.CanManageMessages.Should().BeFalse();
 
@@ -270,5 +273,13 @@ public class PermissionEnforcementTests : ApiTestBase, IClassFixture<HarmonyWebA
 
     private record ChannelDto(long Id, string Name, string Type);
 
-    private record CapsDto(bool CanView, bool CanSend, bool CanManageMessages, bool CanManageChannels, bool TimedOut);
+    private record CapsDto(
+        bool CanView,
+        bool CanSend,
+        bool CanManageMessages,
+        bool CanManageChannels,
+        bool CanUseVideo,
+        bool CanStream,
+        bool TimedOut
+    );
 }

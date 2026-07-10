@@ -277,6 +277,8 @@ public class ChannelsController : ControllerBase
             CanManageMessages: Has(Permission.ManageMessages),
             CanManageChannels: Has(Permission.ManageChannels),
             CanPin: canView && Has(Permission.PinMessages),
+            CanUseVideo: canView && Has(Permission.UseVideo),
+            CanStream: canView && Has(Permission.Stream),
             TimedOut: timedOut
         ));
     }

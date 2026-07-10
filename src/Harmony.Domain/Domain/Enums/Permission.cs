@@ -50,6 +50,8 @@ public enum Permission : long
     /// <summary>
     /// Default permission set granted to the <c>@everyone</c> role on guild creation:
     /// members can view, chat, react, attach, invite, and use voice — but cannot moderate.
+    /// The bits are snapshotted onto the role row at creation, so widening this set only
+    /// affects NEW guilds — existing guilds grant the new bit via the Roles UI.
     /// </summary>
     DefaultEveryone =
         ViewChannel
@@ -62,5 +64,6 @@ public enum Permission : long
         | CreateInvite
         | ConnectVoice
         | Speak
-        | UseVideo,
+        | UseVideo
+        | Stream,
 }

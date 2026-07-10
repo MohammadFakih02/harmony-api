@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using FluentAssertions;
+using Harmony.Application.Interfaces.Services;
 using Harmony.Infrastructure.Services;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -41,7 +42,7 @@ public class LiveKitTokenServiceTests
         var sut = Build(apiKey: "", apiSecret: "", host: "");
 
         sut.IsConfigured.Should().BeFalse();
-        sut.CreateToken(123, 456, "alice").Should().BeNull();
+        sut.CreateToken(123, 456, "alice", LiveKitTrackSources.All).Should().BeNull();
     }
 
     [Fact]
@@ -57,7 +58,12 @@ public class LiveKitTokenServiceTests
     {
         var sut = Build();
 
-        var token = sut.CreateToken(channelId: 999, userId: 42, displayName: "alice");
+        var token = sut.CreateToken(
+            channelId: 999,
+            userId: 42,
+            displayName: "alice",
+            LiveKitTrackSources.All
+        );
 
         token.Should().NotBeNullOrEmpty();
         var payload = DecodeJwtPayload(token!);
@@ -72,6 +78,38 @@ public class LiveKitTokenServiceTests
         video.GetProperty("roomJoin").GetBoolean().Should().BeTrue();
         video.GetProperty("canPublish").GetBoolean().Should().BeTrue();
         video.GetProperty("canSubscribe").GetBoolean().Should().BeTrue();
+    }
+
+    [Fact]
+    public void CreateToken_IncludesCanPublishSources_InJwt()
+    {
+        var sut = Build();
+
+        var token = sut.CreateToken(999, 42, "alice", LiveKitTrackSources.All);
+
+        var video = DecodeJwtPayload(token!).GetProperty("video");
+        video
+            .GetProperty("canPublishSources")
+            .EnumerateArray()
+            .Select(e => e.GetString())
+            .Should()
+            .BeEquivalentTo("microphone", "camera", "screen_share", "screen_share_audio");
+    }
+
+    [Fact]
+    public void CreateToken_MicOnly_OmitsCameraAndScreen()
+    {
+        var sut = Build();
+
+        var token = sut.CreateToken(999, 42, "alice", [LiveKitTrackSources.Microphone]);
+
+        var video = DecodeJwtPayload(token!).GetProperty("video");
+        video
+            .GetProperty("canPublishSources")
+            .EnumerateArray()
+            .Select(e => e.GetString())
+            .Should()
+            .BeEquivalentTo("microphone");
     }
 
     [Fact]
