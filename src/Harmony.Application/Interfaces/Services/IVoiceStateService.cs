@@ -45,9 +45,19 @@ public interface IVoiceStateService
     );
 
     /// <summary>
+    /// The room the user is currently in (null guildId = a DM/group-DM call), or null when not in
+    /// a room — or when Redis is unavailable (fail-open, like everything here). Lets the hub
+    /// resolve permissions for a state update without trusting a client-supplied channelId.
+    /// </summary>
+    Task<VoiceRoomRef?> GetCurrentRoomAsync(long userId, CancellationToken ct = default);
+
+    /// <summary>
     /// Reaps ghost voice states — users still listed in a room whose presence has gone offline (a
     /// crash/server-restart where the hub's OnDisconnected never ran). Returns the number reaped.
     /// Invoked by <c>VoiceStateSweepService</c>.
     /// </summary>
     Task<int> SweepGhostsAsync(CancellationToken ct = default);
 }
+
+/// <summary>A user's current voice room: the channel and, for guild channels, its guild.</summary>
+public readonly record struct VoiceRoomRef(long ChannelId, long? GuildId);
