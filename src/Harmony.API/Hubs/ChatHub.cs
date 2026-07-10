@@ -315,12 +315,30 @@ public class ChatHub : Hub<IChatClient>
 
     /// <summary>
     /// Updates the caller's self-reported voice flags in their current room (mute / deafen / camera /
-    /// screenshare). No-op if the caller isn't in a room. Moderating <em>other</em> members' state is
-    /// a deferred follow-up (not in Slice 1).
+    /// screenshare). No-op if the caller isn't in a room. Camera/screenshare flags are clamped to the
+    /// caller's UseVideo/Stream permissions in guild rooms (DM rooms allow everything) — clamped, not
+    /// thrown, so a legitimate mute/deafen riding the same invoke still lands; the LiveKit token's
+    /// canPublishSources grant is the hard enforcement, this just keeps the roster honest. The clamped
+    /// value broadcasts as usual, so the client's optimistic state self-corrects from the echo.
+    /// Moderating <em>other</em> members' state is a deferred follow-up (not in Slice 1).
     /// </summary>
     public async Task UpdateVoiceState(bool isMuted, bool isDeafened, bool isVideoOn, bool isStreaming)
     {
-        await _voice.UpdateStateAsync(GetUserId(), isMuted, isDeafened, isVideoOn, isStreaming);
+        var userId = GetUserId();
+
+        if (isVideoOn || isStreaming)
+        {
+            var room = await _voice.GetCurrentRoomAsync(userId);
+            if (room is { GuildId: { } guildId } r)
+            {
+                if (isVideoOn && !await _permissions.HasAsync(userId, guildId, Permission.UseVideo, r.ChannelId))
+                    isVideoOn = false;
+                if (isStreaming && !await _permissions.HasAsync(userId, guildId, Permission.Stream, r.ChannelId))
+                    isStreaming = false;
+            }
+        }
+
+        await _voice.UpdateStateAsync(userId, isMuted, isDeafened, isVideoOn, isStreaming);
     }
 
     /// <summary>

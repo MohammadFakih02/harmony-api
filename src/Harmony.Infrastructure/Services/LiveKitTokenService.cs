@@ -44,7 +44,12 @@ public sealed class LiveKitTokenService : ILiveKitTokenService
             );
     }
 
-    public string? CreateToken(long channelId, long userId, string displayName)
+    public string? CreateToken(
+        long channelId,
+        long userId,
+        string displayName,
+        IReadOnlyList<string> canPublishSources
+    )
     {
         if (!IsConfigured)
             return null;
@@ -55,9 +60,10 @@ public sealed class LiveKitTokenService : ILiveKitTokenService
             {
                 Room = channelId.ToString(),
                 RoomJoin = true,
-                CanPublish = true,
+                CanPublish = true, // superseded by CanPublishSources when set, kept for clarity
                 CanSubscribe = true,
                 CanPublishData = true,
+                CanPublishSources = canPublishSources.ToList(),
             };
 
             return new AccessToken(_apiKey, _apiSecret)

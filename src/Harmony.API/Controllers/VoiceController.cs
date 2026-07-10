@@ -68,7 +68,8 @@ public class VoiceController : ControllerBase
         var user = await _users.GetByIdAsync(userId);
         var displayName = user?.UserName ?? userId.ToString();
 
-        var token = _tokens.CreateToken(channelId, userId, displayName);
+        var sources = await ResolvePublishSourcesAsync(userId, channel);
+        var token = _tokens.CreateToken(channelId, userId, displayName, sources);
         if (token is null)
             return StatusCode(
                 StatusCodes.Status503ServiceUnavailable,
@@ -97,6 +98,28 @@ public class VoiceController : ControllerBase
         channel.GuildId is { } guildId
             ? await _permissions.HasAsync(userId, guildId, Permission.ConnectVoice, channel.Id)
             : await _dms.IsParticipantAsync(channel.Id, userId);
+
+    /// <summary>
+    /// The LiveKit sources this user may publish in this channel — the hard enforcement layer
+    /// (LiveKit Cloud rejects a publish outside the token's grant). Guild: mic always (Speak
+    /// enforcement is deferred with voice moderation), camera behind UseVideo, screen behind
+    /// Stream — channel overrides applied. DM/group-DM: everything (permissions are guild-scoped).
+    /// </summary>
+    private async Task<IReadOnlyList<string>> ResolvePublishSourcesAsync(long userId, Channel channel)
+    {
+        if (channel.GuildId is not { } guildId)
+            return LiveKitTrackSources.All;
+
+        var sources = new List<string> { LiveKitTrackSources.Microphone };
+        if (await _permissions.HasAsync(userId, guildId, Permission.UseVideo, channel.Id))
+            sources.Add(LiveKitTrackSources.Camera);
+        if (await _permissions.HasAsync(userId, guildId, Permission.Stream, channel.Id))
+        {
+            sources.Add(LiveKitTrackSources.ScreenShare);
+            sources.Add(LiveKitTrackSources.ScreenShareAudio);
+        }
+        return sources;
+    }
 
     private long GetUserId() => long.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
 }

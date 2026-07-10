@@ -191,6 +191,39 @@ public class RedisVoiceStateServiceTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task GetCurrentRoom_ReturnsRoomAfterJoin_AndNullAfterLeave()
+    {
+        var channelId = TrackChannel();
+        var guildId = UniqueId();
+        var userId = TrackUser();
+
+        (await _sut.GetCurrentRoomAsync(userId)).Should().BeNull("not in any room yet");
+
+        await _sut.JoinAsync(channelId, guildId, userId);
+        var room = await _sut.GetCurrentRoomAsync(userId);
+        room.Should().NotBeNull();
+        room!.Value.ChannelId.Should().Be(channelId);
+        room.Value.GuildId.Should().Be(guildId);
+
+        await _sut.LeaveAsync(userId);
+        (await _sut.GetCurrentRoomAsync(userId)).Should().BeNull("left the room");
+    }
+
+    [Fact]
+    public async Task GetCurrentRoom_DmRoom_HasNullGuildId()
+    {
+        var channelId = TrackChannel();
+        var userId = TrackUser();
+
+        await _sut.JoinAsync(channelId, guildId: null, userId);
+
+        var room = await _sut.GetCurrentRoomAsync(userId);
+        room.Should().NotBeNull();
+        room!.Value.ChannelId.Should().Be(channelId);
+        room.Value.GuildId.Should().BeNull("a DM/group-DM call has no guild");
+    }
+
+    [Fact]
     public async Task SweepGhosts_ReapsOfflineParticipant_KeepsConnectedOne()
     {
         var channelId = TrackChannel();
