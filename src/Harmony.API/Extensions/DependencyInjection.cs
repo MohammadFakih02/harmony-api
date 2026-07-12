@@ -168,6 +168,7 @@ public static class DependencyInjection
         services.AddScoped<IGuildInviteRepository, GuildInviteRepository>();
         services.AddScoped<IGuildBanRepository, GuildBanRepository>();
         services.AddScoped<IMessageSearchRepository, MessageSearchRepository>();
+        services.AddScoped<IMessageReactionRepository, MessageReactionRepository>();
         services.AddScoped<IPushOutboxRepository, PushOutboxRepository>();
         services.AddScoped<IPushSubscriptionRepository, PushSubscriptionRepository>();
 
@@ -195,6 +196,9 @@ public static class DependencyInjection
         // Voice — the token service owns the LiveKit signing keys (LiveKit config section, SDK
         // confined to Infrastructure). Singleton: immutable config, thread-safe, mints per call.
         services.AddSingleton<ILiveKitTokenService, LiveKitTokenService>();
+        // Hard voice moderation (server mute/deafen/move) over the LiveKit server API — fail-open,
+        // silent no-op when unconfigured (CI / fresh checkout).
+        services.AddSingleton<ILiveKitRoomService, LiveKitRoomService>();
 
         // File storage — S3FileStorageService builds its own IAmazonS3 from config (ObjectStorage
         // section), so the AWS SDK types stay confined to Infrastructure (not referenced here).

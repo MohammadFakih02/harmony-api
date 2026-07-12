@@ -488,7 +488,9 @@ public class ScyllaMessageConsumer : BackgroundService
                 MentionIds: evt.MentionIds,
                 AttachmentIds: evt.AttachmentIds,
                 SentAt: evt.SentAt.ToUnixTimeMilliseconds(),
-                EditedAt: null
+                EditedAt: null,
+                // A brand-new message has no reactions yet — they arrive via ReactionAdded events.
+                Reactions: []
             )
         );
 

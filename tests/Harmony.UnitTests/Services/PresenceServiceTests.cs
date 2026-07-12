@@ -52,8 +52,11 @@ public class PresenceServiceTests
 
     private static void SetupSessionCount(Mock<IDatabase> db, long userId, long count) =>
         db.Setup(d =>
-                d.SetLengthAsync(
+                d.SortedSetLengthAsync(
                     It.Is<RedisKey>(k => k.ToString() == RedisPresenceService.SessionKey(userId)),
+                    It.IsAny<double>(),
+                    It.IsAny<double>(),
+                    It.IsAny<Exclude>(),
                     It.IsAny<CommandFlags>()
                 )
             )
@@ -106,9 +109,11 @@ public class PresenceServiceTests
         await sut.SetOnlineAsync(userId: 1, connectionId: "conn-1");
 
         db.Verify(
-            d => d.SetAddAsync(
+            d => d.SortedSetAddAsync(
                 It.Is<RedisKey>(k => k.ToString() == RedisPresenceService.SessionKey(1)),
                 It.Is<RedisValue>(v => v.ToString() == "conn-1"),
+                It.IsAny<double>(),
+                It.IsAny<SortedSetWhen>(),
                 It.IsAny<CommandFlags>()
             ),
             Times.Once
@@ -236,7 +241,7 @@ public class PresenceServiceTests
     {
         var (sut, _, _) = BuildSut(redisConnected: false);
 
-        var act = () => sut.HeartbeatAsync(userId: 1);
+        var act = () => sut.HeartbeatAsync(userId: 1, connectionId: "conn-1");
 
         await act.Should().NotThrowAsync();
     }
@@ -246,7 +251,7 @@ public class PresenceServiceTests
     {
         var (sut, db, _) = BuildSut();
 
-        await sut.HeartbeatAsync(userId: 1);
+        await sut.HeartbeatAsync(userId: 1, connectionId: "conn-1");
 
         db.Verify(
             d => d.StringSetAsync(
@@ -485,7 +490,7 @@ public class PresenceServiceTests
         var (sut, db, _) = BuildSut();
         SetupPreferred(db, userId: 1, "away");
 
-        await sut.HeartbeatAsync(userId: 1);
+        await sut.HeartbeatAsync(userId: 1, connectionId: "conn-1");
 
         VerifyStatusKeyWritten(db, 1, "away");
     }

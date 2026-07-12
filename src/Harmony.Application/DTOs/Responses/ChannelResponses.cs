@@ -36,6 +36,7 @@ public record ChannelCapabilitiesResponse(
     bool CanManageMessages,
     bool CanManageChannels,
     bool CanPin,
+    bool CanReact,
     bool CanUseVideo,
     bool CanStream,
     bool TimedOut

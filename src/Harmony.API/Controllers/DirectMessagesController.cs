@@ -432,6 +432,46 @@ public class DirectMessagesController : ControllerBase
         return NoContent();
     }
 
+    // PUT /api/dm/{channelId}/messages/{messageId}/reactions — react (any participant)
+    [HttpPut("{channelId:long}/messages/{messageId:long}/reactions")]
+    public async Task<IActionResult> AddReaction(
+        long channelId,
+        long messageId,
+        [FromBody] ReactionRequest request,
+        CancellationToken ct
+    )
+    {
+        await _messageService.AddReactionAsync(
+            GetUserId(),
+            guildId: null,
+            channelId,
+            messageId,
+            request.Emoji,
+            ct
+        );
+        return NoContent();
+    }
+
+    // DELETE /api/dm/{channelId}/messages/{messageId}/reactions?emoji= — unreact (any participant)
+    [HttpDelete("{channelId:long}/messages/{messageId:long}/reactions")]
+    public async Task<IActionResult> RemoveReaction(
+        long channelId,
+        long messageId,
+        [FromQuery] string emoji,
+        CancellationToken ct
+    )
+    {
+        await _messageService.RemoveReactionAsync(
+            GetUserId(),
+            guildId: null,
+            channelId,
+            messageId,
+            emoji,
+            ct
+        );
+        return NoContent();
+    }
+
     // POST /api/dm/{channelId}/files/presign — mint a presigned PUT (participant-gated)
     [HttpPost("{channelId:long}/files/presign")]
     public async Task<IActionResult> Presign(

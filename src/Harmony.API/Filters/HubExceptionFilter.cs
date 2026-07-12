@@ -24,6 +24,13 @@ public class HubExceptionFilter : IHubFilter
         {
             return await next(invocationContext);
         }
+        catch (HubException)
+        {
+            // A HubException is a deliberate, already-client-safe error (a validation/authorization
+            // rejection a hub method threw on purpose) — its message is meant to reach the client.
+            // Let it propagate unchanged; only *unexpected* exceptions below get masked.
+            throw;
+        }
         catch (Exception ex)
         {
             // Unexpected infrastructure or framework crash

@@ -27,6 +27,7 @@ public class RedisVoiceStateServiceTests : IAsyncLifetime
 
     private readonly List<long> _userIds = [];
     private readonly List<long> _channelIds = [];
+    private readonly List<long> _guildIds = [];
 
     public async Task InitializeAsync()
     {
@@ -50,13 +51,18 @@ public class RedisVoiceStateServiceTests : IAsyncLifetime
     public async Task DisposeAsync()
     {
         foreach (var channelId in _channelIds)
+        {
             await _db.KeyDeleteAsync($"voice:channel:{channelId}");
+            await _db.KeyDeleteAsync($"call:ring:{channelId}");
+        }
         foreach (var userId in _userIds)
         {
             await _db.KeyDeleteAsync($"voice:user:{userId}");
             await _db.SetRemoveAsync("voice:users", userId.ToString());
             await _db.KeyDeleteAsync(RedisPresenceService.StatusKey(userId));
         }
+        foreach (var guildId in _guildIds)
+            await _db.KeyDeleteAsync($"voice:moderation:{guildId}");
 
         await _redis.DisposeAsync();
     }
@@ -78,6 +84,13 @@ public class RedisVoiceStateServiceTests : IAsyncLifetime
     {
         var id = UniqueId();
         _channelIds.Add(id);
+        return id;
+    }
+
+    private long TrackGuild()
+    {
+        var id = UniqueId();
+        _guildIds.Add(id);
         return id;
     }
 
@@ -221,6 +234,186 @@ public class RedisVoiceStateServiceTests : IAsyncLifetime
         room.Should().NotBeNull();
         room!.Value.ChannelId.Should().Be(channelId);
         room.Value.GuildId.Should().BeNull("a DM/group-DM call has no guild");
+    }
+
+    [Fact]
+    public async Task TryBeginRing_SetsCallerWithTtl_AndRejectsASecondRing()
+    {
+        var channelId = TrackChannel();
+        var caller = TrackUser();
+        var other = TrackUser();
+
+        (await _sut.TryBeginRingAsync(channelId, caller)).Should().BeTrue();
+
+        var raw = await _db.StringGetAsync($"call:ring:{channelId}");
+        raw.ToString().Should().Be(caller.ToString());
+        (await _db.KeyTimeToLiveAsync($"call:ring:{channelId}"))
+            .Should()
+            .NotBeNull("the ring key must TTL out as the caller-crash backstop");
+
+        (await _sut.TryBeginRingAsync(channelId, other))
+            .Should()
+            .BeFalse("SET NX rejects a second ring while one is live");
+        (await _sut.GetRingCallerAsync(channelId)).Should().Be(caller, "the original ring survives");
+    }
+
+    [Fact]
+    public async Task TryEndRing_TrueOnlyWhileLive()
+    {
+        var channelId = TrackChannel();
+        var caller = TrackUser();
+
+        (await _sut.TryEndRingAsync(channelId)).Should().BeFalse("no ring to end yet");
+
+        await _sut.TryBeginRingAsync(channelId, caller);
+        (await _sut.TryEndRingAsync(channelId)).Should().BeTrue("a live ring existed");
+        (await _sut.TryEndRingAsync(channelId)).Should().BeFalse("the key is already gone");
+        (await _sut.GetRingCallerAsync(channelId)).Should().BeNull();
+    }
+
+    [Fact]
+    public async Task GetRingCaller_ReturnsCaller_AndNullWhenNoRing()
+    {
+        var channelId = TrackChannel();
+        var caller = TrackUser();
+
+        (await _sut.GetRingCallerAsync(channelId)).Should().BeNull();
+
+        await _sut.TryBeginRingAsync(channelId, caller);
+        (await _sut.GetRingCallerAsync(channelId)).Should().Be(caller);
+    }
+
+    [Fact]
+    public async Task Moderate_SetsServerFlags_AndBroadcasts()
+    {
+        var channelId = TrackChannel();
+        var guildId = TrackGuild();
+        var target = TrackUser();
+
+        await _sut.JoinAsync(channelId, guildId, target);
+        var applied = await _sut.ModerateAsync(channelId, target, serverMute: true, serverDeafen: null);
+
+        applied.Should().BeTrue();
+        var me = (await _sut.GetChannelParticipantsAsync(channelId)).Single(p => p.UserId == target);
+        me.IsServerMuted.Should().BeTrue();
+        me.IsServerDeafened.Should().BeFalse("only the mute flag was set");
+        me.IsMuted.Should().BeFalse("server flags are orthogonal to the self flags");
+
+        _broadcaster.Verify(
+            b =>
+                b.BroadcastVoiceStateUpdatedAsync(
+                    It.Is<VoiceParticipantPayload>(p => p.UserId == target && p.IsServerMuted),
+                    It.IsAny<CancellationToken>()
+                ),
+            Times.Once
+        );
+    }
+
+    [Fact]
+    public async Task Moderate_ReturnsFalse_WhenTargetNotInThatRoom()
+    {
+        var channelId = TrackChannel();
+        var otherRoom = TrackChannel();
+        var guildId = TrackGuild();
+        var target = TrackUser();
+
+        (await _sut.ModerateAsync(channelId, target, true, null))
+            .Should()
+            .BeFalse("target is in no room at all");
+
+        await _sut.JoinAsync(otherRoom, guildId, target);
+        (await _sut.ModerateAsync(channelId, target, true, null))
+            .Should()
+            .BeFalse("target is in a different room");
+    }
+
+    [Fact]
+    public async Task Moderate_ServerFlags_AreSticky_AcrossRejoin_UntilCleared()
+    {
+        var channelId = TrackChannel();
+        var guildId = TrackGuild();
+        var target = TrackUser();
+
+        await _sut.JoinAsync(channelId, guildId, target);
+        await _sut.ModerateAsync(channelId, target, serverMute: true, serverDeafen: true);
+
+        // Leave + rejoin must NOT shake the server flags off (the whole point of stickiness).
+        await _sut.LeaveAsync(target);
+        await _sut.JoinAsync(channelId, guildId, target);
+
+        var rejoined = (await _sut.GetChannelParticipantsAsync(channelId)).Single(p =>
+            p.UserId == target
+        );
+        rejoined.IsServerMuted.Should().BeTrue("sticky server mute survives a rejoin");
+        rejoined.IsServerDeafened.Should().BeTrue("sticky server deafen survives a rejoin");
+
+        // A moderator clearing both flags also clears the sticky entry.
+        await _sut.ModerateAsync(channelId, target, serverMute: false, serverDeafen: false);
+        (await _db.HashExistsAsync($"voice:moderation:{guildId}", target.ToString()))
+            .Should()
+            .BeFalse("fully un-moderated = no sticky entry");
+
+        await _sut.LeaveAsync(target);
+        await _sut.JoinAsync(channelId, guildId, target);
+        var cleared = (await _sut.GetChannelParticipantsAsync(channelId)).Single(p =>
+            p.UserId == target
+        );
+        cleared.IsServerMuted.Should().BeFalse();
+        cleared.IsServerDeafened.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Move_CarriesAllFlags_AndBroadcastsLeavePlusJoin()
+    {
+        var roomA = TrackChannel();
+        var roomB = TrackChannel();
+        var guildId = TrackGuild();
+        var target = TrackUser();
+
+        await _sut.JoinAsync(roomA, guildId, target);
+        await _sut.UpdateStateAsync(target, isMuted: true, isDeafened: false, isVideoOn: false, isStreaming: false);
+        await _sut.ModerateAsync(roomA, target, serverMute: true, serverDeafen: null);
+
+        (await _sut.MoveAsync(target, roomA, roomB, guildId)).Should().BeTrue();
+
+        (await _db.HashExistsAsync($"voice:channel:{roomA}", target.ToString())).Should().BeFalse();
+        (await _db.StringGetAsync($"voice:user:{target}")).ToString().Should().Be(roomB.ToString());
+
+        var moved = (await _sut.GetChannelParticipantsAsync(roomB)).Single(p => p.UserId == target);
+        moved.IsMuted.Should().BeTrue("self mute travels with the move");
+        moved.IsServerMuted.Should().BeTrue("server mute travels with the move");
+
+        _broadcaster.Verify(
+            b =>
+                b.BroadcastVoiceParticipantLeftAsync(
+                    It.Is<VoiceParticipantLeftPayload>(p => p.ChannelId == roomA && p.UserId == target),
+                    It.IsAny<CancellationToken>()
+                ),
+            Times.Once
+        );
+        _broadcaster.Verify(
+            b =>
+                b.BroadcastVoiceParticipantJoinedAsync(
+                    It.Is<VoiceParticipantPayload>(p =>
+                        p.ChannelId == roomB && p.UserId == target && p.IsServerMuted
+                    ),
+                    It.IsAny<CancellationToken>()
+                ),
+            Times.Once
+        );
+    }
+
+    [Fact]
+    public async Task Move_ReturnsFalse_WhenTargetNotInSourceRoom()
+    {
+        var roomA = TrackChannel();
+        var roomB = TrackChannel();
+        var guildId = TrackGuild();
+        var target = TrackUser();
+
+        (await _sut.MoveAsync(target, roomA, roomB, guildId))
+            .Should()
+            .BeFalse("target never joined the source room");
     }
 
     [Fact]

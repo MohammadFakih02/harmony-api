@@ -38,7 +38,10 @@ public record GuildCapabilitiesResponse(
     bool CanBan,
     bool CanTimeout,
     bool CanViewAuditLog,
-    bool CanManageNicknames
+    bool CanManageNicknames,
+    bool CanMuteMembers,
+    bool CanDeafenMembers,
+    bool CanMoveMembers
 );
 
 public record GuildBanResponse(
