@@ -237,7 +237,10 @@ public class GuildsController : ControllerBase
             CanBan: Has(Permission.BanMembers),
             CanTimeout: Has(Permission.TimeoutMembers),
             CanViewAuditLog: Has(Permission.ViewAuditLog),
-            CanManageNicknames: Has(Permission.ManageNicknames)
+            CanManageNicknames: Has(Permission.ManageNicknames),
+            CanMuteMembers: Has(Permission.MuteMembers),
+            CanDeafenMembers: Has(Permission.DeafenMembers),
+            CanMoveMembers: Has(Permission.MoveMembers)
         ));
     }
 

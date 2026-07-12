@@ -60,7 +60,10 @@ public sealed class LiveKitTokenService : ILiveKitTokenService
             {
                 Room = channelId.ToString(),
                 RoomJoin = true,
-                CanPublish = true, // superseded by CanPublishSources when set, kept for clarity
+                // LiveKit treats an EMPTY canPublishSources as "unrestricted", so a caller with no
+                // publishable sources (e.g. Speak+UseVideo+Stream all denied) must be blocked via
+                // CanPublish=false — they join listen-only.
+                CanPublish = canPublishSources.Count > 0,
                 CanSubscribe = true,
                 CanPublishData = true,
                 CanPublishSources = canPublishSources.ToList(),

@@ -32,8 +32,16 @@ public record MessageResponse(
     // renderer fetches GET /files/{id} with these; a rounded id would 404).
     [property: JsonNumberHandling(JsonNumberHandling.WriteAsString)] List<long> AttachmentIds,
     long SentAt,
-    long? EditedAt
+    long? EditedAt,
+    // Aggregated reaction pills (emoji → count + whether the requester reacted). Empty for a
+    // brand-new message (the live MessageReceived broadcast carries none — reactions arrive via
+    // their own ReactionAdded/Removed events).
+    IReadOnlyList<ReactionSummaryResponse> Reactions
 );
+
+/// <summary>One reaction bucket on a message: the emoji, how many users reacted, and whether the
+/// requesting user is one of them (drives the highlighted pill state).</summary>
+public record ReactionSummaryResponse(string Emoji, int Count, bool MeReacted);
 
 public record ChannelMessagesResponse(
     IEnumerable<MessageResponse> Messages,

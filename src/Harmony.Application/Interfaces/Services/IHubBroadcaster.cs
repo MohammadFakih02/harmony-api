@@ -300,4 +300,45 @@ public interface IHubBroadcaster
         VoiceParticipantPayload payload,
         CancellationToken ct = default
     );
+
+    /// <summary>
+    /// Rings the given users (all their tabs) for a DM/group-DM call. Sent via Clients.Users to the
+    /// explicit recipient set (participants minus the caller) — callees haven't joined any group yet.
+    /// </summary>
+    Task BroadcastIncomingCallAsync(
+        IReadOnlyList<long> userIds,
+        IncomingCallPayload payload,
+        CancellationToken ct = default
+    );
+
+    /// <summary>
+    /// Tells the given users a ring ended unanswered (caller cancelled/timed out, or the recipient
+    /// declined on another tab) so they dismiss the incoming-call UI. Same Clients.Users fan-out.
+    /// </summary>
+    Task BroadcastCallCancelledAsync(
+        IReadOnlyList<long> userIds,
+        CallCancelledPayload payload,
+        CancellationToken ct = default
+    );
+
+    /// <summary>Notifies the caller (all their tabs) that a callee declined the ring. Per-user (Clients.User).</summary>
+    Task BroadcastCallDeclinedAsync(
+        long recipientId,
+        CallDeclinedPayload payload,
+        CancellationToken ct = default
+    );
+
+    /// <summary>Tells a moved user (all their tabs) to reconnect media to the destination voice
+    /// channel. Per-user (Clients.User) — their Redis state has already moved.</summary>
+    Task BroadcastVoiceForceMovedAsync(
+        long recipientId,
+        VoiceForceMovedPayload payload,
+        CancellationToken ct = default
+    );
+
+    /// <summary>Broadcasts a reaction-add to the message's channel group.</summary>
+    Task BroadcastReactionAddedAsync(ReactionPayload payload, CancellationToken ct = default);
+
+    /// <summary>Broadcasts a reaction-remove to the message's channel group.</summary>
+    Task BroadcastReactionRemovedAsync(ReactionPayload payload, CancellationToken ct = default);
 }

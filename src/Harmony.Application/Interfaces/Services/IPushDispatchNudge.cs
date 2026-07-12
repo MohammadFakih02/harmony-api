@@ -3,7 +3,8 @@ namespace Harmony.Application.Interfaces.Services;
 /// <summary>
 /// Canonical PushOutbox.Kind values. mention/reply/friend_request mirror the persisted
 /// Notification.Type they were staged alongside; "dm" is a per-message fan-out with no
-/// Notification row (offline delivery only).
+/// Notification row (offline delivery only); "call" is the offline arm of a DM/group-DM
+/// ring (same participants-minus-actor fan-out as "dm").
 /// </summary>
 public static class PushKind
 {
@@ -11,6 +12,7 @@ public static class PushKind
     public const string Reply = "reply";
     public const string FriendRequest = "friend_request";
     public const string Dm = "dm";
+    public const string Call = "call";
 }
 
 /// <summary>

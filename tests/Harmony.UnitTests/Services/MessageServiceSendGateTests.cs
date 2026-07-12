@@ -80,7 +80,8 @@ public class MessageServiceSendGateTests
                 Mock.Of<IFileAttachmentRepository>(), Mock.Of<IDirectMessageRepository>(),
                 Mock.Of<IUserBlockRepository>(), Mock.Of<IFriendRepository>(),
                 Mock.Of<IPresenceService>(), Mock.Of<IAuditLogService>(),
-                Mock.Of<IHubBroadcaster>(), Roles.Object, Slowmode.Object
+                Mock.Of<IHubBroadcaster>(), Roles.Object, Slowmode.Object,
+                Mock.Of<IMessageReactionRepository>()
             );
         }
     }

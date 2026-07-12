@@ -49,6 +49,16 @@ public class HubBroadcaster : IHubBroadcaster
         CancellationToken ct = default
     ) => _hubContext.Clients.Group(ChatHub.ChannelGroup(payload.ChannelId)).MessageUnpinned(payload);
 
+    public Task BroadcastReactionAddedAsync(
+        ReactionPayload payload,
+        CancellationToken ct = default
+    ) => _hubContext.Clients.Group(ChatHub.ChannelGroup(payload.ChannelId)).ReactionAdded(payload);
+
+    public Task BroadcastReactionRemovedAsync(
+        ReactionPayload payload,
+        CancellationToken ct = default
+    ) => _hubContext.Clients.Group(ChatHub.ChannelGroup(payload.ChannelId)).ReactionRemoved(payload);
+
     public Task BroadcastTypingStartedAsync(
         long channelId,
         long userId,
@@ -275,4 +285,34 @@ public class HubBroadcaster : IHubBroadcaster
                 .Clients.Group(ChatHub.GuildGroup(guildId))
                 .VoiceStateUpdated(payload);
     }
+
+    public Task BroadcastIncomingCallAsync(
+        IReadOnlyList<long> userIds,
+        IncomingCallPayload payload,
+        CancellationToken ct = default
+    ) =>
+        _hubContext
+            .Clients.Users(userIds.Select(id => id.ToString()).ToList())
+            .IncomingCall(payload);
+
+    public Task BroadcastCallCancelledAsync(
+        IReadOnlyList<long> userIds,
+        CallCancelledPayload payload,
+        CancellationToken ct = default
+    ) =>
+        _hubContext
+            .Clients.Users(userIds.Select(id => id.ToString()).ToList())
+            .CallCancelled(payload);
+
+    public Task BroadcastCallDeclinedAsync(
+        long recipientId,
+        CallDeclinedPayload payload,
+        CancellationToken ct = default
+    ) => _hubContext.Clients.User(recipientId.ToString()).CallDeclined(payload);
+
+    public Task BroadcastVoiceForceMovedAsync(
+        long recipientId,
+        VoiceForceMovedPayload payload,
+        CancellationToken ct = default
+    ) => _hubContext.Clients.User(recipientId.ToString()).VoiceForceMoved(payload);
 }

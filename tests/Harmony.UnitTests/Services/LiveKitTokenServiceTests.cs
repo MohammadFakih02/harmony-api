@@ -113,6 +113,24 @@ public class LiveKitTokenServiceTests
     }
 
     [Fact]
+    public void CreateToken_NoSources_DisablesPublishingEntirely()
+    {
+        var sut = Build();
+
+        // LiveKit treats an empty canPublishSources as UNRESTRICTED, so a caller with every
+        // source denied (Speak+UseVideo+Stream all stripped) must get canPublish=false instead —
+        // a listen-only token.
+        var token = sut.CreateToken(999, 42, "alice", []);
+
+        var video = DecodeJwtPayload(token!).GetProperty("video");
+        // Absent-or-false both mean "cannot publish" (the SDK may omit default-false claims).
+        var canPublish =
+            video.TryGetProperty("canPublish", out var claim) && claim.GetBoolean();
+        canPublish.Should().BeFalse("a no-source token must not allow publishing at all");
+        video.GetProperty("canSubscribe").GetBoolean().Should().BeTrue();
+    }
+
+    [Fact]
     public void Url_ReflectsConfiguredHost()
     {
         Build(host: "wss://my-project.livekit.cloud").Url.Should().Be("wss://my-project.livekit.cloud");

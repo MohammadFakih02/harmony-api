@@ -88,9 +88,9 @@ public class RedisPresenceServiceTests : IAsyncLifetime
 
         await _sut.SetOnlineAsync(userId, "conn-1");
 
-        (await _db.SetContainsAsync(RedisPresenceService.SessionKey(userId), "conn-1"))
+        (await _db.SortedSetScoreAsync(RedisPresenceService.SessionKey(userId), "conn-1"))
             .Should()
-            .BeTrue();
+            .NotBeNull("the connection id is a member of the liveness ZSET");
         (await _db.StringGetAsync(RedisPresenceService.StatusKey(userId)))
             .ToString()
             .Should()
@@ -120,7 +120,7 @@ public class RedisPresenceServiceTests : IAsyncLifetime
             "no friends exist to broadcast to yet — the seam returns empty"
         );
 
-        (await _db.SetLengthAsync(RedisPresenceService.SessionKey(userId))).Should().Be(2);
+        (await _db.SortedSetLengthAsync(RedisPresenceService.SessionKey(userId))).Should().Be(2);
 
         await _db.SortedSetRemoveAsync("presence:online", userId.ToString());
     }
@@ -140,7 +140,7 @@ public class RedisPresenceServiceTests : IAsyncLifetime
 
         (await _db.KeyExistsAsync(RedisPresenceService.StatusKey(userId))).Should().BeFalse();
         (await _db.SortedSetScoreAsync("presence:online", userId.ToString())).Should().BeNull();
-        (await _db.SetLengthAsync(RedisPresenceService.SessionKey(userId))).Should().Be(0);
+        (await _db.SortedSetLengthAsync(RedisPresenceService.SessionKey(userId))).Should().Be(0);
     }
 
     [Fact]
@@ -162,6 +162,71 @@ public class RedisPresenceServiceTests : IAsyncLifetime
         await _db.SortedSetRemoveAsync("presence:online", userId.ToString());
     }
 
+    [Fact]
+    public async Task SetOffline_GhostConnection_DoesNotSuppressOfflineTransition()
+    {
+        var userId = UniqueUserId();
+        TrackKeysFor(userId);
+
+        // A ghost: a connection id whose OnDisconnectedAsync never ran (e.g. an API restart),
+        // seeded with a last-heartbeat score far past the liveness window.
+        await _db.SortedSetAddAsync(
+            RedisPresenceService.SessionKey(userId),
+            "ghost-conn",
+            DateTimeOffset.UtcNow.AddMinutes(-10).ToUnixTimeSeconds()
+        );
+
+        await _sut.SetOnlineAsync(userId, "conn-1");
+        await _sut.SetOfflineAsync(userId, "conn-1");
+
+        // The ghost must have been pruned, letting the user actually go offline.
+        var status = await _db.StringGetAsync(RedisPresenceService.StatusKey(userId));
+        status.IsNullOrEmpty.Should().BeTrue();
+        (await _db.KeyExistsAsync(RedisPresenceService.SessionKey(userId))).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task SetOnline_GhostConnectionOnly_StillCountsAsFirstConnection()
+    {
+        var userId = UniqueUserId();
+        TrackKeysFor(userId);
+
+        await _db.SortedSetAddAsync(
+            RedisPresenceService.SessionKey(userId),
+            "ghost-conn",
+            DateTimeOffset.UtcNow.AddMinutes(-10).ToUnixTimeSeconds()
+        );
+
+        await _sut.SetOnlineAsync(userId, "conn-1");
+
+        // With the ghost pruned this is the FIRST live connection → status written, one entry left.
+        var status = await _db.StringGetAsync(RedisPresenceService.StatusKey(userId));
+        status.ToString().Should().Be("online");
+        (await _db.SortedSetLengthAsync(RedisPresenceService.SessionKey(userId))).Should().Be(1);
+
+        await _sut.SetOfflineAsync(userId, "conn-1");
+    }
+
+    [Fact]
+    public async Task SetOnline_LegacySetTypeSessionKey_IsMigrated()
+    {
+        var userId = UniqueUserId();
+        TrackKeysFor(userId);
+
+        // Pre-liveness deployments stored sessions as a plain SET — the service must
+        // replace it (not crash every ZSET op with WRONGTYPE).
+        await _db.SetAddAsync(RedisPresenceService.SessionKey(userId), "old-conn");
+
+        var act = () => _sut.SetOnlineAsync(userId, "conn-1");
+        await act.Should().NotThrowAsync();
+
+        (await _db.KeyTypeAsync(RedisPresenceService.SessionKey(userId)))
+            .Should()
+            .Be(RedisType.SortedSet);
+
+        await _sut.SetOfflineAsync(userId, "conn-1");
+    }
+
     // -------------------------------------------------------------------------
     // HeartbeatAsync — refreshes TTL + ZSET score without broadcasting
     // -------------------------------------------------------------------------
@@ -176,7 +241,7 @@ public class RedisPresenceServiceTests : IAsyncLifetime
         var ttlBefore = await _db.KeyTimeToLiveAsync(RedisPresenceService.StatusKey(userId));
 
         await Task.Delay(1100); // let the TTL visibly tick down
-        await _sut.HeartbeatAsync(userId);
+        await _sut.HeartbeatAsync(userId, "conn-1");
 
         var ttlAfter = await _db.KeyTimeToLiveAsync(RedisPresenceService.StatusKey(userId));
         ttlAfter.Should().NotBeNull();
@@ -243,7 +308,7 @@ public class RedisPresenceServiceTests : IAsyncLifetime
         // Others see offline...
         (await _sut.GetStatusAsync(userId)).Should().Be("offline");
         // ...while the session is still live and the preference is invisible.
-        (await _db.SetLengthAsync(RedisPresenceService.SessionKey(userId))).Should().Be(1);
+        (await _db.SortedSetLengthAsync(RedisPresenceService.SessionKey(userId))).Should().Be(1);
         (await _sut.GetPreferredStatusAsync(userId)).Should().Be("invisible");
 
         await _sut.SetOfflineAsync(userId, "conn-1");
@@ -349,7 +414,7 @@ public class RedisPresenceServiceTests : IAsyncLifetime
             .Should()
             .Be("online");
         (await _db.SortedSetScoreAsync("presence:online", userId.ToString())).Should().NotBeNull();
-        (await _db.SetLengthAsync(RedisPresenceService.SessionKey(userId))).Should().Be(1);
+        (await _db.SortedSetLengthAsync(RedisPresenceService.SessionKey(userId))).Should().Be(1);
 
         await _sut.SetOfflineAsync(userId, "conn-1");
     }

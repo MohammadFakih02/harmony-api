@@ -164,6 +164,16 @@ public class PushNotificationServiceTests
             MessageId = 300,
         };
 
+    private static PushOutboxMessage CallRow() =>
+        new()
+        {
+            Id = 3,
+            Kind = PushKind.Call,
+            RecipientId = 0,
+            ActorId = 9,
+            ChannelId = 200,
+        };
+
     // ---- ProcessAsync gate matrix ----
 
     [Fact]
@@ -333,6 +343,65 @@ public class PushNotificationServiceTests
         payload.Should().Contain("\"title\":\"alice\"");
         payload.Should().Contain("hello there");
         payload.Should().Contain("/app/dm/200");
+    }
+
+    // ---- call fan-out (offline ring) ----
+
+    [Fact]
+    public async Task Process_CallRow_FansOutToParticipants_MinusTheCaller()
+    {
+        var h = new Harness();
+        h.Dms.Setup(d => d.GetParticipantIdsAsync(200))
+            .ReturnsAsync(new List<long> { 9, 5, 6 }); // 9 = the caller
+
+        await h.Sut.ProcessAsync(h.Provider, CallRow());
+
+        h.Subscriptions.Verify(s => s.GetForUserAsync(5), Times.Once);
+        h.Subscriptions.Verify(s => s.GetForUserAsync(6), Times.Once);
+        h.Subscriptions.Verify(s => s.GetForUserAsync(9), Times.Never);
+        h.VerifySendCount(Times.Exactly(2));
+    }
+
+    [Fact]
+    public async Task Process_CallRow_ConnectedRecipient_SkipsThePush()
+    {
+        var h = new Harness();
+        h.Dms.Setup(d => d.GetParticipantIdsAsync(200)).ReturnsAsync(new List<long> { 9, 5 });
+        h.Presence.Setup(p => p.IsConnectedAsync(5, It.IsAny<CancellationToken>())).ReturnsAsync(true);
+
+        await h.Sut.ProcessAsync(h.Provider, CallRow());
+
+        h.VerifySendCount(Times.Never());
+    }
+
+    [Fact]
+    public async Task Process_CallRow_MutedOrBlockedCaller_SuppressesTheRecipient()
+    {
+        var h = new Harness();
+        h.Dms.Setup(d => d.GetParticipantIdsAsync(200)).ReturnsAsync(new List<long> { 9, 5, 6 });
+        h.Mutes.Setup(m => m.IsMutedAsync(5, 9, MuteTargetType.User, It.IsAny<long>()))
+            .ReturnsAsync(true);
+        h.Blocks.Setup(b => b.AreBlockedAsync(9, 6)).ReturnsAsync(true);
+
+        await h.Sut.ProcessAsync(h.Provider, CallRow());
+
+        h.VerifySendCount(Times.Never());
+    }
+
+    [Fact]
+    public async Task Process_CallPayload_CarriesRingTitleDmUrlAndCallTag()
+    {
+        var h = new Harness();
+        h.Dms.Setup(d => d.GetParticipantIdsAsync(200)).ReturnsAsync(new List<long> { 9, 5 });
+
+        await h.Sut.ProcessAsync(h.Provider, CallRow());
+
+        h.SentPayloads.Should().ContainSingle();
+        var payload = h.SentPayloads[0];
+        payload.Should().Contain("alice is calling you");
+        payload.Should().Contain("/app/dm/200");
+        payload.Should().Contain("call-200");
+        payload.Should().NotContain("channel-200", "a ring must not collapse into the conversation's message tag");
     }
 
     // ---- RunOnceAsync bookkeeping ----

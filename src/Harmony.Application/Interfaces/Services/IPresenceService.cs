@@ -26,10 +26,12 @@ public interface IPresenceService
     Task SetOfflineAsync(long userId, string connectionId, CancellationToken ct = default);
 
     /// <summary>
-    /// Refreshes the user's online TTL and last-heartbeat timestamp. Called
-    /// periodically by the client while connected. Never broadcasts.
+    /// Refreshes the user's online TTL and last-heartbeat timestamp — including the
+    /// per-connection liveness score, so ghost connection ids (API restarts, dead sockets)
+    /// age out and can't hold a user "online". Called periodically by each connected
+    /// client. Never broadcasts.
     /// </summary>
-    Task HeartbeatAsync(long userId, CancellationToken ct = default);
+    Task HeartbeatAsync(long userId, string connectionId, CancellationToken ct = default);
 
     /// <summary>
     /// Reads a user's current public effective status (online/away/dnd/offline;

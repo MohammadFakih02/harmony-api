@@ -49,6 +49,7 @@ public class HarmonyDbContext
     public DbSet<VoiceState> VoiceStates => Set<VoiceState>();
     public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
     public DbSet<MessageSearch> MessagesSearch => Set<MessageSearch>();
+    public DbSet<MessageReaction> MessageReactions => Set<MessageReaction>();
 
     protected override void OnModelCreating(ModelBuilder builder)
     {
