@@ -3,6 +3,7 @@ using Harmony.Application.DTOs.Requests;
 using Harmony.Application.DTOs.Responses;
 using Harmony.Application.Hubs;
 using Harmony.Application.Interfaces.Services;
+using Harmony.Application.Services;
 using Harmony.Domain.Domain.Entities;
 using Harmony.Domain.Domain.Enums;
 using Harmony.Domain.Interfaces.Repositories;
@@ -30,8 +31,12 @@ public class ChatHub : Hub<IChatClient>
     private readonly IPermissionService _permissions;
     private readonly IPresenceService _presence;
     private readonly IVoiceStateService _voice;
+    private readonly ILiveKitRoomService _liveKitRooms;
     private readonly IDirectMessageRepository _dms;
     private readonly IHubBroadcaster _broadcaster;
+    private readonly IPushOutboxRepository _pushOutbox;
+    private readonly IPushDispatchNudge _pushNudge;
+    private readonly ISnowflakeIdGenerator _snowflake;
     private readonly ILogger<ChatHub> _logger;
 
     public ChatHub(
@@ -41,8 +46,12 @@ public class ChatHub : Hub<IChatClient>
         IPermissionService permissions,
         IPresenceService presence,
         IVoiceStateService voice,
+        ILiveKitRoomService liveKitRooms,
         IDirectMessageRepository dms,
         IHubBroadcaster broadcaster,
+        IPushOutboxRepository pushOutbox,
+        IPushDispatchNudge pushNudge,
+        ISnowflakeIdGenerator snowflake,
         ILogger<ChatHub> logger
     )
     {
@@ -52,8 +61,12 @@ public class ChatHub : Hub<IChatClient>
         _permissions = permissions;
         _presence = presence;
         _voice = voice;
+        _liveKitRooms = liveKitRooms;
         _dms = dms;
         _broadcaster = broadcaster;
+        _pushOutbox = pushOutbox;
+        _pushNudge = pushNudge;
+        _snowflake = snowflake;
         _logger = logger;
     }
 
@@ -107,7 +120,7 @@ public class ChatHub : Hub<IChatClient>
     /// </summary>
     public async Task Heartbeat()
     {
-        await _presence.HeartbeatAsync(GetUserId());
+        await _presence.HeartbeatAsync(GetUserId(), Context.ConnectionId);
     }
 
     /// <summary>
@@ -298,7 +311,43 @@ public class ChatHub : Hub<IChatClient>
         if (!await CanConnectVoiceAsync(userId, channel))
             throw new HubException("You do not have permission to join this voice channel.");
 
+        // UserLimit: reject a join into a full guild channel — unless the joiner holds MoveMembers
+        // (Discord's bypass), or is already in the room (a reconnect must never bounce off the cap).
+        if (channel.GuildId is { } limitGuildId && channel.UserLimit is int limit && limit > 0)
+        {
+            var participants = await _voice.GetChannelParticipantsAsync(channelId);
+            if (
+                participants.Count >= limit
+                && participants.All(p => p.UserId != userId)
+                && !await _permissions.HasAsync(userId, limitGuildId, Permission.MoveMembers, channelId)
+            )
+                throw new HubException("This voice channel is full.");
+        }
+
         await _voice.JoinAsync(channelId, channel.GuildId, userId);
+
+        // Best-effort re-arm of a sticky server mute/deafen carried across a rejoin (the soft
+        // flags were re-seeded by JoinAsync; this re-applies the LiveKit-side enforcement).
+        if (channel.GuildId is not null)
+        {
+            var self = (await _voice.GetChannelParticipantsAsync(channelId)).FirstOrDefault(p =>
+                p.UserId == userId
+            );
+            if (self is { IsServerMuted: true })
+                await _liveKitRooms.SetMicrophoneMutedAsync(channelId, userId, muted: true);
+            if (self is { IsServerDeafened: true })
+                await _liveKitRooms.SetCanSubscribeAsync(channelId, userId, canSubscribe: false);
+        }
+
+        // A callee joining a ringing DM answers the call — end the ring so a later
+        // CancelCall (caller timeout racing the accept) can't post a missed-call notice.
+        if (
+            channel.GuildId is null
+            && await _voice.GetRingCallerAsync(channelId) is { } ringCaller
+            && ringCaller != userId
+        )
+            await _voice.TryEndRingAsync(channelId);
+
         _logger.LogDebug("User {UserId} joined voice {ChannelId}", userId, channelId);
     }
 
@@ -342,6 +391,96 @@ public class ChatHub : Hub<IChatClient>
     }
 
     /// <summary>
+    /// Sets/clears a member's server mute and/or server deafen (null = leave that flag alone).
+    /// Guild voice rooms only — the target's CURRENT room is resolved server-side (never trusted
+    /// from the client), each flag is gated on its own permission bit resolved against that room,
+    /// and the flags are sticky per guild member (a leave/rejoin cannot clear them). Soft layer =
+    /// Redis + VoiceStateUpdated broadcast; hard layer = LiveKit publish-grant/subscription
+    /// enforcement (fail-open — an API hiccup never blocks the moderation itself).
+    /// </summary>
+    public async Task ModerateVoiceState(long targetUserId, bool? serverMute, bool? serverDeafen)
+    {
+        if (serverMute is null && serverDeafen is null)
+            return;
+
+        var moderatorId = GetUserId();
+        var room = await _voice.GetCurrentRoomAsync(targetUserId);
+        if (room is not { GuildId: { } guildId } r)
+            throw new HubException("That user is not in a voice channel of this server.");
+
+        if (
+            serverMute is not null
+            && !await _permissions.HasAsync(moderatorId, guildId, Permission.MuteMembers, r.ChannelId)
+        )
+            throw new HubException("You do not have permission to server mute members.");
+        if (
+            serverDeafen is not null
+            && !await _permissions.HasAsync(moderatorId, guildId, Permission.DeafenMembers, r.ChannelId)
+        )
+            throw new HubException("You do not have permission to server deafen members.");
+
+        if (!await _voice.ModerateAsync(r.ChannelId, targetUserId, serverMute, serverDeafen))
+            return; // target left mid-flight — nothing to moderate anymore
+
+        if (serverMute is { } muted)
+            await _liveKitRooms.SetMicrophoneMutedAsync(r.ChannelId, targetUserId, muted);
+        if (serverDeafen is { } deafened)
+            await _liveKitRooms.SetCanSubscribeAsync(r.ChannelId, targetUserId, !deafened);
+
+        _logger.LogInformation(
+            "Voice moderation: user {ModeratorId} set mute={Mute} deafen={Deafen} on {TargetId} in channel {ChannelId}",
+            moderatorId,
+            serverMute,
+            serverDeafen,
+            targetUserId,
+            r.ChannelId
+        );
+    }
+
+    /// <summary>
+    /// Moves a member to another voice channel of the same guild. Gated on MoveMembers against the
+    /// SOURCE channel; the destination must be a voice channel the TARGET could connect to
+    /// themselves (a move can't smuggle someone past ConnectVoice). All flags travel with them.
+    /// The target's client gets a targeted VoiceForceMoved and reconnects media; a client that
+    /// ignores it is removed from the old LiveKit room server-side.
+    /// </summary>
+    public async Task MoveVoiceParticipant(long targetUserId, long toChannelId)
+    {
+        var moderatorId = GetUserId();
+        var room = await _voice.GetCurrentRoomAsync(targetUserId);
+        if (room is not { GuildId: { } guildId } r)
+            throw new HubException("That user is not in a voice channel of this server.");
+        if (r.ChannelId == toChannelId)
+            return;
+
+        var destination = await _channelRepository.GetByIdAsync(toChannelId);
+        if (destination is null || destination.GuildId != guildId || destination.Type != "voice")
+            throw new HubException("The destination must be a voice channel in the same server.");
+
+        if (!await _permissions.HasAsync(moderatorId, guildId, Permission.MoveMembers, r.ChannelId))
+            throw new HubException("You do not have permission to move members.");
+        if (!await _permissions.HasAsync(targetUserId, guildId, Permission.ConnectVoice, toChannelId))
+            throw new HubException("That user cannot connect to the destination channel.");
+
+        if (!await _voice.MoveAsync(targetUserId, r.ChannelId, toChannelId, guildId))
+            return; // target left mid-flight
+
+        await _broadcaster.BroadcastVoiceForceMovedAsync(
+            targetUserId,
+            new VoiceForceMovedPayload(r.ChannelId, toChannelId, guildId)
+        );
+        await _liveKitRooms.RemoveParticipantAsync(r.ChannelId, targetUserId);
+
+        _logger.LogInformation(
+            "Voice moderation: user {ModeratorId} moved {TargetId} from channel {FromId} to {ToId}",
+            moderatorId,
+            targetUserId,
+            r.ChannelId,
+            toChannelId
+        );
+    }
+
+    /// <summary>
     /// Whether a user may connect to voice in a channel: guild channel → ConnectVoice (overrides
     /// applied); guild-less DM → the caller must be a participant. Mirrors CanAccessChannelAsync but
     /// with the voice permission bit instead of ViewChannel.
@@ -350,6 +489,150 @@ public class ChatHub : Hub<IChatClient>
         channel.GuildId is { } guildId
             ? await _permissions.HasAsync(userId, guildId, Permission.ConnectVoice, channel.Id)
             : await _dms.IsParticipantAsync(channel.Id, userId);
+
+    // -------------------------------------------------------------------------
+    // DM/group-DM call ringing (Slice 4 — the caller is already in the room via
+    // JoinVoice; these methods only manage the ring: who's being alerted and how
+    // it ends. Ring state is one fail-open Redis key; see IVoiceStateService.)
+    // -------------------------------------------------------------------------
+
+    /// <summary>
+    /// Rings the other participants of a DM/group-DM the caller has already joined the voice room
+    /// of. Rejects guild channels, non-participants, callers not in the room, and rooms that already
+    /// have another participant (an ongoing call is joined, not re-rung). Also stages a "call"
+    /// push-outbox row so offline participants get a web-push ring — best-effort, like all push.
+    /// </summary>
+    public async Task StartCall(long channelId)
+    {
+        var userId = GetUserId();
+
+        var channel = await _channelRepository.GetByIdAsync(channelId);
+        if (channel is null || channel.GuildId is not null)
+            throw new HubException("Calls can only be started in a direct-message channel.");
+
+        if (!await _dms.IsParticipantAsync(channelId, userId))
+            throw new HubException("You are not a participant of this conversation.");
+
+        if ((await _voice.GetCurrentRoomAsync(userId))?.ChannelId != channelId)
+            throw new HubException("Join the call's voice room before ringing.");
+
+        if ((await _voice.GetChannelParticipantsAsync(channelId)).Any(p => p.UserId != userId))
+            throw new HubException("A call is already in progress.");
+
+        // NX: a live ring for this channel makes this a duplicate — silently ignore.
+        if (!await _voice.TryBeginRingAsync(channelId, userId))
+            return;
+
+        var recipients = (await _dms.GetParticipantIdsAsync(channelId))
+            .Where(id => id != userId)
+            .ToList();
+        if (recipients.Count == 0)
+            return;
+
+        await _broadcaster.BroadcastIncomingCallAsync(
+            recipients,
+            new IncomingCallPayload(
+                channelId,
+                userId,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+            )
+        );
+
+        try
+        {
+            var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            await _pushOutbox.AddAsync(
+                new PushOutboxMessage
+                {
+                    Id = _snowflake.NextId(),
+                    Kind = PushKind.Call,
+                    RecipientId = 0,
+                    ActorId = userId,
+                    ChannelId = channelId,
+                    NextAttemptAt = now,
+                    CreatedAt = now,
+                }
+            );
+            await _pushOutbox.SaveChangesAsync();
+            _pushNudge.Signal();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "StartCall: push-outbox staging failed for channel {ChannelId} — ring sent, continuing",
+                channelId
+            );
+        }
+
+        _logger.LogDebug("User {UserId} started ringing channel {ChannelId}", userId, channelId);
+    }
+
+    /// <summary>
+    /// Ends the caller's own ring (manual hang-up while ringing, or the client's 60s timeout).
+    /// Only the user who started the live ring may cancel — anyone else silently no-ops (typing-signal
+    /// posture; also what makes the missed-call notice unspoofable). When <paramref name="missed"/>
+    /// and the ring was still live with nobody else in the room, posts a "missed_call" system message
+    /// through the normal message pipeline.
+    /// </summary>
+    public async Task CancelCall(long channelId, bool missed)
+    {
+        var userId = GetUserId();
+
+        if (await _voice.GetRingCallerAsync(channelId) != userId)
+            return; // no live ring, or not yours to cancel
+
+        var wasLive = await _voice.TryEndRingAsync(channelId);
+
+        var recipients = (await _dms.GetParticipantIdsAsync(channelId))
+            .Where(id => id != userId)
+            .ToList();
+        if (recipients.Count > 0)
+            await _broadcaster.BroadcastCallCancelledAsync(
+                recipients,
+                new CallCancelledPayload(channelId)
+            );
+
+        var anyoneElseJoined = (await _voice.GetChannelParticipantsAsync(channelId)).Any(p =>
+            p.UserId != userId
+        );
+        if (missed && wasLive && !anyoneElseJoined)
+            await _messageService.PublishSystemMessageAsync(null, channelId, userId, "missed_call", "");
+
+        _logger.LogDebug("User {UserId} cancelled ring on channel {ChannelId}", userId, channelId);
+    }
+
+    /// <summary>
+    /// Declines a live ring: notifies the caller (their client hangs up in a 1:1; informational in a
+    /// group) and dismisses the decliner's own other tabs. In a 1:1 the ring itself ends too — no one
+    /// is left to answer; in a group the others keep ringing. Silent no-op when there's no live ring
+    /// or the caller declines their own ring.
+    /// </summary>
+    public async Task DeclineCall(long channelId)
+    {
+        var userId = GetUserId();
+
+        if (!await _dms.IsParticipantAsync(channelId, userId))
+            return;
+
+        var ringCaller = await _voice.GetRingCallerAsync(channelId);
+        if (ringCaller is null || ringCaller == userId)
+            return;
+
+        await _broadcaster.BroadcastCallDeclinedAsync(
+            ringCaller.Value,
+            new CallDeclinedPayload(channelId, userId)
+        );
+        await _broadcaster.BroadcastCallCancelledAsync(
+            [userId],
+            new CallCancelledPayload(channelId)
+        );
+
+        if ((await _dms.GetParticipantIdsAsync(channelId)).Count == 2)
+            await _voice.TryEndRingAsync(channelId);
+
+        _logger.LogDebug("User {UserId} declined ring on channel {ChannelId}", userId, channelId);
+    }
 
     // -------------------------------------------------------------------------
     // Group name helpers — used by HubBroadcaster too

@@ -164,10 +164,13 @@ public class PushNotificationService : BackgroundService
             if (pref is { PushEnabled: false })
                 continue;
 
-            // "dm" rows never went through NotificationService's suppression chain (there is
-            // no Notification row for a plain DM message) — apply mute/block here. The other
-            // kinds already survived the full chain when their row was staged.
-            if (row.Kind == PushKind.Dm && await IsDmSuppressedAsync(services, row, recipientId))
+            // "dm"/"call" rows never went through NotificationService's suppression chain
+            // (there is no Notification row for a plain DM message or a ring) — apply
+            // mute/block here. The other kinds already survived the full chain when staged.
+            if (
+                row.Kind is PushKind.Dm or PushKind.Call
+                && await IsDmSuppressedAsync(services, row, recipientId)
+            )
                 continue;
 
             var subs = await subscriptions.GetForUserAsync(recipientId);
@@ -196,7 +199,7 @@ public class PushNotificationService : BackgroundService
         PushOutboxMessage row
     )
     {
-        if (row.Kind != PushKind.Dm)
+        if (row.Kind is not (PushKind.Dm or PushKind.Call))
             return [row.RecipientId];
 
         if (row.ChannelId is not { } channelId)
@@ -275,6 +278,7 @@ public class PushNotificationService : BackgroundService
             PushKind.Mention => ($"{actorName} mentioned you in {place}", preview ?? ""),
             PushKind.Reply => ($"{actorName} replied to you in {place}", preview ?? ""),
             PushKind.FriendRequest => ($"{actorName} sent you a friend request", ""),
+            PushKind.Call => ($"{actorName} is calling you", "Incoming call — tap to open Harmony"),
             _ => (actorName, preview ?? "Sent you a message"),
         };
 
@@ -289,8 +293,11 @@ public class PushNotificationService : BackgroundService
 
         // Same-tag notifications replace each other in the OS tray — repeated pushes from
         // one conversation (and at-least-once duplicates) collapse instead of stacking.
+        // Rings get their own tag so a later message push can't swallow "X is calling you".
         var tag = row.ChannelId is { } tagChannel
-            ? $"channel-{tagChannel}"
+            ? row.Kind == PushKind.Call
+                ? $"call-{tagChannel}"
+                : $"channel-{tagChannel}"
             : $"friend-{row.ActorId}";
 
         return JsonSerializer.Serialize(new { title, body, url, tag });

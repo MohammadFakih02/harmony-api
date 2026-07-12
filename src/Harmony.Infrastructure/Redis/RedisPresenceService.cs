@@ -8,7 +8,10 @@ namespace Harmony.Infrastructure.Redis;
 
 /// <summary>
 /// Redis-backed <see cref="IPresenceService"/>. Tracks each user's active SignalR
-/// connections in a SET (multi-tab/device aware) and resolves a public <em>effective</em>
+/// connections in a ZSET scored by last-heartbeat (multi-tab/device aware; stale entries —
+/// ghost ids left behind by an API restart or a dead socket — age out and are pruned on
+/// every liveness check, so they can never hold a user "online" or suppress the
+/// online/offline broadcasts) and resolves a public <em>effective</em>
 /// status from three inputs:
 ///   • <b>preferred</b> — the user's durable choice (online/away/dnd/invisible), cached in
 ///     <c>user:{id}:preferred</c> with Postgres as the source of truth.
@@ -26,6 +29,11 @@ public sealed class RedisPresenceService : IPresenceService
 {
     private const string OnlineZSetKey = "presence:online";
     private static readonly TimeSpan StatusTtl = TimeSpan.FromSeconds(60);
+
+    // A connection with no heartbeat for this long is a ghost (two missed 45s beats).
+    // Ghosts appear when OnDisconnectedAsync never fires for a connection id — an API
+    // restart being the common case — and must not count toward "is this user connected".
+    private static readonly TimeSpan ConnectionLiveness = TimeSpan.FromSeconds(90);
 
     private readonly IRedisConnectionProvider _redisProvider;
     private readonly IHubBroadcaster _broadcaster;
@@ -69,7 +77,15 @@ public sealed class RedisPresenceService : IPresenceService
         try
         {
             var db = _redisProvider.Connection!.GetDatabase();
-            await db.SetAddAsync(SessionKey(userId), connectionId);
+            // One-time migration: pre-liveness deployments stored sessions as a plain SET —
+            // replace it rather than crash every ZSET op with WRONGTYPE.
+            if (await db.KeyTypeAsync(SessionKey(userId)) == RedisType.Set)
+                await db.KeyDeleteAsync(SessionKey(userId));
+            await db.SortedSetAddAsync(
+                SessionKey(userId),
+                connectionId,
+                DateTimeOffset.UtcNow.ToUnixTimeSeconds()
+            );
 
             var preferred = await GetPreferredAsync(db, userId);
             var idle = await IsIdleAsync(db, userId);
@@ -86,7 +102,7 @@ public sealed class RedisPresenceService : IPresenceService
                 DateTimeOffset.UtcNow.ToUnixTimeSeconds()
             );
 
-            var connectionCount = await db.SetLengthAsync(SessionKey(userId));
+            var connectionCount = await CountLiveConnectionsAsync(db, userId);
             if (connectionCount != 1)
                 return; // already had another tab/device open — no status change
 
@@ -138,9 +154,9 @@ public sealed class RedisPresenceService : IPresenceService
         try
         {
             var db = _redisProvider.Connection!.GetDatabase();
-            await db.SetRemoveAsync(SessionKey(userId), connectionId);
+            await db.SortedSetRemoveAsync(SessionKey(userId), connectionId);
 
-            var remaining = await db.SetLengthAsync(SessionKey(userId));
+            var remaining = await CountLiveConnectionsAsync(db, userId);
             if (remaining != 0)
                 return; // other tabs/devices still connected — stay online
 
@@ -156,7 +172,7 @@ public sealed class RedisPresenceService : IPresenceService
         }
     }
 
-    public async Task HeartbeatAsync(long userId, CancellationToken ct = default)
+    public async Task HeartbeatAsync(long userId, string connectionId, CancellationToken ct = default)
     {
         if (!_redisProvider.IsConnected)
             return;
@@ -164,6 +180,14 @@ public sealed class RedisPresenceService : IPresenceService
         try
         {
             var db = _redisProvider.Connection!.GetDatabase();
+
+            // Refresh THIS connection's liveness score — the per-connection dead-man's switch
+            // that lets ghost ids age out of the session ZSET.
+            await db.SortedSetAddAsync(
+                SessionKey(userId),
+                connectionId,
+                DateTimeOffset.UtcNow.ToUnixTimeSeconds()
+            );
 
             // Recompute effective so a keep-alive can't clobber an away/dnd/invisible
             // state back to a literal "online".
@@ -208,7 +232,7 @@ public sealed class RedisPresenceService : IPresenceService
 
             // Only touch the public status key + broadcast if the user is actually
             // connected — otherwise we'd manufacture presence for an offline user.
-            var connected = await db.SetLengthAsync(SessionKey(userId)) > 0;
+            var connected = await CountLiveConnectionsAsync(db, userId) > 0;
             if (!connected)
                 return;
 
@@ -262,7 +286,7 @@ public sealed class RedisPresenceService : IPresenceService
             if (preferred != PresenceStatus.Online)
                 return;
 
-            var connected = await db.SetLengthAsync(SessionKey(userId)) > 0;
+            var connected = await CountLiveConnectionsAsync(db, userId) > 0;
             if (!connected)
                 return;
 
@@ -319,7 +343,7 @@ public sealed class RedisPresenceService : IPresenceService
         try
         {
             var db = _redisProvider.Connection!.GetDatabase();
-            return await db.SetLengthAsync(SessionKey(userId)) > 0;
+            return await CountLiveConnectionsAsync(db, userId) > 0;
         }
         catch (Exception ex)
         {
@@ -411,7 +435,7 @@ public sealed class RedisPresenceService : IPresenceService
             await db.StringSetAsync(StatusMessageKey(userId), normalized ?? ""); // empty = none
 
             // Only broadcast for a connected user — nobody's watching an offline one live.
-            var connected = await db.SetLengthAsync(SessionKey(userId)) > 0;
+            var connected = await CountLiveConnectionsAsync(db, userId) > 0;
             if (!connected)
                 return;
 
@@ -758,6 +782,25 @@ public sealed class RedisPresenceService : IPresenceService
     public static string StatusKey(long userId) => $"user:{userId}:status";
 
     public static string SessionKey(long userId) => $"session:{userId}";
+
+    /// <summary>
+    /// Counts the user's LIVE connections, pruning ghosts first: any session entry whose
+    /// last-heartbeat score is older than <see cref="ConnectionLiveness"/> is removed before
+    /// counting. This is what makes logout-goes-offline reliable across API restarts — a
+    /// ghost id (whose OnDisconnectedAsync never ran) would otherwise keep the count non-zero
+    /// forever, suppressing the offline broadcast (and the next online one, per the ==1 gate).
+    /// </summary>
+    private static async Task<long> CountLiveConnectionsAsync(IDatabase db, long userId)
+    {
+        var cutoff =
+            DateTimeOffset.UtcNow.ToUnixTimeSeconds() - (long)ConnectionLiveness.TotalSeconds;
+        await db.SortedSetRemoveRangeByScoreAsync(
+            SessionKey(userId),
+            double.NegativeInfinity,
+            cutoff
+        );
+        return await db.SortedSetLengthAsync(SessionKey(userId));
+    }
 
     public static string PreferredKey(long userId) => $"user:{userId}:preferred";
 

@@ -59,6 +59,20 @@ public class VoiceController : ControllerBase
         if (!await CanConnectVoiceAsync(userId, channel))
             return Forbid();
 
+        // UserLimit mirror of ChatHub.JoinVoice: a full guild channel refuses the token too, so a
+        // client can't sidestep the hub gate by connecting media directly. Same exemptions —
+        // already in the room (reconnect) or holding MoveMembers (Discord's bypass).
+        if (channel.GuildId is { } limitGuildId && channel.UserLimit is int limit && limit > 0)
+        {
+            var participants = await _voice.GetChannelParticipantsAsync(channelId);
+            if (
+                participants.Count >= limit
+                && participants.All(p => p.UserId != userId)
+                && !await _permissions.HasAsync(userId, limitGuildId, Permission.MoveMembers, channelId)
+            )
+                return Conflict(new { error = "This voice channel is full." });
+        }
+
         if (!_tokens.IsConfigured)
             return StatusCode(
                 StatusCodes.Status503ServiceUnavailable,
@@ -101,16 +115,19 @@ public class VoiceController : ControllerBase
 
     /// <summary>
     /// The LiveKit sources this user may publish in this channel — the hard enforcement layer
-    /// (LiveKit Cloud rejects a publish outside the token's grant). Guild: mic always (Speak
-    /// enforcement is deferred with voice moderation), camera behind UseVideo, screen behind
-    /// Stream — channel overrides applied. DM/group-DM: everything (permissions are guild-scoped).
+    /// (LiveKit Cloud rejects a publish outside the token's grant). Guild: mic behind Speak,
+    /// camera behind UseVideo, screen behind Stream — channel overrides applied. A Speak-less
+    /// member joins listen-only (the client's mic-enable fails and the call stays receive-side).
+    /// DM/group-DM: everything (permissions are guild-scoped).
     /// </summary>
     private async Task<IReadOnlyList<string>> ResolvePublishSourcesAsync(long userId, Channel channel)
     {
         if (channel.GuildId is not { } guildId)
             return LiveKitTrackSources.All;
 
-        var sources = new List<string> { LiveKitTrackSources.Microphone };
+        var sources = new List<string>();
+        if (await _permissions.HasAsync(userId, guildId, Permission.Speak, channel.Id))
+            sources.Add(LiveKitTrackSources.Microphone);
         if (await _permissions.HasAsync(userId, guildId, Permission.UseVideo, channel.Id))
             sources.Add(LiveKitTrackSources.Camera);
         if (await _permissions.HasAsync(userId, guildId, Permission.Stream, channel.Id))

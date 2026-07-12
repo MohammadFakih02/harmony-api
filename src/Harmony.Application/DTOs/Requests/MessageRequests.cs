@@ -15,3 +15,7 @@ public record SendMessageRequest(
 public record EditMessageRequest(string Content);
 
 public record DeleteMessageRequest();
+
+/// <summary>Body for adding a reaction — the emoji travels in the body (never the route: Unicode in a
+/// URL segment is fragile). Removal passes the emoji as a query-string parameter instead.</summary>
+public record ReactionRequest(string Emoji);

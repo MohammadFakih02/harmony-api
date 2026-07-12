@@ -308,3 +308,33 @@ public class MessageSearchConfiguration : IEntityTypeConfiguration<MessageSearch
         builder.HasIndex(m => new { m.ChannelId, m.CreatedAt });
     }
 }
+
+public class MessageReactionConfiguration : IEntityTypeConfiguration<MessageReaction>
+{
+    public void Configure(EntityTypeBuilder<MessageReaction> builder)
+    {
+        builder.ToTable("MessageReactions");
+        // Composite PK: one row per (message, emoji, user) — a re-reaction upserts the same row.
+        builder.HasKey(r => new
+        {
+            r.MessageId,
+            r.Emoji,
+            r.UserId,
+        });
+        builder.Property(r => r.MessageId).HasColumnName("message_id");
+        builder.Property(r => r.ChannelId).HasColumnName("channel_id");
+        builder.Property(r => r.Emoji).HasColumnName("emoji").HasMaxLength(64).IsRequired();
+        builder.Property(r => r.UserId).HasColumnName("user_id");
+        builder.Property(r => r.CreatedAt).HasColumnName("created_at");
+
+        // message_id/channel_id are Scylla snowflakes — no FK. Only the user is a real Postgres row.
+        builder
+            .HasOne(r => r.User)
+            .WithMany()
+            .HasForeignKey(r => r.UserId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        // Page aggregation reads by message id.
+        builder.HasIndex(r => r.MessageId);
+    }
+}

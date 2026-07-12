@@ -62,6 +62,9 @@ public class ChannelsController : ControllerBase
                 new { error = "Invalid channel type. Must be text, voice, or category." }
             );
 
+        if (ValidateVoiceSettings(request.Bitrate, request.UserLimit) is { } voiceError)
+            return BadRequest(new { error = voiceError });
+
         var channel = new Channel
         {
             Id = _snowflake.NextId(),
@@ -89,6 +92,19 @@ public class ChannelsController : ControllerBase
         return CreatedAtAction(nameof(GetById), new { guildId, channelId = channel.Id }, response);
     }
 
+    /// <summary>
+    /// Range check for the voice-only settings (both are voice-gated where applied). Bitrate is
+    /// bps, 8–96 kbps; user limit 0 (no limit) to 99, Discord's cap.
+    /// </summary>
+    private static string? ValidateVoiceSettings(int? bitrate, int? userLimit)
+    {
+        if (bitrate is int b && (b < 8000 || b > 96000))
+            return "Bitrate must be between 8000 and 96000 bps.";
+        if (userLimit is int u && (u < 0 || u > 99))
+            return "User limit must be between 0 (no limit) and 99.";
+        return null;
+    }
+
     // PATCH /api/guilds/{guildId}/channels/{channelId}
     [HttpPatch("{channelId:long}")]
     [RequirePermission(Permission.ManageChannels)]
@@ -102,6 +118,9 @@ public class ChannelsController : ControllerBase
         if (channel is null || channel.GuildId != guildId)
             return NotFound();
 
+        if (ValidateVoiceSettings(request.Bitrate, request.UserLimit) is { } voiceError)
+            return BadRequest(new { error = voiceError });
+
         if (request.Name is not null)
             channel.Name = request.Name;
         if (request.Topic is not null)
@@ -113,7 +132,9 @@ public class ChannelsController : ControllerBase
         if (request.Bitrate is not null && channel.Type == "voice")
             channel.Bitrate = request.Bitrate;
         if (request.UserLimit is not null && channel.Type == "voice")
-            channel.UserLimit = request.UserLimit;
+            // 0 = "no limit" and clears the column — null keeps PATCH no-change semantics, so 0 is
+            // the only way to remove a limit once set.
+            channel.UserLimit = request.UserLimit == 0 ? null : request.UserLimit;
         if (request.CategoryId is not null)
             channel.CategoryId = request.CategoryId;
 
@@ -277,6 +298,7 @@ public class ChannelsController : ControllerBase
             CanManageMessages: Has(Permission.ManageMessages),
             CanManageChannels: Has(Permission.ManageChannels),
             CanPin: canView && Has(Permission.PinMessages),
+            CanReact: canView && Has(Permission.AddReactions),
             CanUseVideo: canView && Has(Permission.UseVideo),
             CanStream: canView && Has(Permission.Stream),
             TimedOut: timedOut

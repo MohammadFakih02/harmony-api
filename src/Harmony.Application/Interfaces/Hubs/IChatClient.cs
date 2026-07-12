@@ -217,8 +217,47 @@ public interface IChatClient
     /// <summary>Fired when a user leaves a voice channel/DM call (manually, disconnect, or ghost sweep).</summary>
     Task VoiceParticipantLeft(VoiceParticipantLeftPayload payload);
 
-    /// <summary>Fired when a participant's voice flags change (mute/deafen/video/screenshare toggles).</summary>
+    /// <summary>Fired when a participant's voice flags change (mute/deafen/video/screenshare toggles,
+    /// or a moderator setting/clearing a server mute/deafen).</summary>
     Task VoiceStateUpdated(VoiceParticipantPayload payload);
+
+    /// <summary>
+    /// Fired to a user a moderator moved to another voice channel (targeted via Clients.Users —
+    /// their Redis state has already moved). The client reconnects media to the new channel with a
+    /// fresh token; a client that ignores it is cut from the old room server-side anyway.
+    /// </summary>
+    Task VoiceForceMoved(VoiceForceMovedPayload payload);
+
+    /// <summary>
+    /// Fired when a DM/group-DM call starts ringing. Sent via Clients.Users to every participant
+    /// except the caller (who is already in the room) — the ring is user-targeted, not a channel
+    /// broadcast, because callees haven't joined anything yet. Ephemeral: a missed ring simply
+    /// expires (the offline arm is a web push staged through the PushOutbox instead).
+    /// </summary>
+    Task IncomingCall(IncomingCallPayload payload);
+
+    /// <summary>
+    /// Fired when a ring ends unanswered — the caller cancelled/timed out, or (to a decliner's own
+    /// other tabs) the user declined elsewhere. Recipients dismiss the incoming-call UI.
+    /// </summary>
+    Task CallCancelled(CallCancelledPayload payload);
+
+    /// <summary>
+    /// Fired to the caller when a callee declines the ring. In a 1:1 DM the caller's client ends
+    /// the call; in a group DM it is informational (others keep ringing).
+    /// </summary>
+    Task CallDeclined(CallDeclinedPayload payload);
+
+    /// <summary>
+    /// Fired when a user adds an emoji reaction to a message. Broadcast to the channel group; the
+    /// client applies a delta to that emoji's pill (++count, and sets "me" when the actor is itself),
+    /// so no message refetch is needed. A message outside the loaded window is ignored.
+    /// </summary>
+    Task ReactionAdded(ReactionPayload payload);
+
+    /// <summary>Fired when a user removes their reaction. Broadcast to the channel group; the client
+    /// applies the inverse delta (--count, drops the pill at zero).</summary>
+    Task ReactionRemoved(ReactionPayload payload);
 }
 
 /// <summary>Minimal delete notification — no content, just identity. GuildId is null for DMs.</summary>
@@ -345,6 +384,8 @@ public record GuildInvitesChangedPayload(long GuildId);
 /// <summary>
 /// A participant's current state in a voice room. Carries the full flag set so applying a join or a
 /// state-change never needs a follow-up fetch. <see cref="GuildId"/> is null for a DM/group-DM call.
+/// Server flags (<see cref="IsServerMuted"/>/<see cref="IsServerDeafened"/>) are moderator-imposed
+/// and orthogonal to the self-reported flags — only a moderator clears them.
 /// </summary>
 public record VoiceParticipantPayload(
     long ChannelId,
@@ -354,8 +395,29 @@ public record VoiceParticipantPayload(
     bool IsDeafened,
     bool IsVideoOn,
     bool IsStreaming,
+    bool IsServerMuted,
+    bool IsServerDeafened,
     long JoinedAt
 );
 
 /// <summary>A participant left a voice room. Identity only — clients drop them from the roster.</summary>
 public record VoiceParticipantLeftPayload(long ChannelId, long? GuildId, long UserId);
+
+/// <summary>You were moved to another voice channel by a moderator — reconnect media there.</summary>
+public record VoiceForceMovedPayload(long FromChannelId, long ToChannelId, long? GuildId);
+
+/// <summary>A DM/group-DM call is ringing. <see cref="StartedAt"/> is unix-ms.</summary>
+public record IncomingCallPayload(long ChannelId, long CallerId, long StartedAt);
+
+/// <summary>A ring ended unanswered (caller cancelled/timed out, or you declined on another tab).</summary>
+public record CallCancelledPayload(long ChannelId);
+
+/// <summary>A callee declined the ring; sent to the caller. <see cref="UserId"/> is the decliner.</summary>
+public record CallDeclinedPayload(long ChannelId, long UserId);
+
+/// <summary>
+/// A reaction was added/removed on a message. Carries just the identity + the emoji token; the client
+/// recomputes the pill count/highlight locally (it knows its own id). <see cref="GuildId"/> is null
+/// for a DM. Reused for both ReactionAdded and ReactionRemoved.
+/// </summary>
+public record ReactionPayload(long MessageId, long ChannelId, long? GuildId, string Emoji, long UserId);

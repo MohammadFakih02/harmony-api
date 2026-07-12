@@ -1,6 +1,10 @@
+using Harmony.Application.Interfaces.Services;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace Harmony.IntegrationTests.Infrastructure;
 
@@ -9,6 +13,13 @@ public class HarmonyWebApplicationFactory : WebApplicationFactory<Program>
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment("Test");
+        builder.ConfigureTestServices(services =>
+        {
+            // The dummy LiveKit host is unreachable — hard voice moderation must be a no-op in
+            // tests, not an HTTP call that waits out a timeout (it is fail-open in prod anyway).
+            services.RemoveAll<ILiveKitRoomService>();
+            services.AddSingleton<ILiveKitRoomService, NoOpLiveKitRoomService>();
+        });
         builder.ConfigureAppConfiguration(
             (context, config) =>
             {
@@ -60,5 +71,28 @@ public class HarmonyWebApplicationFactory : WebApplicationFactory<Program>
                 );
             }
         );
+    }
+
+    private sealed class NoOpLiveKitRoomService : ILiveKitRoomService
+    {
+        public Task SetMicrophoneMutedAsync(
+            long channelId,
+            long userId,
+            bool muted,
+            CancellationToken ct = default
+        ) => Task.CompletedTask;
+
+        public Task SetCanSubscribeAsync(
+            long channelId,
+            long userId,
+            bool canSubscribe,
+            CancellationToken ct = default
+        ) => Task.CompletedTask;
+
+        public Task RemoveParticipantAsync(
+            long channelId,
+            long userId,
+            CancellationToken ct = default
+        ) => Task.CompletedTask;
     }
 }

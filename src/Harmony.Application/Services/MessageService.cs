@@ -30,6 +30,7 @@ public class MessageService : IMessageService
     private readonly IHubBroadcaster _broadcaster;
     private readonly IRoleRepository _roles;
     private readonly ISlowmodeGate _slowmode;
+    private readonly IMessageReactionRepository _reactions;
 
     /// <summary>Max attachments per message (Discord parity).</summary>
     public const int MaxAttachments = 10;
@@ -53,7 +54,8 @@ public class MessageService : IMessageService
         IAuditLogService auditLog,
         IHubBroadcaster broadcaster,
         IRoleRepository roles,
-        ISlowmodeGate slowmode
+        ISlowmodeGate slowmode,
+        IMessageReactionRepository reactions
     )
     {
         _channelRepository = channelRepository;
@@ -72,6 +74,7 @@ public class MessageService : IMessageService
         _broadcaster = broadcaster;
         _roles = roles;
         _slowmode = slowmode;
+        _reactions = reactions;
     }
 
     /// <summary>
@@ -531,11 +534,17 @@ public class MessageService : IMessageService
                     ct
                 );
 
-            var userIds = messages.Select(m => m.UserId).Distinct();
+            var messageList = messages as IReadOnlyList<Message> ?? messages.ToList();
+            var userIds = messageList.Select(m => m.UserId).Distinct();
             var users = await _userRepository.GetByIdsAsync(userIds);
+            var reactions = await _reactions.GetSummariesAsync(
+                messageList.Select(m => m.MessageId),
+                userId,
+                ct
+            );
 
             return new ChannelMessagesResponse(
-                messages.Select(m => MapMessage(m, guildId, users)),
+                messageList.Select(m => MapMessage(m, guildId, users, reactions)),
                 Degraded: false
             );
         }
@@ -554,10 +563,15 @@ public class MessageService : IMessageService
     private static MessageResponse MapMessage(
         Message m,
         long? guildId,
-        Dictionary<long, User> users
+        Dictionary<long, User> users,
+        Dictionary<long, List<ReactionSummary>> reactions
     )
     {
         users.TryGetValue(m.UserId, out var user);
+        var msgReactions =
+            !m.IsDeleted && reactions.TryGetValue(m.MessageId, out var rs)
+                ? rs.Select(r => new ReactionSummaryResponse(r.Emoji, r.Count, r.MeReacted)).ToList()
+                : (IReadOnlyList<ReactionSummaryResponse>)[];
         return new MessageResponse(
             MessageId: m.MessageId,
             ChannelId: m.ChannelId,
@@ -575,7 +589,8 @@ public class MessageService : IMessageService
             SentAt: ((DateTimeOffset)m.CreatedAt).ToUnixTimeMilliseconds(),
             EditedAt: m.EditedAt.HasValue
                 ? ((DateTimeOffset)m.EditedAt.Value).ToUnixTimeMilliseconds()
-                : null
+                : null,
+            Reactions: msgReactions
         );
     }
 
@@ -708,11 +723,16 @@ public class MessageService : IMessageService
         }
 
         var users = await _userRepository.GetByIdsAsync(results.Select(r => r.Message.UserId).Distinct());
+        var reactions = await _reactions.GetSummariesAsync(
+            results.Select(r => r.Message.MessageId),
+            userId,
+            ct
+        );
 
         // GetPinnedAsync already returns pinned_at DESC (most-recently-pinned first) — preserve it.
         return results
             .Select(r => new PinnedMessageResponse(
-                Message: MapMessage(r.Message, guildId, users),
+                Message: MapMessage(r.Message, guildId, users, reactions),
                 PinnedBy: r.Pin.PinnedBy,
                 PinnedAt: r.Pin.PinnedAt
             ))
@@ -739,6 +759,136 @@ public class MessageService : IMessageService
             if (!await _permissions.HasAsync(userId, gid, Permission.PinMessages, channelId, ct))
                 throw new UnauthorizedAccessException(
                     "You do not have permission to pin messages in this channel."
+                );
+        }
+        else
+        {
+            await GetDmChannelOrThrowAsync(channelId);
+            if (!await _dms.IsParticipantAsync(channelId, userId))
+                throw new UnauthorizedAccessException(
+                    "You are not a participant of this conversation."
+                );
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Reactions
+    // -------------------------------------------------------------------------
+
+    /// <summary>Max stored length of a reaction token (a Unicode grapheme now; <c>custom:{id}</c> later).</summary>
+    private const int MaxEmojiLength = 64;
+
+    public async Task AddReactionAsync(
+        long userId,
+        long? guildId,
+        long channelId,
+        long messageId,
+        string emoji,
+        CancellationToken ct = default
+    )
+    {
+        emoji = ValidateEmoji(emoji);
+        await AuthorizeReactionActionAsync(userId, guildId, channelId, ct);
+        await EnsureReactableMessageAsync(channelId, messageId, ct);
+
+        await _reactions.AddAsync(
+            messageId,
+            channelId,
+            emoji,
+            userId,
+            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            ct
+        );
+
+        await _broadcaster.BroadcastReactionAddedAsync(
+            new ReactionPayload(messageId, channelId, guildId, emoji, userId),
+            ct
+        );
+    }
+
+    public async Task RemoveReactionAsync(
+        long userId,
+        long? guildId,
+        long channelId,
+        long messageId,
+        string emoji,
+        CancellationToken ct = default
+    )
+    {
+        emoji = ValidateEmoji(emoji);
+        await AuthorizeReactionActionAsync(userId, guildId, channelId, ct);
+
+        await _reactions.RemoveAsync(messageId, emoji, userId, ct);
+
+        await _broadcaster.BroadcastReactionRemovedAsync(
+            new ReactionPayload(messageId, channelId, guildId, emoji, userId),
+            ct
+        );
+    }
+
+    /// <summary>
+    /// Validates a reaction token. v1 accepts a single Unicode emoji grapheme: non-empty, no
+    /// whitespace, ≤ 64 chars, and NOT the reserved <c>custom:</c> prefix (custom guild emoji land in
+    /// slice 3). Returns the token unchanged so callers persist exactly what was validated.
+    /// </summary>
+    private static string ValidateEmoji(string emoji)
+    {
+        if (string.IsNullOrWhiteSpace(emoji))
+            throw new ArgumentException("A reaction emoji is required.");
+        if (emoji.Length > MaxEmojiLength)
+            throw new ArgumentException("That reaction emoji is not valid.");
+        if (emoji.Any(char.IsWhiteSpace))
+            throw new ArgumentException("That reaction emoji is not valid.");
+        // "custom:{id}" is reserved for custom guild emoji (slice 3); reject it until then.
+        if (emoji.StartsWith("custom:", StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException("Custom emoji reactions are not supported yet.");
+        return emoji;
+    }
+
+    /// <summary>Asserts the target message exists, is in this channel, and is not deleted.</summary>
+    private async Task EnsureReactableMessageAsync(
+        long channelId,
+        long messageId,
+        CancellationToken ct
+    )
+    {
+        var message = await _messageRepository.GetByIdAsync(messageId, ct);
+        if (message is null)
+            throw new KeyNotFoundException("Message not found.");
+        if (message.ChannelId != channelId)
+            throw new UnauthorizedAccessException(
+                "Message does not belong to the specified channel."
+            );
+        if (message.IsDeleted)
+            throw new ArgumentException("You cannot react to a deleted message.");
+    }
+
+    /// <summary>
+    /// Authorizes an add/remove reaction: guild → the channel must resolve
+    /// <see cref="Permission.ViewChannel"/> + <see cref="Permission.AddReactions"/> (overrides apply;
+    /// owners/administrators resolve to all bits); DM/group → the caller must be a participant. Throws
+    /// 404/403 as appropriate. Removing your own reaction goes through the same gate — losing
+    /// AddReactions shouldn't strand a reaction you already placed in practice, but it keeps the
+    /// authorization symmetric with the pin model.
+    /// </summary>
+    private async Task AuthorizeReactionActionAsync(
+        long userId,
+        long? guildId,
+        long channelId,
+        CancellationToken ct
+    )
+    {
+        if (guildId is { } gid)
+        {
+            var channel = await _channelRepository.GetByIdAndGuildIdAsync(channelId, gid);
+            if (channel is null)
+                throw new KeyNotFoundException("Channel not found.");
+
+            const long mask = (long)(Permission.ViewChannel | Permission.AddReactions);
+            var bits = await _permissions.ResolveAsync(userId, gid, channelId, ct);
+            if ((bits & mask) != mask)
+                throw new UnauthorizedAccessException(
+                    "You do not have permission to react in this channel."
                 );
         }
         else

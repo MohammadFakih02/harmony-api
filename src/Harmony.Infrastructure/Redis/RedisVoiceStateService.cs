@@ -15,6 +15,8 @@ namespace Harmony.Infrastructure.Redis;
 ///   • <c>voice:channel:{channelId}</c> HASH — field = userId, value = the participant's state JSON.
 ///   • <c>voice:user:{userId}</c> STRING — the channelId of the room the user is currently in.
 ///   • <c>voice:users</c> SET — every userId currently in any room, so the sweep can enumerate them.
+///   • <c>voice:moderation:{guildId}</c> HASH — field = userId, value = sticky server mute/deafen
+///     flags, re-seeded into the room state on every join so leave/rejoin can't clear them.
 ///
 /// Ghost detection reuses presence: a voice member whose <c>user:{id}:status</c> key is absent has
 /// gone offline (that key's 60s TTL lapses on a crash), so the sweep reaps them. Fails open
@@ -23,6 +25,9 @@ namespace Harmony.Infrastructure.Redis;
 public sealed class RedisVoiceStateService : IVoiceStateService
 {
     private const string UsersSetKey = "voice:users";
+
+    /// <summary>Ring-key TTL backstop — outlives the clients' 60s timers so a caller crash can't leave a stuck ring.</summary>
+    private static readonly TimeSpan RingTtl = TimeSpan.FromSeconds(75);
 
     private readonly IRedisConnectionProvider _redisProvider;
     private readonly IHubBroadcaster _broadcaster;
@@ -69,13 +74,19 @@ public sealed class RedisVoiceStateService : IVoiceStateService
                 }
             }
 
+            // Server mute/deafen are sticky per guild member (voice:moderation:{guildId}) so a
+            // leave/rejoin can't shake them off — only a moderator clears them (Discord behavior).
+            var sticky = guildId is { } g ? await ReadStickyModerationAsync(db, g, userId) : null;
+
             var state = new StoredState(
                 guildId,
                 IsMuted: false,
                 IsDeafened: false,
                 IsVideoOn: false,
                 IsStreaming: false,
-                JoinedAt: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+                JoinedAt: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                IsServerMuted: sticky?.Muted ?? false,
+                IsServerDeafened: sticky?.Deafened ?? false
             );
 
             await db.HashSetAsync(
@@ -169,6 +180,124 @@ public sealed class RedisVoiceStateService : IVoiceStateService
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Voice: state update failed for user {UserId} — continuing", userId);
+        }
+    }
+
+    public async Task<bool> ModerateAsync(
+        long channelId,
+        long targetUserId,
+        bool? serverMute,
+        bool? serverDeafen,
+        CancellationToken ct = default
+    )
+    {
+        if (!_redisProvider.IsConnected)
+            return false;
+
+        try
+        {
+            var db = _redisProvider.Connection!.GetDatabase();
+
+            // Guard the moderate-vs-leave race: apply only while the target is still in THIS room.
+            var current = await db.StringGetAsync(UserKey(targetUserId));
+            if (current.IsNullOrEmpty || current.ToString() != channelId.ToString())
+                return false;
+
+            var raw = await db.HashGetAsync(ChannelKey(channelId), targetUserId.ToString());
+            if (raw.IsNullOrEmpty)
+                return false;
+
+            var existing = Deserialize(raw!);
+            if (existing is null)
+                return false;
+
+            var updated = existing with
+            {
+                IsServerMuted = serverMute ?? existing.IsServerMuted,
+                IsServerDeafened = serverDeafen ?? existing.IsServerDeafened,
+            };
+
+            await db.HashSetAsync(
+                ChannelKey(channelId),
+                targetUserId.ToString(),
+                JsonSerializer.Serialize(updated)
+            );
+
+            if (existing.GuildId is { } stickyGuild)
+                await WriteStickyModerationAsync(
+                    db,
+                    stickyGuild,
+                    targetUserId,
+                    updated.IsServerMuted,
+                    updated.IsServerDeafened
+                );
+
+            await SafeBroadcastAsync(() =>
+                _broadcaster.BroadcastVoiceStateUpdatedAsync(ToPayload(channelId, targetUserId, updated), ct)
+            );
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Voice: moderate failed for user {UserId} channel {ChannelId} — continuing", targetUserId, channelId);
+            return false;
+        }
+    }
+
+    public async Task<bool> MoveAsync(
+        long targetUserId,
+        long fromChannelId,
+        long toChannelId,
+        long? guildId,
+        CancellationToken ct = default
+    )
+    {
+        if (!_redisProvider.IsConnected)
+            return false;
+
+        try
+        {
+            var db = _redisProvider.Connection!.GetDatabase();
+
+            var current = await db.StringGetAsync(UserKey(targetUserId));
+            if (current.IsNullOrEmpty || current.ToString() != fromChannelId.ToString())
+                return false;
+
+            var raw = await db.HashGetAsync(ChannelKey(fromChannelId), targetUserId.ToString());
+            var existing = raw.IsNullOrEmpty ? null : Deserialize(raw!);
+            if (existing is null)
+                return false;
+
+            // Unlike a fresh join, a move carries every flag across (self AND server mute/deafen —
+            // a server-muted member can't shake the mute by being moved). JoinedAt is preserved too.
+            var moved = existing with { GuildId = guildId };
+
+            await db.HashSetAsync(
+                ChannelKey(toChannelId),
+                targetUserId.ToString(),
+                JsonSerializer.Serialize(moved)
+            );
+            await db.StringSetAsync(UserKey(targetUserId), toChannelId.ToString());
+            await db.HashDeleteAsync(ChannelKey(fromChannelId), targetUserId.ToString());
+
+            await SafeBroadcastAsync(() =>
+                _broadcaster.BroadcastVoiceParticipantLeftAsync(
+                    new VoiceParticipantLeftPayload(fromChannelId, existing.GuildId, targetUserId),
+                    ct
+                )
+            );
+            await SafeBroadcastAsync(() =>
+                _broadcaster.BroadcastVoiceParticipantJoinedAsync(
+                    ToPayload(toChannelId, targetUserId, moved),
+                    ct
+                )
+            );
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Voice: move failed for user {UserId} {From}→{To} — continuing", targetUserId, fromChannelId, toChannelId);
+            return false;
         }
     }
 
@@ -279,6 +408,69 @@ public sealed class RedisVoiceStateService : IVoiceStateService
         }
     }
 
+    public async Task<bool> TryBeginRingAsync(
+        long channelId,
+        long callerId,
+        CancellationToken ct = default
+    )
+    {
+        if (!_redisProvider.IsConnected)
+            return true; // fail-open: ring untracked, but the call still goes out
+
+        try
+        {
+            var db = _redisProvider.Connection!.GetDatabase();
+            return await db.StringSetAsync(
+                RingKey(channelId),
+                callerId.ToString(),
+                RingTtl,
+                When.NotExists
+            );
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Voice: begin-ring failed for channel {ChannelId} — continuing", channelId);
+            return true;
+        }
+    }
+
+    public async Task<long?> GetRingCallerAsync(long channelId, CancellationToken ct = default)
+    {
+        if (!_redisProvider.IsConnected)
+            return null;
+
+        try
+        {
+            var db = _redisProvider.Connection!.GetDatabase();
+            var raw = await db.StringGetAsync(RingKey(channelId));
+            return !raw.IsNullOrEmpty && long.TryParse(raw.ToString(), out var callerId)
+                ? callerId
+                : null;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Voice: ring-caller read failed for channel {ChannelId}", channelId);
+            return null;
+        }
+    }
+
+    public async Task<bool> TryEndRingAsync(long channelId, CancellationToken ct = default)
+    {
+        if (!_redisProvider.IsConnected)
+            return false;
+
+        try
+        {
+            var db = _redisProvider.Connection!.GetDatabase();
+            return await db.KeyDeleteAsync(RingKey(channelId));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Voice: end-ring failed for channel {ChannelId} — continuing", channelId);
+            return false;
+        }
+    }
+
     // -------------------------------------------------------------------------
     // Internals
     // -------------------------------------------------------------------------
@@ -325,6 +517,8 @@ public sealed class RedisVoiceStateService : IVoiceStateService
             s.IsDeafened,
             s.IsVideoOn,
             s.IsStreaming,
+            s.IsServerMuted,
+            s.IsServerDeafened,
             s.JoinedAt
         );
 
@@ -340,17 +534,66 @@ public sealed class RedisVoiceStateService : IVoiceStateService
         }
     }
 
+    /// <summary>
+    /// Reads the member's sticky server-moderation flags for a guild (null when none). Sticky
+    /// state lives outside the room HASH precisely so it survives leave/rejoin.
+    /// </summary>
+    private static async Task<StickyModeration?> ReadStickyModerationAsync(
+        IDatabase db,
+        long guildId,
+        long userId
+    )
+    {
+        var raw = await db.HashGetAsync(ModerationKey(guildId), userId.ToString());
+        if (raw.IsNullOrEmpty)
+            return null;
+        try
+        {
+            return JsonSerializer.Deserialize<StickyModeration>(raw.ToString());
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>Persists sticky flags; both-false deletes the field (fully un-moderated = no entry).</summary>
+    private static Task WriteStickyModerationAsync(
+        IDatabase db,
+        long guildId,
+        long userId,
+        bool muted,
+        bool deafened
+    ) =>
+        muted || deafened
+            ? db.HashSetAsync(
+                ModerationKey(guildId),
+                userId.ToString(),
+                JsonSerializer.Serialize(new StickyModeration(muted, deafened))
+            )
+            : db.HashDeleteAsync(ModerationKey(guildId), userId.ToString());
+
     private static string ChannelKey(long channelId) => $"voice:channel:{channelId}";
 
     private static string UserKey(long userId) => $"voice:user:{userId}";
 
-    /// <summary>The per-participant state persisted in the room HASH.</summary>
+    private static string RingKey(long channelId) => $"call:ring:{channelId}";
+
+    private static string ModerationKey(long guildId) => $"voice:moderation:{guildId}";
+
+    /// <summary>The per-participant state persisted in the room HASH. The server flags default to
+    /// false so entries written before they existed deserialize cleanly (lazy migration).</summary>
     private sealed record StoredState(
         long? GuildId,
         bool IsMuted,
         bool IsDeafened,
         bool IsVideoOn,
         bool IsStreaming,
-        long JoinedAt
+        long JoinedAt,
+        bool IsServerMuted = false,
+        bool IsServerDeafened = false
     );
+
+    /// <summary>Sticky per-guild-member server flags (the voice:moderation:{guildId} HASH values).</summary>
+    private sealed record StickyModeration(bool Muted, bool Deafened);
 }

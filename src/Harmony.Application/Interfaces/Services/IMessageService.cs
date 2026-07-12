@@ -79,6 +79,34 @@ public interface IMessageService
     );
 
     /// <summary>
+    /// Adds an emoji reaction to a message. Guild → requires <c>ViewChannel</c> + <c>AddReactions</c>
+    /// (channel-scoped, overrides apply); DM/group → any participant. Idempotent (re-reacting is a
+    /// no-op). Broadcasts <c>ReactionAdded</c> to the channel group. <paramref name="emoji"/> is a
+    /// single Unicode grapheme in v1.
+    /// </summary>
+    Task AddReactionAsync(
+        long userId,
+        long? guildId,
+        long channelId,
+        long messageId,
+        string emoji,
+        CancellationToken ct = default
+    );
+
+    /// <summary>
+    /// Removes the caller's own reaction. Same authorization as <see cref="AddReactionAsync"/>;
+    /// idempotent. Broadcasts <c>ReactionRemoved</c>.
+    /// </summary>
+    Task RemoveReactionAsync(
+        long userId,
+        long? guildId,
+        long channelId,
+        long messageId,
+        string emoji,
+        CancellationToken ct = default
+    );
+
+    /// <summary>
     /// Publishes a server-generated system message (e.g. a member-join welcome notice or a
     /// group-DM join/leave notice) into any channel — guild channel or guild-less DM
     /// (<paramref name="guildId"/> null). Bypasses the permission/timeout/attachment/content
