@@ -123,6 +123,10 @@ public class NotificationSettingConfiguration : IEntityTypeConfiguration<Notific
         builder.Property(s => s.ScopeType).HasColumnName("scope_type").HasMaxLength(16).IsRequired();
         builder.Property(s => s.ScopeId).HasColumnName("scope_id");
         builder.Property(s => s.Level).HasColumnName("level").HasMaxLength(16).IsRequired();
+        builder
+            .Property(s => s.SuppressEveryone)
+            .HasColumnName("suppress_everyone")
+            .HasDefaultValue(false);
 
         builder
             .HasOne(s => s.User)

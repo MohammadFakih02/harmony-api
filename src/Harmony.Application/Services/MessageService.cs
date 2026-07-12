@@ -86,7 +86,15 @@ public class MessageService : IMessageService
     /// `MentionEveryone`. If the actor lacks the permission the literal text is simply not expanded;
     /// mentions are a notification side effect and must never block the send.
     /// </summary>
-    private async Task<List<long>> ResolveMentionsAsync(
+    /// <summary>
+    /// The resolved recipients of a message's mentions: <see cref="All"/> is every notified user id;
+    /// <see cref="EveryoneOnly"/> is the subset reached ONLY through @everyone/@here (i.e. not a direct
+    /// @user and not via a @role) — the notification layer uses it to honour a suppress-@everyone opt-out
+    /// without dropping direct mentions.
+    /// </summary>
+    private sealed record ResolvedMentions(List<long> All, HashSet<long> EveryoneOnly);
+
+    private async Task<ResolvedMentions> ResolveMentionsAsync(
         string content,
         long? guildId,
         long channelId,
@@ -128,7 +136,13 @@ public class MessageService : IMessageService
         var mentionIds = parsed.UserIds;
 
         if (!guildContext)
-            return mentionIds.ToList();
+            return new ResolvedMentions(mentionIds.ToList(), new HashSet<long>());
+
+        // Direct @user mentions snapshotted before any broadcast/role expansion — these are never
+        // suppressible, so they're subtracted from the everyone-origin set at the end.
+        var direct = new HashSet<long>(parsed.UserIds);
+        var everyoneAdded = new HashSet<long>();
+        var roleAdded = new HashSet<long>();
 
         // MentionEveryone is the shared gate for @everyone/@here AND non-mentionable roles — resolve
         // it once, only if some broadcast/role expansion is actually needed.
@@ -147,14 +161,20 @@ public class MessageService : IMessageService
         if (parsed.Everyone && canMentionEveryone)
         {
             foreach (var id in candidateIds)
+            {
                 mentionIds.Add(id);
+                everyoneAdded.Add(id);
+            }
         }
         else if (parsed.Here && canMentionEveryone)
         {
             var statuses = await _presence.GetStatusesAsync(candidateIds, ct);
             foreach (var id in candidateIds)
                 if (statuses.TryGetValue(id, out var status) && status != "offline")
+                {
                     mentionIds.Add(id);
+                    everyoneAdded.Add(id);
+                }
         }
 
         if (parsed.RoleIds.Count > 0)
@@ -167,11 +187,18 @@ public class MessageService : IMessageService
                 if (!role.IsMentionable && !canMentionEveryone)
                     continue;
                 foreach (var memberId in await _roles.GetMemberIdsWithRoleAsync(guildId!.Value, roleId))
+                {
                     mentionIds.Add(memberId);
+                    roleAdded.Add(memberId);
+                }
             }
         }
 
-        return mentionIds.ToList();
+        // Everyone-origin = reached by @everyone/@here but neither directly @mentioned nor role-mentioned.
+        everyoneAdded.ExceptWith(direct);
+        everyoneAdded.ExceptWith(roleAdded);
+
+        return new ResolvedMentions(mentionIds.ToList(), everyoneAdded);
     }
 
     public async Task<SendMessageResponse> SendMessageAsync(
@@ -179,7 +206,8 @@ public class MessageService : IMessageService
         long? guildId,
         long channelId,
         SendMessageRequest request,
-        CancellationToken ct = default
+        CancellationToken ct = default,
+        MessageForwardSnapshot? forward = null
     )
     {
         // Slowmode context, captured in the guild branch and consumed just before publish (after
@@ -250,11 +278,12 @@ public class MessageService : IMessageService
                 throw new ArgumentException("Attachment does not belong to this channel.");
         }
 
-        // Content is required UNLESS the message carries at least one attachment (image-only message).
+        // Content is required UNLESS the message carries at least one attachment (image-only
+        // message) OR is a forward (the attributed snapshot is itself the content).
         var content = request.Content ?? string.Empty;
         if (content.Length > 2000)
             throw new ArgumentException("Message content must be 2000 characters or fewer.");
-        if (string.IsNullOrWhiteSpace(content) && attachmentIds.Count == 0)
+        if (string.IsNullOrWhiteSpace(content) && attachmentIds.Count == 0 && forward is null)
             throw new ArgumentException("Message must have content or at least one attachment.");
 
         // Slowmode — consumed last so only a send that would otherwise succeed claims the slot.
@@ -266,7 +295,12 @@ public class MessageService : IMessageService
 
         var messageId = _snowflake.NextId();
         var sentAt = DateTimeOffset.UtcNow;
-        var mentionIds = await ResolveMentionsAsync(content, guildId, channelId, userId, ct);
+        var resolved = await ResolveMentionsAsync(content, guildId, channelId, userId, ct);
+        var mentionIds = resolved.All;
+
+        // Idempotency token: opaque, never trusted, only echoed back for the sender's reconcile.
+        // Cap the length so a hostile client can't bloat the event/broadcast payload.
+        var nonce = request.Nonce is { Length: > 0 and <= 64 } n ? n : null;
 
         await _publisher.PublishMessageSentAsync(
             new MessageSentEvent(
@@ -280,7 +314,10 @@ public class MessageService : IMessageService
                 AttachmentIds: attachmentIds,
                 MentionIds: mentionIds,
                 ReplyToId: request.ReplyToId,
-                SentAt: sentAt
+                SentAt: sentAt,
+                EveryoneMentionIds: resolved.EveryoneOnly.ToList(),
+                Forward: forward,
+                Nonce: nonce
             ),
             ct
         );
@@ -301,6 +338,56 @@ public class MessageService : IMessageService
             AttachmentIds: attachmentIds,
             SentAt: sentAt.ToUnixTimeMilliseconds()
         );
+    }
+
+    /// <inheritdoc />
+    public async Task<SendMessageResponse> ForwardMessageAsync(
+        long userId,
+        long? guildId,
+        long channelId,
+        ForwardMessageRequest request,
+        CancellationToken ct = default
+    )
+    {
+        // Read the original. A forward of a missing/deleted message is meaningless.
+        var source = await _messageRepository.GetByIdAsync(request.SourceMessageId, ct);
+        if (source is null || source.IsDeleted)
+            throw new KeyNotFoundException("The message being forwarded no longer exists.");
+        if (source.ChannelId != request.SourceChannelId)
+            throw new ArgumentException("Source channel does not match the forwarded message.");
+
+        // Authorize that the forwarder can actually SEE the source (never leak a message across a
+        // permission or DM boundary — NON-NEGOTIABLE #8). Guild channel → ViewChannel; DM → participant.
+        var sourceChannel = await _channelRepository.GetByIdAsync(source.ChannelId);
+        if (sourceChannel is null)
+            throw new KeyNotFoundException("The message being forwarded no longer exists.");
+        if (sourceChannel.GuildId is { } sourceGuildId)
+        {
+            if (!await _permissions.HasAsync(
+                    userId, sourceGuildId, Permission.ViewChannel, source.ChannelId, ct))
+                throw new UnauthorizedAccessException("You cannot forward a message you cannot see.");
+        }
+        else if (!await _dms.IsParticipantAsync(source.ChannelId, userId))
+            throw new UnauthorizedAccessException("You cannot forward a message you cannot see.");
+
+        // Build the server-authoritative snapshot: the original author (resolved server-side),
+        // their content, and when it was sent. The client supplied none of this.
+        var author = await _userRepository.GetByIdAsync(source.UserId);
+        var snapshot = new MessageForwardSnapshot(
+            AuthorId: source.UserId,
+            AuthorName: author?.UserName ?? "Unknown",
+            Content: source.Content,
+            SentAt: ((DateTimeOffset)source.CreatedAt).ToUnixTimeMilliseconds()
+        );
+
+        // Send into the target through the normal path (full target authz + attachment ownership).
+        // The optional note becomes the message content; the snapshot rides alongside.
+        var sendRequest = new SendMessageRequest(
+            Content: request.Note ?? string.Empty,
+            ReplyToId: null,
+            AttachmentIds: request.AttachmentIds
+        );
+        return await SendMessageAsync(userId, guildId, channelId, sendRequest, ct, snapshot);
     }
 
     /// <inheritdoc />
@@ -459,10 +546,15 @@ public class MessageService : IMessageService
         var oldMentionIds = message.MentionIds.ToList();
 
         // Mentions are re-detected on every edit; the consumer notifies users newly added.
-        var mentionIds = await ResolveMentionsAsync(request.Content, guildId, channelId, userId, ct);
+        var resolved = await ResolveMentionsAsync(request.Content, guildId, channelId, userId, ct);
+        var mentionIds = resolved.All;
 
         // 1. Synchronously update ScyllaDB
         await _messageRepository.EditAsync(messageId, channelId, request.Content, mentionIds, ct);
+
+        // Only @everyone-origin recipients that are NEWLY added by this edit can be suppressed —
+        // matches the consumer's newly-mentioned diff, so an already-pinged user isn't reconsidered.
+        var newEveryone = resolved.EveryoneOnly.Except(oldMentionIds).ToList();
 
         // 2. Publish event to background queues (search index update)
         await _publisher.PublishMessageEditedAsync(
@@ -474,7 +566,8 @@ public class MessageService : IMessageService
                 NewContent: request.Content,
                 MentionIds: mentionIds,
                 OldMentionIds: oldMentionIds,
-                EditedAt: DateTimeOffset.UtcNow
+                EditedAt: DateTimeOffset.UtcNow,
+                EveryoneMentionIds: newEveryone
             ),
             ct
         );
@@ -590,7 +683,11 @@ public class MessageService : IMessageService
             EditedAt: m.EditedAt.HasValue
                 ? ((DateTimeOffset)m.EditedAt.Value).ToUnixTimeMilliseconds()
                 : null,
-            Reactions: msgReactions
+            Reactions: msgReactions,
+            Forward: m.IsDeleted || m.Forward is null
+                ? null
+                : new ForwardSnapshotResponse(
+                    m.Forward.AuthorId, m.Forward.AuthorName, m.Forward.Content, m.Forward.SentAt)
         );
     }
 

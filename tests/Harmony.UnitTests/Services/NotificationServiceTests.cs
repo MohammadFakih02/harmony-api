@@ -740,4 +740,254 @@ public class NotificationServiceTests
             Times.Once
         );
     }
+
+    // ------------------------------------------------------------------
+    // Suppress-@everyone: a recipient reached ONLY via @everyone/@here who
+    // opted out of broadcast pings in this scope is skipped; a direct mention
+    // (never in everyoneOriginIds) still notifies. Channel-scope wins.
+    // ------------------------------------------------------------------
+
+    [Fact]
+    public async Task CreateMentionNotificationsAsync_EveryoneOriginRecipient_WhoSuppressedEveryone_IsSkipped()
+    {
+        var (sut, notifications, _, _, _, _, _, settings, _) = BuildSut();
+        settings
+            .Setup(s => s.GetForResolutionAsync(It.IsAny<List<long>>(), GuildId, ChannelId))
+            .ReturnsAsync(
+                new List<NotificationSetting>
+                {
+                    new()
+                    {
+                        UserId = MentionedUserId,
+                        ScopeType = NotificationScope.Guild,
+                        ScopeId = GuildId,
+                        Level = NotificationLevel.Mentions,
+                        SuppressEveryone = true,
+                    },
+                }
+            );
+
+        await sut.CreateMentionNotificationsAsync(
+            new List<long> { MentionedUserId },
+            ActorId,
+            GuildId,
+            ChannelId,
+            MessageId,
+            CreatedAt,
+            everyoneOriginIds: new List<long> { MentionedUserId }
+        );
+
+        notifications.Verify(n => n.AddAsync(It.IsAny<Notification>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task CreateMentionNotificationsAsync_DirectMention_StillNotifies_EvenWhenSuppressEveryone()
+    {
+        var (sut, notifications, _, _, _, _, _, settings, _) = BuildSut();
+        settings
+            .Setup(s => s.GetForResolutionAsync(It.IsAny<List<long>>(), GuildId, ChannelId))
+            .ReturnsAsync(
+                new List<NotificationSetting>
+                {
+                    new()
+                    {
+                        UserId = MentionedUserId,
+                        ScopeType = NotificationScope.Guild,
+                        ScopeId = GuildId,
+                        Level = NotificationLevel.Mentions,
+                        SuppressEveryone = true,
+                    },
+                }
+            );
+
+        // The user is mentioned but NOT via @everyone (empty everyoneOriginIds) — a direct @user
+        // ping is never suppressed by the @everyone opt-out.
+        await sut.CreateMentionNotificationsAsync(
+            new List<long> { MentionedUserId },
+            ActorId,
+            GuildId,
+            ChannelId,
+            MessageId,
+            CreatedAt,
+            everyoneOriginIds: new List<long>()
+        );
+
+        notifications.Verify(n => n.AddAsync(It.IsAny<Notification>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task CreateMentionNotificationsAsync_ChannelSuppressOverridesGuild_NotifiesWhenChannelDoesNotSuppress()
+    {
+        var (sut, notifications, _, _, _, _, _, settings, _) = BuildSut();
+        // Guild scope suppresses @everyone but a channel-scope row does not — channel wins,
+        // so the @everyone-origin ping goes through.
+        settings
+            .Setup(s => s.GetForResolutionAsync(It.IsAny<List<long>>(), GuildId, ChannelId))
+            .ReturnsAsync(
+                new List<NotificationSetting>
+                {
+                    new()
+                    {
+                        UserId = MentionedUserId,
+                        ScopeType = NotificationScope.Guild,
+                        ScopeId = GuildId,
+                        Level = NotificationLevel.Mentions,
+                        SuppressEveryone = true,
+                    },
+                    new()
+                    {
+                        UserId = MentionedUserId,
+                        ScopeType = NotificationScope.Channel,
+                        ScopeId = ChannelId,
+                        Level = NotificationLevel.Mentions,
+                        SuppressEveryone = false,
+                    },
+                }
+            );
+
+        await sut.CreateMentionNotificationsAsync(
+            new List<long> { MentionedUserId },
+            ActorId,
+            GuildId,
+            ChannelId,
+            MessageId,
+            CreatedAt,
+            everyoneOriginIds: new List<long> { MentionedUserId }
+        );
+
+        notifications.Verify(n => n.AddAsync(It.IsAny<Notification>()), Times.Once);
+    }
+
+    // ------------------------------------------------------------------
+    // "all"-level producer: per-message notifications for users who opted the
+    // channel/guild into "all". Excludes the actor + anyone already notified
+    // (mention/reply), and honours the mute/block/pref chain.
+    // ------------------------------------------------------------------
+
+    [Fact]
+    public async Task CreateMessageNotificationsAsync_OptedInUser_GetsAMessageNotification()
+    {
+        var (sut, notifications, _, _, broadcaster, _, _, settings, _) = BuildSut();
+        settings
+            .Setup(s => s.GetOptedIntoAllAsync(GuildId, ChannelId))
+            .ReturnsAsync(new List<long> { MentionedUserId });
+
+        await sut.CreateMessageNotificationsAsync(
+            ActorId, GuildId, ChannelId, MessageId, CreatedAt, alreadyNotifiedIds: new List<long>());
+
+        notifications.Verify(
+            n => n.AddAsync(It.Is<Notification>(x =>
+                x.UserId == MentionedUserId && x.Type == "message" && x.ActorId == ActorId
+                && x.ChannelId == ChannelId && x.MessageId == MessageId)),
+            Times.Once);
+        broadcaster.Verify(
+            b => b.BroadcastNotificationReceivedAsync(
+                MentionedUserId, It.IsAny<NotificationPayload>(), It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task CreateMessageNotificationsAsync_ExcludesActorAndAlreadyNotified()
+    {
+        var (sut, notifications, _, _, _, _, _, settings, _) = BuildSut();
+        // Opted-in set includes the actor (self) and someone who already got a mention/reply —
+        // both must be filtered so nobody is double-notified.
+        settings
+            .Setup(s => s.GetOptedIntoAllAsync(GuildId, ChannelId))
+            .ReturnsAsync(new List<long> { ActorId, MentionedUserId, MentionedUserId2 });
+
+        await sut.CreateMessageNotificationsAsync(
+            ActorId, GuildId, ChannelId, MessageId, CreatedAt,
+            alreadyNotifiedIds: new List<long> { MentionedUserId });
+
+        // Only MentionedUserId2 survives (actor excluded, MentionedUserId already notified).
+        notifications.Verify(n => n.AddAsync(It.IsAny<Notification>()), Times.Once);
+        notifications.Verify(
+            n => n.AddAsync(It.Is<Notification>(x => x.UserId == MentionedUserId2)),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task CreateMessageNotificationsAsync_NoOptedInUsers_IsANoOp()
+    {
+        var (sut, notifications, _, _, _, _, _, settings, _) = BuildSut();
+        settings
+            .Setup(s => s.GetOptedIntoAllAsync(GuildId, ChannelId))
+            .ReturnsAsync(new List<long>());
+
+        await sut.CreateMessageNotificationsAsync(
+            ActorId, GuildId, ChannelId, MessageId, CreatedAt, alreadyNotifiedIds: new List<long>());
+
+        notifications.Verify(n => n.AddAsync(It.IsAny<Notification>()), Times.Never);
+        notifications.Verify(n => n.SaveChangesAsync(), Times.Never);
+    }
+
+    [Fact]
+    public async Task CreateMessageNotificationsAsync_WhenMentionsDisabled_DoesNotCreate()
+    {
+        var (sut, notifications, _, _, _, preferences, _, settings, _) = BuildSut();
+        settings
+            .Setup(s => s.GetOptedIntoAllAsync(GuildId, ChannelId))
+            .ReturnsAsync(new List<long> { MentionedUserId });
+        // The master mentions switch doubles as the "all" gate.
+        preferences
+            .Setup(p => p.GetForUsersAsync(It.IsAny<List<long>>()))
+            .ReturnsAsync(new List<NotificationPreference>
+            {
+                new() { UserId = MentionedUserId, MentionsEnabled = false },
+            });
+
+        await sut.CreateMessageNotificationsAsync(
+            ActorId, GuildId, ChannelId, MessageId, CreatedAt, alreadyNotifiedIds: new List<long>());
+
+        notifications.Verify(n => n.AddAsync(It.IsAny<Notification>()), Times.Never);
+    }
+
+    // ------------------------------------------------------------------
+    // guild_invite notification (invite-a-friend flow). GuildInvites pref +
+    // mute + block chain; the row carries GuildId and no ChannelId/MessageId.
+    // ------------------------------------------------------------------
+
+    [Fact]
+    public async Task CreateGuildInviteNotificationAsync_HappyPath_PersistsAndBroadcasts()
+    {
+        var (sut, notifications, _, _, broadcaster, _, _, _, _) = BuildSut();
+
+        await sut.CreateGuildInviteNotificationAsync(MentionedUserId, ActorId, GuildId);
+
+        notifications.Verify(
+            n => n.AddAsync(It.Is<Notification>(x =>
+                x.UserId == MentionedUserId && x.Type == "guild_invite" && x.ActorId == ActorId
+                && x.GuildId == GuildId && x.ChannelId == null)),
+            Times.Once);
+        broadcaster.Verify(
+            b => b.BroadcastNotificationReceivedAsync(
+                MentionedUserId,
+                It.Is<NotificationPayload>(p => p.Type == "guild_invite" && p.GuildId == GuildId),
+                It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task CreateGuildInviteNotificationAsync_WhenGuildInvitesDisabled_DoesNotCreate()
+    {
+        var (sut, notifications, _, _, _, preferences, _, _, _) = BuildSut();
+        preferences
+            .Setup(p => p.GetAsync(MentionedUserId))
+            .ReturnsAsync(new NotificationPreference { UserId = MentionedUserId, GuildInvites = false });
+
+        await sut.CreateGuildInviteNotificationAsync(MentionedUserId, ActorId, GuildId);
+
+        notifications.Verify(n => n.AddAsync(It.IsAny<Notification>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task CreateGuildInviteNotificationAsync_SelfInvite_DoesNotCreate()
+    {
+        var (sut, notifications, _, _, _, _, _, _, _) = BuildSut();
+
+        await sut.CreateGuildInviteNotificationAsync(ActorId, ActorId, GuildId);
+
+        notifications.Verify(n => n.AddAsync(It.IsAny<Notification>()), Times.Never);
+    }
 }

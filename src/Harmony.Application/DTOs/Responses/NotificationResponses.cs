@@ -25,10 +25,11 @@ public record NotificationResponse(
 /// </summary>
 public record GuildNotificationSettingsResponse(
     string GuildLevel,
+    bool GuildSuppressEveryone,
     IEnumerable<ChannelNotificationSettingResponse> Channels
 );
 
-public record ChannelNotificationSettingResponse(long ChannelId, string Level);
+public record ChannelNotificationSettingResponse(long ChannelId, string Level, bool SuppressEveryone);
 
 /// <summary>The VAPID public key the client passes to PushManager.subscribe.</summary>
 public record PushPublicKeyResponse(string PublicKey);

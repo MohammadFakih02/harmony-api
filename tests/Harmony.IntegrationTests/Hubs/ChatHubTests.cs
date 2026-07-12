@@ -102,6 +102,29 @@ public class ChatHubTests : ApiTestBase, IClassFixture<HarmonyWebApplicationFact
         return body!.Id;
     }
 
+    /// <summary>Registers a user and returns their access token AND user id.</summary>
+    private async Task<(string token, long userId)> RegisterWithIdAsync(string username, string email)
+    {
+        var response = await Client.PostAsJsonAsync(
+            "/api/auth/register",
+            new { username, email, password = "Password123!" }
+        );
+        response.EnsureSuccessStatusCode();
+        var body = await response.Content.ReadFromJsonAsync<AuthResponseWithUser>();
+        return (body!.AccessToken, body.User.Id);
+    }
+
+    /// <summary>Opens (or reuses) a 1:1 DM with the target user and returns its channel id.</summary>
+    private async Task<long> CreateDmAsync(string token, long targetUserId)
+    {
+        Client.DefaultRequestHeaders.Authorization =
+            new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+        var response = await Client.PostAsJsonAsync("/api/dm", new { targetUserId });
+        response.EnsureSuccessStatusCode();
+        var body = await response.Content.ReadFromJsonAsync<DmChannelDto>();
+        return body!.ChannelId;
+    }
+
     // -------------------------------------------------------------------------
     // Authentication
     // -------------------------------------------------------------------------
@@ -373,6 +396,41 @@ public class ChatHubTests : ApiTestBase, IClassFixture<HarmonyWebApplicationFact
         }
     }
 
+    [Fact]
+    public async Task SendMessage_ShouldSucceed_ForDm_WithNullGuildId()
+    {
+        // The hub now accepts a null guildId → DM/group-DM send (parity with the REST DM endpoint).
+        var senderToken = await RegisterAndGetTokenAsync("hubdm_a", "hubdm_a@test.com");
+        var (_, peerId) = await RegisterWithIdAsync("hubdm_b", "hubdm_b@test.com");
+        var channelId = await CreateDmAsync(senderToken, peerId);
+        var connection = BuildConnection(senderToken);
+
+        await connection.StartAsync();
+        try
+        {
+            var result = await connection.InvokeAsync<HubResultDto<SendMessageDmResponseDto>>(
+                "SendMessage",
+                channelId,
+                null,
+                "hello over the dm hub"
+            );
+
+            result.Should().NotBeNull();
+            result.Succeeded.Should().BeTrue("a participant can DM through the hub");
+            result.ErrorMessage.Should().BeNull();
+            result.Data.Should().NotBeNull();
+            result.Data!.MessageId.Should().BeGreaterThan(0);
+            result.Data.ChannelId.Should().Be(channelId);
+            result.Data.GuildId.Should().BeNull();
+            result.Data.Content.Should().Be("hello over the dm hub");
+        }
+        finally
+        {
+            await connection.StopAsync();
+            await connection.DisposeAsync();
+        }
+    }
+
     // -------------------------------------------------------------------------
     // DTOs local to this test file
     // -------------------------------------------------------------------------
@@ -381,12 +439,28 @@ public class ChatHubTests : ApiTestBase, IClassFixture<HarmonyWebApplicationFact
 
     private record AuthResponse(string AccessToken);
 
+    private record AuthResponseWithUser(string AccessToken, UserIdDto User);
+
+    private record UserIdDto(long Id);
+
+    private record DmChannelDto(long ChannelId);
+
     private record IdResponse(long Id);
 
     private record SendMessageResponseDto(
         long MessageId,
         long ChannelId,
         long GuildId,
+        long UserId,
+        string Content,
+        string MessageType,
+        long SentAt
+    );
+
+    private record SendMessageDmResponseDto(
+        long MessageId,
+        long ChannelId,
+        long? GuildId,
         long UserId,
         string Content,
         string MessageType,

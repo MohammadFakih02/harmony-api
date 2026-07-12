@@ -277,7 +277,9 @@ public class PushNotificationService : BackgroundService
         {
             PushKind.Mention => ($"{actorName} mentioned you in {place}", preview ?? ""),
             PushKind.Reply => ($"{actorName} replied to you in {place}", preview ?? ""),
+            PushKind.Message => ($"{actorName} posted in {place}", preview ?? ""),
             PushKind.FriendRequest => ($"{actorName} sent you a friend request", ""),
+            PushKind.GuildInvite => ($"{actorName} invited you to a server", "Tap to view the invite"),
             PushKind.Call => ($"{actorName} is calling you", "Incoming call — tap to open Harmony"),
             _ => (actorName, preview ?? "Sent you a message"),
         };
@@ -285,6 +287,7 @@ public class PushNotificationService : BackgroundService
         var url = row.Kind switch
         {
             PushKind.FriendRequest => "/app/friends",
+            PushKind.GuildInvite when row.GuildId is { } inviteGuild => $"/app/guilds/{inviteGuild}",
             _ when row.GuildId is { } guildId && row.ChannelId is { } chId =>
                 $"/app/guilds/{guildId}/channels/{chId}",
             _ when row.ChannelId is { } chId => $"/app/dm/{chId}",

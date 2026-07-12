@@ -32,12 +32,11 @@ public class ScyllaSessionFactory : IScyllaSessionFactory, IDisposable
             ?? Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT")
             ?? "Production";
 
+        // ASPNETCORE_ENVIRONMENT is authoritative in every host (the test factory sets it to Test),
+        // so the environment string alone decides local vs. remote — no assembly scan needed.
         var isLocal =
             env.Equals("Development", StringComparison.OrdinalIgnoreCase)
-            || env.Equals("Test", StringComparison.OrdinalIgnoreCase)
-            || AppDomain
-                .CurrentDomain.GetAssemblies()
-                .Any(a => a.FullName!.Contains("xunit", StringComparison.OrdinalIgnoreCase));
+            || env.Equals("Test", StringComparison.OrdinalIgnoreCase);
 
         var clusterBuilder = Cluster
             .Builder()

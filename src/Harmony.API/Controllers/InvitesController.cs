@@ -30,6 +30,7 @@ public class InvitesController : ControllerBase
     private readonly IChannelRepository _channels;
     private readonly IMessageService _messages;
     private readonly IUserRepository _users;
+    private readonly IPresenceService _presence;
     private readonly IHubBroadcaster _broadcaster;
     private readonly ILogger<InvitesController> _logger;
 
@@ -40,6 +41,7 @@ public class InvitesController : ControllerBase
         IChannelRepository channels,
         IMessageService messages,
         IUserRepository users,
+        IPresenceService presence,
         IHubBroadcaster broadcaster,
         ILogger<InvitesController> logger
     )
@@ -50,8 +52,22 @@ public class InvitesController : ControllerBase
         _channels = channels;
         _messages = messages;
         _users = users;
+        _presence = presence;
         _broadcaster = broadcaster;
         _logger = logger;
+    }
+
+    // Count of guild members currently online — resolved server-side (the viewer needn't be a
+    // member). Everything that isn't a "showing" status (offline / invisible) is not counted.
+    private async Task<int> OnlineCountAsync(long guildId)
+    {
+        var memberIds = await _guilds.GetMemberIdsAsync(guildId);
+        if (memberIds.Count == 0)
+            return 0;
+        var statuses = await _presence.GetStatusesAsync(memberIds);
+        return statuses.Values.Count(s =>
+            s != PresenceStatus.Offline && s != PresenceStatus.Invisible
+        );
     }
 
     // GET /api/invites/{code} — preview before joining.
@@ -69,7 +85,7 @@ public class InvitesController : ControllerBase
             return NotFound(new { error = "Invalid invite." });
 
         return Ok(
-            new InvitePreviewResponse(invite.Code, guild.Id, guild.Name, guild.IconKey, guild.MemberCount, invite.ChannelId)
+            new InvitePreviewResponse(invite.Code, guild.Id, guild.Name, guild.IconKey, guild.MemberCount, await OnlineCountAsync(guild.Id), invite.ChannelId)
         );
     }
 
@@ -92,7 +108,7 @@ public class InvitesController : ControllerBase
         return Ok(
             new InviteEmbedResponse(
                 "ok",
-                new InvitePreviewResponse(invite.Code, guild.Id, guild.Name, guild.IconKey, guild.MemberCount, invite.ChannelId)
+                new InvitePreviewResponse(invite.Code, guild.Id, guild.Name, guild.IconKey, guild.MemberCount, await OnlineCountAsync(guild.Id), invite.ChannelId)
             )
         );
     }

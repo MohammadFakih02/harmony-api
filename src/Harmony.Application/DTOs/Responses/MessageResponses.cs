@@ -36,12 +36,27 @@ public record MessageResponse(
     // Aggregated reaction pills (emoji → count + whether the requester reacted). Empty for a
     // brand-new message (the live MessageReceived broadcast carries none — reactions arrive via
     // their own ReactionAdded/Removed events).
-    IReadOnlyList<ReactionSummaryResponse> Reactions
+    IReadOnlyList<ReactionSummaryResponse> Reactions,
+    // Server-authoritative snapshot of the original message when this message is a forward.
+    // Null for ordinary messages.
+    ForwardSnapshotResponse? Forward = null,
+    // Echo of the sender's optimistic-send idempotency token — present ONLY on the live
+    // MessageReceived broadcast (never persisted, so historical reads carry null). Lets the
+    // sender's client replace its optimistic bubble in place regardless of echo/POST ordering.
+    string? Nonce = null
 );
 
 /// <summary>One reaction bucket on a message: the emoji, how many users reacted, and whether the
 /// requesting user is one of them (drives the highlighted pill state).</summary>
 public record ReactionSummaryResponse(string Emoji, int Count, bool MeReacted);
+
+/// <summary>The attributed-quote snapshot rendered above a forwarded message.</summary>
+public record ForwardSnapshotResponse(
+    [property: JsonNumberHandling(JsonNumberHandling.WriteAsString)] long AuthorId,
+    string AuthorName,
+    string Content,
+    long SentAt
+);
 
 public record ChannelMessagesResponse(
     IEnumerable<MessageResponse> Messages,

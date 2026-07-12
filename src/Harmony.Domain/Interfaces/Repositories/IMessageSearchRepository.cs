@@ -22,4 +22,17 @@ public interface IMessageSearchRepository
         int limit,
         CancellationToken ct = default
     );
+
+    /// <summary>
+    /// Full-text search within a single channel (guild channel or DM), newest first, regardless of
+    /// guild. <paramref name="before"/> is a keyset cursor (<c>created_at</c>, exclusive) for "load
+    /// more". Authorization is the caller's responsibility — a DM caller must be a participant.
+    /// </summary>
+    Task<List<MessageSearch>> SearchChannelAsync(
+        long channelId,
+        string query,
+        long? before,
+        int limit,
+        CancellationToken ct = default
+    );
 }

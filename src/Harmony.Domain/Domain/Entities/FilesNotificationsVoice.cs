@@ -63,6 +63,11 @@ public class NotificationSetting
     public long ScopeId { get; set; } // guildId or channelId, per ScopeType
     public string Level { get; set; } = null!; // "all" | "mentions" | "nothing"
 
+    // When true, an @everyone/@here-only mention in this scope does not notify the user
+    // (a direct @user or @role mention still does). Resolved channel-scope-over-guild-scope,
+    // same as Level. Default false = the broadcast pings as normal.
+    public bool SuppressEveryone { get; set; }
+
     // Navigation
     public User User { get; set; } = null!;
 }

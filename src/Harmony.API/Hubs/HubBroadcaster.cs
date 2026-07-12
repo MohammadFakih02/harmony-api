@@ -170,6 +170,12 @@ public class HubBroadcaster : IHubBroadcaster
         CancellationToken ct = default
     ) => _hubContext.Clients.User(userId.ToString()).NotificationReceived(payload);
 
+    public Task BroadcastNotificationBadgeAsync(
+        long userId,
+        int unreadCount,
+        CancellationToken ct = default
+    ) => _hubContext.Clients.User(userId.ToString()).NotificationBadgeUpdate(unreadCount);
+
     public Task BroadcastMemberRemovedAsync(
         long guildId,
         MemberRemovedPayload payload,

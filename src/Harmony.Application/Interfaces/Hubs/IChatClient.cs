@@ -143,6 +143,13 @@ public interface IChatClient
     Task NotificationReceived(NotificationPayload payload);
 
     /// <summary>
+    /// Pushes the owner's current unread-notification count so their bell badge can update without
+    /// a refetch. Fired on both create and read/clear (Clients.User). Purely a UI convenience — the
+    /// authoritative count is always GET /api/notifications/unread-count, so a missed push self-heals.
+    /// </summary>
+    Task NotificationBadgeUpdate(int unreadCount);
+
+    /// <summary>
     /// Fired when a member is removed from a guild (kicked, banned, or left). Broadcast to the
     /// guild group so every connected member prunes them from the member list.
     /// </summary>
