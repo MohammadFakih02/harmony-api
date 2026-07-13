@@ -3,9 +3,11 @@ using Harmony.API.Filters;
 using Harmony.Application.DTOs.Requests;
 using Harmony.Application.DTOs.Responses;
 using Harmony.Application.Interfaces.Services;
+using Harmony.Application.Services;
 using Harmony.Domain.Domain.Entities;
 using Harmony.Domain.Domain.Enums;
 using Harmony.Domain.Interfaces.Repositories;
+using Harmony.Domain.Interfaces.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
@@ -30,6 +32,12 @@ public class GuildInvitesController : ControllerBase
     private readonly IAuditLogService _audit;
     private readonly IPermissionService _permissions;
     private readonly IHubBroadcaster _broadcaster;
+    private readonly IFriendRepository _friends;
+    private readonly IDirectMessageRepository _dms;
+    private readonly IMessageService _messages;
+    private readonly INotificationService _notifications;
+    private readonly ISnowflakeIdGenerator _snowflake;
+    private readonly string _clientUrl;
     private readonly ILogger<GuildInvitesController> _logger;
 
     public GuildInvitesController(
@@ -39,6 +47,12 @@ public class GuildInvitesController : ControllerBase
         IAuditLogService audit,
         IPermissionService permissions,
         IHubBroadcaster broadcaster,
+        IFriendRepository friends,
+        IDirectMessageRepository dms,
+        IMessageService messages,
+        INotificationService notifications,
+        ISnowflakeIdGenerator snowflake,
+        IConfiguration configuration,
         ILogger<GuildInvitesController> logger
     )
     {
@@ -48,6 +62,12 @@ public class GuildInvitesController : ControllerBase
         _audit = audit;
         _permissions = permissions;
         _broadcaster = broadcaster;
+        _friends = friends;
+        _dms = dms;
+        _messages = messages;
+        _notifications = notifications;
+        _snowflake = snowflake;
+        _clientUrl = (configuration["ClientUrl"] ?? "http://localhost:4200").TrimEnd('/');
         _logger = logger;
     }
 
@@ -74,44 +94,79 @@ public class GuildInvitesController : ControllerBase
                 return BadRequest(new { error = "Channel not found in this guild." });
         }
 
-        // Codes are the table's primary key (globally unique), so retry until we mint a free one.
-        string code;
-        do
-        {
-            code = GenerateInviteCode();
-        } while (await _invites.GetByCodeAsync(code) is not null);
-
-        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        var invite = new GuildInvite
-        {
-            Code = code,
-            GuildId = guildId,
-            ChannelId = request.ChannelId,
-            CreatorId = userId,
-            MaxUses = request.MaxUses,
-            UseCount = 0,
-            ExpiresAt = request.ExpiresInSeconds is { } secs ? now + secs * 1000 : null,
-            CreatedAt = now,
-        };
-
-        await _invites.AddAsync(invite);
-        await _invites.SaveChangesAsync();
-
-        await _audit.LogAsync(
+        var invite = await MintInviteAsync(
             guildId,
             userId,
-            AuditLogAction.InviteCreate,
-            targetId: request.ChannelId,
-            changes: new
-            {
-                code,
-                channelId = request.ChannelId,
-                maxUses = request.MaxUses,
-                expiresAt = invite.ExpiresAt,
-            }
+            request.ChannelId,
+            request.MaxUses,
+            request.ExpiresInSeconds
         );
 
-        await BroadcastInvitesChangedAsync(guildId);
+        var creators = await _users.GetByIdsAsync(new[] { userId });
+        return Ok(ToResponse(invite, creators));
+    }
+
+    // POST /api/guilds/{guildId}/invites/invite-friend
+    // Invite-a-friend, done entirely server-side (NON-NEGOTIABLE #8: never trust a client "I invited
+    // X" claim). Mints a guild-level invite, DMs its link to the friend, and files the guild_invite
+    // notification — atomically from the client's view. Authorized like Create (CreateInvite OR
+    // ManageInvites); the recipient must be an accepted friend of the caller.
+    [HttpPost("invite-friend")]
+    public async Task<IActionResult> InviteFriend(
+        long guildId,
+        [FromBody] InviteFriendRequest request
+    )
+    {
+        var userId = GetUserId();
+
+        if (
+            !await _permissions.HasAsync(userId, guildId, Permission.CreateInvite)
+            && !await _permissions.HasAsync(userId, guildId, Permission.ManageInvites)
+        )
+            return Forbid();
+
+        if (request.FriendId == userId)
+            return BadRequest(new { error = "You can't invite yourself." });
+
+        var friendship = await _friends.GetBetweenAsync(userId, request.FriendId);
+        if (friendship is null || friendship.Status != "accepted")
+            return BadRequest(new { error = "You can only invite a friend." });
+
+        // Guild-level invite (no landing channel) — the recipient joins at the guild's default.
+        var invite = await MintInviteAsync(
+            guildId,
+            userId,
+            channelId: null,
+            request.MaxUses,
+            request.ExpiresInSeconds
+        );
+
+        // Get-or-create the 1:1 DM, then unhide the caller's side so the invite thread surfaces.
+        var dmChannelId = await _dms.GetSharedChannelIdAsync(userId, request.FriendId);
+        if (dmChannelId is null)
+        {
+            var newChannelId = _snowflake.NextId();
+            await _dms.CreateAsync(
+                newChannelId,
+                userId,
+                request.FriendId,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+            );
+            dmChannelId = newChannelId;
+        }
+        await _dms.SetHiddenAsync(dmChannelId.Value, userId, false);
+
+        // Post the full invite link so the recipient's client renders the inline invite embed
+        // (the detection layer keys on a "…/invite/{code}" URL — §5.27 #9).
+        var link = $"{_clientUrl}/invite/{invite.Code}";
+        await _messages.SendMessageAsync(
+            userId,
+            guildId: null,
+            dmChannelId.Value,
+            new SendMessageRequest(link)
+        );
+
+        await _notifications.CreateGuildInviteNotificationAsync(request.FriendId, userId, guildId);
 
         var creators = await _users.GetByIdsAsync(new[] { userId });
         return Ok(ToResponse(invite, creators));
@@ -178,6 +233,61 @@ public class GuildInvitesController : ControllerBase
     // -------------------------------------------------------------------------
 
     private long GetUserId() => long.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
+
+    /// <summary>
+    /// Mints, persists, audits, and broadcasts a guild invite. Shared by <see cref="Create"/> and
+    /// <see cref="InviteFriend"/> so both paths produce identical rows/audit/broadcast. The caller
+    /// is responsible for authorization and (if a channel is named) validating it belongs to the guild.
+    /// </summary>
+    private async Task<GuildInvite> MintInviteAsync(
+        long guildId,
+        long userId,
+        long? channelId,
+        int? maxUses,
+        long? expiresInSeconds
+    )
+    {
+        // Codes are the table's primary key (globally unique), so retry until we mint a free one.
+        string code;
+        do
+        {
+            code = GenerateInviteCode();
+        } while (await _invites.GetByCodeAsync(code) is not null);
+
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var invite = new GuildInvite
+        {
+            Code = code,
+            GuildId = guildId,
+            ChannelId = channelId,
+            CreatorId = userId,
+            MaxUses = maxUses,
+            UseCount = 0,
+            ExpiresAt = expiresInSeconds is { } secs ? now + secs * 1000 : null,
+            CreatedAt = now,
+        };
+
+        await _invites.AddAsync(invite);
+        await _invites.SaveChangesAsync();
+
+        await _audit.LogAsync(
+            guildId,
+            userId,
+            AuditLogAction.InviteCreate,
+            targetId: channelId,
+            changes: new
+            {
+                code,
+                channelId,
+                maxUses,
+                expiresAt = invite.ExpiresAt,
+            }
+        );
+
+        await BroadcastInvitesChangedAsync(guildId);
+
+        return invite;
+    }
 
     /// <summary>
     /// Best-effort "invites changed" nudge to the guild group so any open invite modal refetches.

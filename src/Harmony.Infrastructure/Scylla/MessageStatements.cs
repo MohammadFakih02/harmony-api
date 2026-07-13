@@ -29,8 +29,9 @@ public class MessageStatements
         InsertByChannel = session.Prepare(
             $@"INSERT INTO {ks}.messages_by_channel
                 (channel_id, message_id, user_id, content, attachment_ids,
-                 mention_ids, reply_to_id, is_deleted, is_edited, edited_at, message_type)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                 mention_ids, reply_to_id, is_deleted, is_edited, edited_at, message_type,
+                 forward_snapshot)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         );
 
         InsertById = session.Prepare(
@@ -42,7 +43,8 @@ public class MessageStatements
 
         SelectByChannel = session.Prepare(
             $@"SELECT channel_id, message_id, user_id, content, attachment_ids,
-                      mention_ids, reply_to_id, is_deleted, is_edited, edited_at, message_type
+                      mention_ids, reply_to_id, is_deleted, is_edited, edited_at, message_type,
+                      forward_snapshot
                FROM {ks}.messages_by_channel
                WHERE channel_id = ?
                LIMIT ?"
@@ -50,7 +52,8 @@ public class MessageStatements
 
         SelectByChannelBefore = session.Prepare(
             $@"SELECT channel_id, message_id, user_id, content, attachment_ids,
-                      mention_ids, reply_to_id, is_deleted, is_edited, edited_at, message_type
+                      mention_ids, reply_to_id, is_deleted, is_edited, edited_at, message_type,
+                      forward_snapshot
                FROM {ks}.messages_by_channel
                WHERE channel_id = ? AND message_id < ?
                LIMIT ?"
@@ -60,7 +63,8 @@ public class MessageStatements
         // reverse to ASC to walk forward from the target; the repo flips the result back to DESC.
         SelectByChannelAtOrAfter = session.Prepare(
             $@"SELECT channel_id, message_id, user_id, content, attachment_ids,
-                      mention_ids, reply_to_id, is_deleted, is_edited, edited_at, message_type
+                      mention_ids, reply_to_id, is_deleted, is_edited, edited_at, message_type,
+                      forward_snapshot
                FROM {ks}.messages_by_channel
                WHERE channel_id = ? AND message_id >= ?
                ORDER BY message_id ASC
@@ -70,7 +74,8 @@ public class MessageStatements
         // Strictly-newer page (scroll-down "load newer" after a jump). Same ASC reversal.
         SelectByChannelAfter = session.Prepare(
             $@"SELECT channel_id, message_id, user_id, content, attachment_ids,
-                      mention_ids, reply_to_id, is_deleted, is_edited, edited_at, message_type
+                      mention_ids, reply_to_id, is_deleted, is_edited, edited_at, message_type,
+                      forward_snapshot
                FROM {ks}.messages_by_channel
                WHERE channel_id = ? AND message_id > ?
                ORDER BY message_id ASC

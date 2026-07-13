@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Cassandra;
 using Harmony.Domain.Domain.Entities;
 using Harmony.Domain.Interfaces.Repositories;
@@ -118,7 +119,8 @@ public class MessageRepository : IMessageRepository
                 false,
                 false,
                 null,
-                message.MessageType
+                message.MessageType,
+                message.Forward is null ? null : JsonSerializer.Serialize(message.Forward)
             ),
             "write"
         );
@@ -243,7 +245,13 @@ public class MessageRepository : IMessageRepository
             IsEdited = row.GetValue<bool>("is_edited"),
             EditedAt = row.GetValue<DateTime?>("edited_at"),
             MessageType = row.GetValue<string>("message_type") ?? "text",
+            Forward = DeserializeForward(row.GetValue<string?>("forward_snapshot")),
         };
+
+    private static MessageForwardSnapshot? DeserializeForward(string? json) =>
+        string.IsNullOrEmpty(json)
+            ? null
+            : JsonSerializer.Deserialize<MessageForwardSnapshot>(json);
 
     private static Message MapMessageById(Row row) =>
         new()

@@ -56,7 +56,12 @@ public class GuildNotificationSettingsController : ControllerBase
         return Ok(
             new GuildNotificationSettingsResponse(
                 guildLevel,
-                channelRows.Select(r => new ChannelNotificationSettingResponse(r.ScopeId, r.Level))
+                guildRow?.SuppressEveryone ?? false,
+                channelRows.Select(r => new ChannelNotificationSettingResponse(
+                    r.ScopeId,
+                    r.Level,
+                    r.SuppressEveryone
+                ))
             )
         );
     }
@@ -75,6 +80,28 @@ public class GuildNotificationSettingsController : ControllerBase
             return BadRequest(new { error = "Invalid notification level." });
 
         await _settings.UpsertAsync(userId, NotificationScope.Guild, guildId, request.Level);
+        await _settings.SaveChangesAsync();
+        return NoContent();
+    }
+
+    // PUT /api/guilds/{guildId}/notification-settings/suppress-everyone — toggle @everyone suppression
+    // at the guild scope (creates the row at the default level if none exists).
+    [HttpPut("notification-settings/suppress-everyone")]
+    public async Task<IActionResult> SetGuildSuppressEveryone(
+        long guildId,
+        [FromBody] SetSuppressEveryoneRequest request
+    )
+    {
+        var userId = GetUserId();
+        if (!await _guilds.IsMemberAsync(guildId, userId))
+            return Forbid();
+
+        await _settings.UpsertSuppressEveryoneAsync(
+            userId,
+            NotificationScope.Guild,
+            guildId,
+            request.Value
+        );
         await _settings.SaveChangesAsync();
         return NoContent();
     }
@@ -111,6 +138,32 @@ public class GuildNotificationSettingsController : ControllerBase
             return NotFound(new { error = "Channel not found in this guild." });
 
         await _settings.UpsertAsync(userId, NotificationScope.Channel, channelId, request.Level);
+        await _settings.SaveChangesAsync();
+        return NoContent();
+    }
+
+    // PUT /api/guilds/{guildId}/channels/{channelId}/notification-settings/suppress-everyone
+    [HttpPut("channels/{channelId:long}/notification-settings/suppress-everyone")]
+    public async Task<IActionResult> SetChannelSuppressEveryone(
+        long guildId,
+        long channelId,
+        [FromBody] SetSuppressEveryoneRequest request
+    )
+    {
+        var userId = GetUserId();
+        if (!await _guilds.IsMemberAsync(guildId, userId))
+            return Forbid();
+
+        var channel = await _channels.GetByIdAndGuildIdAsync(channelId, guildId);
+        if (channel is null)
+            return NotFound(new { error = "Channel not found in this guild." });
+
+        await _settings.UpsertSuppressEveryoneAsync(
+            userId,
+            NotificationScope.Channel,
+            channelId,
+            request.Value
+        );
         await _settings.SaveChangesAsync();
         return NoContent();
     }

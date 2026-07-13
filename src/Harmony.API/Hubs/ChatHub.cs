@@ -196,16 +196,28 @@ public class ChatHub : Hub<IChatClient>
     // -------------------------------------------------------------------------
 
     /// <summary>
-    /// Sends a message through the full async pipeline.
-    /// Returns a HubResult envelope indicating success or failure.
+    /// Sends a message through the full async pipeline. A null <paramref name="guildId"/> routes to a
+    /// DM/group-DM (the service authorizes participation + not-blocked); a guild id routes to a guild
+    /// channel (the service authorizes ViewChannel|SendMessage). Optional <paramref name="attachmentIds"/>
+    /// (validated by the service: confirmed, owned, same-channel) and <paramref name="replyToId"/> reach
+    /// full parity with the REST send. Returns a HubResult envelope indicating success or failure.
     /// </summary>
     public async Task<HubResult<SendMessageResponse>> SendMessage(
         long channelId,
-        long guildId,
-        string content
+        long? guildId,
+        string content,
+        List<long>? attachmentIds = null,
+        long? replyToId = null,
+        string? nonce = null
     )
     {
-        if (string.IsNullOrWhiteSpace(content) || content.Length > 2000)
+        content ??= string.Empty;
+        var hasAttachments = attachmentIds is { Count: > 0 };
+
+        // Over-length is always invalid; empty content is invalid only without attachments (an
+        // attachment-only message is allowed, matching the REST/service rule). Kept as an early
+        // guard so the same error surfaces before we touch the pipeline.
+        if (content.Length > 2000 || (string.IsNullOrWhiteSpace(content) && !hasAttachments))
         {
             return new HubResult<SendMessageResponse>(
                 Succeeded: false,
@@ -224,8 +236,9 @@ public class ChatHub : Hub<IChatClient>
                 channelId,
                 new SendMessageRequest(
                     Content: content,
-                    ReplyToId: null,
-                    AttachmentIds: null
+                    ReplyToId: replyToId,
+                    AttachmentIds: attachmentIds,
+                    Nonce: nonce
                 )
             );
 

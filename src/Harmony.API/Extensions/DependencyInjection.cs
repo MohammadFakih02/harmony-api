@@ -39,11 +39,9 @@ public static class DependencyInjection
             ?? Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT")
             ?? "Production";
 
-        bool isTest =
-            env.Equals("Test", StringComparison.OrdinalIgnoreCase)
-            || AppDomain
-                .CurrentDomain.GetAssemblies()
-                .Any(a => a.FullName!.Contains("xunit", StringComparison.OrdinalIgnoreCase));
+        // The integration-test host sets ASPNETCORE_ENVIRONMENT=Test (UseEnvironment + explicit
+        // config key), so the environment string alone is authoritative — no assembly scan needed.
+        bool isTest = env.Equals("Test", StringComparison.OrdinalIgnoreCase);
 
         // -----------------------------------------------------------------------
         // PostgreSQL (With Global Split Queries configured to prevent Cartesian warnings)

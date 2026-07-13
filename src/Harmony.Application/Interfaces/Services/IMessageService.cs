@@ -1,5 +1,6 @@
 using Harmony.Application.DTOs.Requests;
 using Harmony.Application.DTOs.Responses;
+using Harmony.Domain.Domain.Entities;
 
 namespace Harmony.Domain.Interfaces.Services;
 
@@ -10,6 +11,22 @@ public interface IMessageService
         long? guildId,
         long channelId,
         SendMessageRequest request,
+        CancellationToken ct = default,
+        // Server-built forward snapshot (internal — ForwardMessageAsync sets it). A non-null
+        // snapshot is itself content, so it satisfies the "content or attachment" requirement.
+        MessageForwardSnapshot? forward = null
+    );
+
+    /// <summary>
+    /// Forwards a message into <paramref name="channelId"/>: reads the original, verifies the
+    /// forwarder can actually see it (no permission/DM leak), and stamps a server-authoritative
+    /// attributed-quote snapshot. Any <c>AttachmentIds</c> and note travel like a normal send.
+    /// </summary>
+    Task<SendMessageResponse> ForwardMessageAsync(
+        long userId,
+        long? guildId,
+        long channelId,
+        ForwardMessageRequest request,
         CancellationToken ct = default
     );
 

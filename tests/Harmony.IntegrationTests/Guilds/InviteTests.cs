@@ -146,6 +146,8 @@ public class InviteTests : ApiTestBase, IClassFixture<HarmonyWebApplicationFacto
         preview!.GuildId.Should().Be(guildId);
         preview.GuildName.Should().Be("Invite Guild");
         preview.MemberCount.Should().Be(1);
+        // No hub connection in the integration test → the owner is Offline → nobody online.
+        preview.OnlineCount.Should().Be(0);
 
         var join = await Client.PostAsJsonAsync($"/api/invites/{invite.Code}/join", new { });
         join.StatusCode.Should().Be(HttpStatusCode.OK);
@@ -344,6 +346,89 @@ public class InviteTests : ApiTestBase, IClassFixture<HarmonyWebApplicationFacto
             .StatusCode.Should().Be(HttpStatusCode.OK);
     }
 
+    /// <summary>Establishes an accepted friendship: requester → addressee → accept.</summary>
+    private async Task BefriendAsync(
+        string requesterToken,
+        string requesterUsername,
+        string addresseeToken,
+        long requesterId
+    )
+    {
+        Auth(requesterToken);
+        (await Client.PostAsJsonAsync("/api/friends/request", new { username = FriendUsername }))
+            .EnsureSuccessStatusCode();
+        Auth(addresseeToken);
+        (await Client.PatchAsync($"/api/friends/{requesterId}/accept", null))
+            .EnsureSuccessStatusCode();
+    }
+
+    // The addressee's username, shared by BefriendAsync + the invite-friend test.
+    private const string FriendUsername = "inv_friend9";
+
+    [Fact]
+    public async Task InviteFriend_MintsGuildInvite_CreatesDm_AndNotifiesTheFriend()
+    {
+        var (ownerToken, ownerId) = await RegisterAsync("inv_owner9", "inv_owner9@test.com");
+        var guildId = await CreateGuildAsync(ownerToken);
+        var (friendToken, friendId) = await RegisterAsync(FriendUsername, "inv_friend9@test.com");
+
+        await BefriendAsync(ownerToken, "inv_owner9", friendToken, ownerId);
+
+        Auth(ownerToken);
+        var resp = await Client.PostAsJsonAsync(
+            $"/api/guilds/{guildId}/invites/invite-friend",
+            new { friendId, maxUses = 1, expiresInSeconds = 604800 }
+        );
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var invite = (await resp.Content.ReadFromJsonAsync<InviteResponse>())!;
+        invite.Code.Should().NotBeNullOrWhiteSpace();
+        invite.ChannelId.Should().BeNull(); // guild-level invite
+
+        // A 1:1 DM now exists between the two (created server-side to carry the invite link).
+        using (var scope = Factory.Services.CreateScope())
+        {
+            var dms = scope.ServiceProvider.GetRequiredService<IDirectMessageRepository>();
+            (await dms.GetSharedChannelIdAsync(ownerId, friendId)).Should().NotBeNull();
+        }
+
+        // The friend has a guild_invite notification (written synchronously by the endpoint).
+        Auth(friendToken);
+        var notifications = await Client.GetFromJsonAsync<List<NotificationDto>>("/api/notifications");
+        notifications.Should()
+            .Contain(n => n.Type == "guild_invite" && n.ActorId == ownerId && n.GuildId == guildId);
+    }
+
+    [Fact]
+    public async Task InviteFriend_NonFriend_Returns400()
+    {
+        var (ownerToken, _) = await RegisterAsync("inv_owner10", "inv_owner10@test.com");
+        var guildId = await CreateGuildAsync(ownerToken);
+        var (_, strangerId) = await RegisterAsync("inv_stranger10", "inv_stranger10@test.com");
+
+        Auth(ownerToken);
+        var resp = await Client.PostAsJsonAsync(
+            $"/api/guilds/{guildId}/invites/invite-friend",
+            new { friendId = strangerId }
+        );
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    [Fact]
+    public async Task InviteFriend_Self_Returns400()
+    {
+        var (ownerToken, ownerId) = await RegisterAsync("inv_owner11", "inv_owner11@test.com");
+        var guildId = await CreateGuildAsync(ownerToken);
+
+        Auth(ownerToken);
+        var resp = await Client.PostAsJsonAsync(
+            $"/api/guilds/{guildId}/invites/invite-friend",
+            new { friendId = ownerId }
+        );
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    private record NotificationDto(long Id, string Type, long? ActorId, long? GuildId);
+
     private record AuthResponse(string AccessToken, UserDto User);
 
     private record UserDto(long Id);
@@ -419,6 +504,7 @@ public class InviteTests : ApiTestBase, IClassFixture<HarmonyWebApplicationFacto
         long GuildId,
         string GuildName,
         int MemberCount,
+        int OnlineCount,
         long? ChannelId
     );
 

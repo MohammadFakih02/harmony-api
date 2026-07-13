@@ -190,6 +190,12 @@ public interface IHubBroadcaster
     );
 
     /// <summary>
+    /// Pushes a user's current unread-notification count for their bell badge (Clients.User). Best-
+    /// effort UI hint — the authoritative source is GET /api/notifications/unread-count.
+    /// </summary>
+    Task BroadcastNotificationBadgeAsync(long userId, int unreadCount, CancellationToken ct = default);
+
+    /// <summary>
     /// Broadcasts a member removal (kick / ban / leave) to the guild group so every connected
     /// member updates their member list.
     /// </summary>

@@ -46,4 +46,32 @@ public class MessageSearchRepository : IMessageSearchRepository
             .AsNoTracking()
             .ToListAsync(ct);
     }
+
+    public async Task<List<MessageSearch>> SearchChannelAsync(
+        long channelId,
+        string query,
+        long? before,
+        int limit,
+        CancellationToken ct = default
+    )
+    {
+        // Single-channel FTS — the channel id is the whole scope (a DM has no guild, and a guild
+        // channel's visibility is enforced above), so there is no per-row visibility filtering. Same
+        // parameterization discipline as SearchAsync: the query is data, never concatenated SQL.
+        var beforeCursor = before ?? long.MaxValue;
+
+        return await _db
+            .MessagesSearch.FromSqlInterpolated(
+                $@"
+                SELECT message_id, channel_id, guild_id, user_id, content, created_at
+                FROM ""MessagesSearch""
+                WHERE channel_id = {channelId}
+                  AND content_search @@ plainto_tsquery('english', {query})
+                  AND created_at < {beforeCursor}
+                ORDER BY created_at DESC
+                LIMIT {limit}"
+            )
+            .AsNoTracking()
+            .ToListAsync(ct);
+    }
 }

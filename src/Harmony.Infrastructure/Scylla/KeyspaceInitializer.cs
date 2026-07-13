@@ -49,6 +49,7 @@ public class KeyspaceInitializer : IHostedService
                     is_edited boolean,
                     edited_at timestamp,
                     message_type varchar,
+                    forward_snapshot text,
                     PRIMARY KEY (channel_id, message_id)
                 ) WITH CLUSTERING ORDER BY (message_id DESC)
                   AND compaction = {{

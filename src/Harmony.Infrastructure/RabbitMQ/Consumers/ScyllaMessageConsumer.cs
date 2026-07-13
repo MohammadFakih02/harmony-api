@@ -42,6 +42,7 @@ public class ScyllaMessageConsumer : BackgroundService
     private readonly IMessageDeduplicator _deduplicator;
     private readonly ILogger<ScyllaMessageConsumer> _logger;
     private readonly ResiliencePipeline _retryPipeline;
+    private readonly bool _isTestEnv;
     private IChannel? _channel;
     private string? _consumerTag;
     private CancellationToken _stoppingToken;
@@ -62,6 +63,7 @@ public class ScyllaMessageConsumer : BackgroundService
         IServiceScopeFactory scopeFactory,
         IHubBroadcaster hubBroadcaster,
         IMessageDeduplicator deduplicator,
+        IHostEnvironment hostEnvironment,
         ILogger<ScyllaMessageConsumer> logger
     )
     {
@@ -69,6 +71,7 @@ public class ScyllaMessageConsumer : BackgroundService
         _scopeFactory = scopeFactory;
         _hubBroadcaster = hubBroadcaster;
         _deduplicator = deduplicator;
+        _isTestEnv = hostEnvironment.IsEnvironment("Test");
         _logger = logger;
 
         _retryPipeline = new ResiliencePipelineBuilder()
@@ -366,8 +369,7 @@ public class ScyllaMessageConsumer : BackgroundService
                 );
 
                 // In the Test env, requeue at most once (then DLQ) so a stuck edit can't burn the
-                // full backoff budget inside a test run — mirrors SearchIndexConsumer. (Reuses the
-                // xunit env-detection that §18 flags for cleanup; kept for consistency.)
+                // full backoff budget inside a test run — mirrors SearchIndexConsumer.
                 var shouldRequeue =
                     attempts < MaxOutOfOrderRequeues && (!IsTestEnv() || !ea.Redelivered);
 
@@ -490,7 +492,17 @@ public class ScyllaMessageConsumer : BackgroundService
                 SentAt: evt.SentAt.ToUnixTimeMilliseconds(),
                 EditedAt: null,
                 // A brand-new message has no reactions yet — they arrive via ReactionAdded events.
-                Reactions: []
+                Reactions: [],
+                Forward: evt.Forward is null
+                    ? null
+                    : new ForwardSnapshotResponse(
+                        evt.Forward.AuthorId,
+                        evt.Forward.AuthorName,
+                        evt.Forward.Content,
+                        evt.Forward.SentAt
+                    ),
+                // Echo the sender's optimistic-send token so their client can reconcile in place.
+                Nonce: evt.Nonce
             )
         );
 
@@ -608,17 +620,10 @@ public class ScyllaMessageConsumer : BackgroundService
         );
     }
 
-    // Detects the integration-test environment so the out-of-order requeue can DLQ after a
-    // single redelivery rather than burning the full backoff budget. Mirrors SearchIndexConsumer.
-    private static bool IsTestEnv() =>
-        string.Equals(
-            Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT"),
-            "Test",
-            StringComparison.OrdinalIgnoreCase
-        )
-        || AppDomain
-            .CurrentDomain.GetAssemblies()
-            .Any(a => a.FullName!.Contains("xunit", StringComparison.OrdinalIgnoreCase));
+    // The integration-test environment (resolved once from the injected IHostEnvironment, which the
+    // test WebApplicationFactory sets via UseEnvironment("Test")) so the out-of-order requeue can DLQ
+    // after a single redelivery rather than burning the full backoff budget. Mirrors SearchIndexConsumer.
+    private bool IsTestEnv() => _isTestEnv;
 
     // -------------------------------------------------------------------------
     // Graceful shutdown

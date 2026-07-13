@@ -86,8 +86,10 @@ public class MessageServiceSendGateTests
         }
     }
 
-    private static SendMessageRequest Msg(string content = "hi", long? replyToId = null) =>
-        new(content, replyToId);
+    private static SendMessageRequest Msg(
+        string content = "hi",
+        long? replyToId = null,
+        string? nonce = null) => new(content, replyToId, Nonce: nonce);
 
     // ---- slowmode ----
 
@@ -176,5 +178,31 @@ public class MessageServiceSendGateTests
 
         h.PublishedEvent.Should().NotBeNull();
         h.PublishedEvent!.ReplyToId.Should().Be(42);
+    }
+
+    // ---- optimistic-send idempotency nonce ----
+
+    [Fact]
+    public async Task Send_WithNonce_EchoesItVerbatimOnTheEvent()
+    {
+        var h = new Harness();
+        h.SetUpChannel(0, Permission.ViewChannel | Permission.SendMessage);
+
+        await h.BuildSut().SendMessageAsync(
+            ActorId, GuildId, ChannelId, Msg(nonce: "abc-123"));
+
+        h.PublishedEvent!.Nonce.Should().Be("abc-123");
+    }
+
+    [Fact]
+    public async Task Send_WithOverlongNonce_DropsItRatherThanBloatingTheEvent()
+    {
+        var h = new Harness();
+        h.SetUpChannel(0, Permission.ViewChannel | Permission.SendMessage);
+
+        await h.BuildSut().SendMessageAsync(
+            ActorId, GuildId, ChannelId, Msg(nonce: new string('n', 65)));
+
+        h.PublishedEvent!.Nonce.Should().BeNull();
     }
 }

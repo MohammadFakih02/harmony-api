@@ -16,4 +16,16 @@ public interface ISearchService
         long? before,
         CancellationToken ct = default
     );
+
+    /// <summary>
+    /// Full-text search within a single DM/group-DM channel the caller participates in. Guild-less;
+    /// authorization is a participant check on the channel (no per-channel visibility, unlike a guild).
+    /// </summary>
+    Task<SearchResultsResponse> SearchDmChannelAsync(
+        long userId,
+        long channelId,
+        string query,
+        long? before,
+        CancellationToken ct = default
+    );
 }

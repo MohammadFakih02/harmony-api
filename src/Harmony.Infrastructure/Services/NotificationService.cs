@@ -121,6 +121,24 @@ public class NotificationService : INotificationService
         }
     }
 
+    /// <summary>
+    /// Pushes the recipient's fresh unread-notification count so their bell badge updates without a
+    /// refetch. Best-effort and fail-open — a badge that misses a push self-heals on the next
+    /// GET /unread-count, so a broadcast failure must never bubble into the create path.
+    /// </summary>
+    private async Task BroadcastBadgeAsync(long userId, CancellationToken ct)
+    {
+        try
+        {
+            var count = await _notifications.GetUnreadCountAsync(userId);
+            await _broadcaster.BroadcastNotificationBadgeAsync(userId, count, ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to broadcast notification badge for UserId {UserId}", userId);
+        }
+    }
+
     /// <inheritdoc />
     public async Task CreateFriendRequestNotificationAsync(
         long addresseeId,
@@ -170,6 +188,7 @@ public class NotificationService : INotificationService
         _pushNudge.Signal();
 
         await PushUnlessDndAsync(notification, ct);
+        await BroadcastBadgeAsync(notification.UserId, ct);
     }
 
     /// <inheritdoc />
@@ -180,6 +199,7 @@ public class NotificationService : INotificationService
         long channelId,
         long messageId,
         long createdAt,
+        IReadOnlyCollection<long>? everyoneOriginIds = null,
         CancellationToken ct = default
     )
     {
@@ -190,6 +210,9 @@ public class NotificationService : INotificationService
         // Fetched once for the whole batch; channel-scope overrides guild-scope, absent = default.
         var channelLevels = new Dictionary<long, string>();
         var guildLevels = new Dictionary<long, string>();
+        // Suppress-@everyone flag, resolved the same channel-over-guild way as the level.
+        var channelSuppress = new Dictionary<long, bool>();
+        var guildSuppress = new Dictionary<long, bool>();
         if (guildId.HasValue)
         {
             var settingRows = await _notificationSettings.GetForResolutionAsync(
@@ -200,9 +223,15 @@ public class NotificationService : INotificationService
             foreach (var row in settingRows)
             {
                 if (row.ScopeType == NotificationScope.Channel)
+                {
                     channelLevels[row.UserId] = row.Level;
+                    channelSuppress[row.UserId] = row.SuppressEveryone;
+                }
                 else
+                {
                     guildLevels[row.UserId] = row.Level;
+                    guildSuppress[row.UserId] = row.SuppressEveryone;
+                }
             }
         }
 
@@ -228,6 +257,18 @@ public class NotificationService : INotificationService
                     : guildLevels.GetValueOrDefault(mentionedUserId, NotificationLevel.Default);
                 if (level == NotificationLevel.Nothing)
                     continue;
+
+                // Suppress-@everyone: a recipient reached ONLY through @everyone/@here who opted
+                // out of broadcast pings in this scope is skipped (a direct @user/@role mention is
+                // never in everyoneOriginIds, so it still notifies). Channel-scope wins over guild.
+                if (everyoneOriginIds is not null && everyoneOriginIds.Contains(mentionedUserId))
+                {
+                    var suppress = channelSuppress.TryGetValue(mentionedUserId, out var cs)
+                        ? cs
+                        : guildSuppress.GetValueOrDefault(mentionedUserId, false);
+                    if (suppress)
+                        continue;
+                }
             }
 
             if (await _userMute.IsMutedAsync(mentionedUserId, actorId, MuteTargetType.User, now))
@@ -289,7 +330,10 @@ public class NotificationService : INotificationService
         _pushNudge.Signal();
 
         foreach (var notification in toNotify)
+        {
             await PushUnlessDndAsync(notification, ct);
+            await BroadcastBadgeAsync(notification.UserId, ct);
+        }
     }
 
     /// <inheritdoc />
@@ -364,5 +408,128 @@ public class NotificationService : INotificationService
         _pushNudge.Signal();
 
         await PushUnlessDndAsync(notification, ct);
+        await BroadcastBadgeAsync(notification.UserId, ct);
+    }
+
+    /// <inheritdoc />
+    public async Task CreateMessageNotificationsAsync(
+        long actorId,
+        long guildId,
+        long channelId,
+        long messageId,
+        long createdAt,
+        IReadOnlyCollection<long> alreadyNotifiedIds,
+        CancellationToken ct = default
+    )
+    {
+        // The opt-in set for the "all" level (channel-over-guild resolved in the repo). Default is
+        // "mentions", so this is normally tiny or empty.
+        var optedIn = await _notificationSettings.GetOptedIntoAllAsync(guildId, channelId);
+        if (optedIn.Count == 0)
+            return;
+
+        var recipients = optedIn
+            .Where(id => id != actorId && !alreadyNotifiedIds.Contains(id))
+            .ToList();
+        if (recipients.Count == 0)
+            return;
+
+        var prefRows = await _notificationPreferences.GetForUsersAsync(recipients);
+        var preferences = prefRows.ToDictionary(p => p.UserId);
+
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var toNotify = new List<Notification>();
+
+        foreach (var recipientId in recipients)
+        {
+            // The master mentions switch doubles as the "all" gate — if a user turned off mention
+            // notifications entirely, they don't want the noisier per-message ones either.
+            if (preferences.TryGetValue(recipientId, out var pref) && !pref.MentionsEnabled)
+                continue;
+
+            if (await _userMute.IsMutedAsync(recipientId, actorId, MuteTargetType.User, now))
+                continue;
+            if (await _userMute.IsMutedAsync(recipientId, channelId, MuteTargetType.Channel, now))
+                continue;
+            if (await _userMute.IsMutedAsync(recipientId, guildId, MuteTargetType.Guild, now))
+                continue;
+            if (await _userBlock.AreBlockedAsync(actorId, recipientId))
+                continue;
+
+            toNotify.Add(
+                new Notification
+                {
+                    Id = _snowflake.NextId(),
+                    UserId = recipientId,
+                    Type = "message",
+                    ActorId = actorId,
+                    GuildId = guildId,
+                    ChannelId = channelId,
+                    MessageId = messageId,
+                    IsRead = false,
+                    CreatedAt = createdAt,
+                }
+            );
+        }
+
+        if (toNotify.Count == 0)
+            return;
+
+        foreach (var notification in toNotify)
+        {
+            await _notifications.AddAsync(notification);
+            await StagePushAsync(notification);
+        }
+
+        await _notifications.SaveChangesAsync();
+        _pushNudge.Signal();
+
+        foreach (var notification in toNotify)
+        {
+            await PushUnlessDndAsync(notification, ct);
+            await BroadcastBadgeAsync(notification.UserId, ct);
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task CreateGuildInviteNotificationAsync(
+        long recipientId,
+        long actorId,
+        long guildId,
+        CancellationToken ct = default
+    )
+    {
+        if (recipientId == actorId)
+            return;
+
+        // Missing preference row = default enabled; only an explicit false suppresses.
+        var pref = await _notificationPreferences.GetAsync(recipientId);
+        if (pref is { GuildInvites: false })
+            return;
+
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        if (await _userMute.IsMutedAsync(recipientId, actorId, MuteTargetType.User, now))
+            return;
+        if (await _userBlock.AreBlockedAsync(actorId, recipientId))
+            return;
+
+        var notification = new Notification
+        {
+            Id = _snowflake.NextId(),
+            UserId = recipientId,
+            Type = "guild_invite",
+            ActorId = actorId,
+            GuildId = guildId,
+            IsRead = false,
+            CreatedAt = now,
+        };
+
+        await _notifications.AddAsync(notification);
+        await StagePushAsync(notification);
+        await _notifications.SaveChangesAsync();
+        _pushNudge.Signal();
+
+        await PushUnlessDndAsync(notification, ct);
+        await BroadcastBadgeAsync(notification.UserId, ct);
     }
 }

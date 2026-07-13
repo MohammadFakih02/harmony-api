@@ -234,6 +234,68 @@ public class SendMessageFlowTests : ApiTestBase, IClassFixture<HarmonyWebApplica
         response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
     }
 
+    // --- ForwardMessage ---
+
+    [Fact]
+    public async Task ForwardMessage_ShouldStampAttributedSnapshot_ThatRoundTripsThroughScylla()
+    {
+        // Original in the primary channel.
+        var send = await Client.PostAsJsonAsync(
+            $"/api/guilds/{_guildId}/channels/{_channelId}/messages",
+            new { content = "original for forward" }
+        );
+        var original = await send.Content.ReadFromJsonAsync<SendMessageResponse>();
+        await WaitForMessageInScyllaAsync(original!.MessageId);
+
+        // Forward it into the other channel with a note.
+        var forward = await Client.PostAsJsonAsync(
+            $"/api/guilds/{_guildId}/channels/{_otherChannelId}/messages/forward",
+            new
+            {
+                sourceChannelId = original.ChannelId,
+                sourceMessageId = original.MessageId,
+                note = "fwd note",
+            }
+        );
+        forward.StatusCode.Should().Be(HttpStatusCode.OK);
+        var forwarded = await forward.Content.ReadFromJsonAsync<SendMessageResponse>();
+        forwarded!.Content.Should().Be("fwd note");
+
+        // Read it back from the TARGET channel — the snapshot must survive the Scylla round-trip.
+        var messages = await Eventually.GetAsync(
+            action: async () =>
+            {
+                var resp = await Client.GetAsync(
+                    $"/api/guilds/{_guildId}/channels/{_otherChannelId}/messages"
+                );
+                if (!resp.IsSuccessStatusCode)
+                    return [];
+                var body = await resp.Content.ReadFromJsonAsync<ChannelMessagesResponse>();
+                return body?.Messages.ToList() ?? [];
+            },
+            predicate: m => m.Any(x => x.MessageId == forwarded.MessageId),
+            retries: 100,
+            intervalMs: 100
+        );
+
+        var card = messages.Single(m => m.MessageId == forwarded.MessageId);
+        card.Content.Should().Be("fwd note");
+        card.Forward.Should().NotBeNull();
+        card.Forward!.AuthorName.Should().Be("msguser");
+        card.Forward.Content.Should().Be("original for forward");
+    }
+
+    [Fact]
+    public async Task ForwardMessage_ShouldReturn404_WhenSourceMissing()
+    {
+        var response = await Client.PostAsJsonAsync(
+            $"/api/guilds/{_guildId}/channels/{_channelId}/messages/forward",
+            new { sourceChannelId = _channelId, sourceMessageId = 99999L, note = (string?)null }
+        );
+
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
     // --- Helpers ---
 
     private long _otherChannelId; // Add this private field at the top of SendMessageFlowTests class
