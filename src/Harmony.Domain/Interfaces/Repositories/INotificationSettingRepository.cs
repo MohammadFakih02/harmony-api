@@ -28,8 +28,22 @@ public interface INotificationSettingRepository
         long channelId
     );
 
+    /// <summary>
+    /// The (opt-in) users whose resolved notification level for this guild/channel is <c>all</c>
+    /// — channel-scope wins over guild-scope, so a channel <c>mentions</c>/<c>nothing</c> override
+    /// cancels a guild-wide <c>all</c>. Powers the per-message producer; the default is
+    /// <c>mentions</c>, so this set is small (only members who explicitly opted in).
+    /// </summary>
+    Task<List<long>> GetOptedIntoAllAsync(long guildId, long channelId);
+
     /// <summary>Upsert the level for one (user, scope). Does not call SaveChanges.</summary>
     Task UpsertAsync(long userId, string scopeType, long scopeId, string level);
+
+    /// <summary>
+    /// Upsert the suppress-@everyone flag for one (user, scope), creating the row at the default
+    /// level if absent. Does not call SaveChanges.
+    /// </summary>
+    Task UpsertSuppressEveryoneAsync(long userId, string scopeType, long scopeId, bool value);
 
     /// <summary>Remove a (user, scope) row, resetting it to the default. No-op if absent. Does not save.</summary>
     Task DeleteAsync(long userId, string scopeType, long scopeId);

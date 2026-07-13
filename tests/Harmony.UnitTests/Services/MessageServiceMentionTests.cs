@@ -360,4 +360,63 @@ public class MessageServiceMentionTests
 
         h.PublishedEvent!.MentionIds.Should().BeEquivalentTo(new List<long> { BobId, CarolId });
     }
+
+    // --- EveryoneMentionIds split (feeds per-scope suppress-@everyone in the consumer) ---
+
+    [Fact]
+    public async Task SendMessageAsync_ShouldMarkEveryReached_AsEveryoneOnly_ForPlainEveryone()
+    {
+        var h = new Harness();
+        h.SetUpGuildSendContext();
+        h.SetUpGuildMembers(new Dictionary<long, string>
+        {
+            [ActorId] = "actor", [BobId] = "bob", [CarolId] = "carol",
+        });
+        h.Permissions
+            .Setup(p => p.HasAsync(ActorId, GuildId, Permission.MentionEveryone, ChannelId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+        var sut = h.BuildSut();
+
+        await sut.SendMessageAsync(ActorId, GuildId, ChannelId, new SendMessageRequest(Content: "@everyone gm"));
+
+        // No direct @user or @role in the message → everyone reached is everyone-ONLY.
+        h.PublishedEvent!.MentionIds.Should().BeEquivalentTo(new List<long> { ActorId, BobId, CarolId });
+        h.PublishedEvent!.EveryoneMentionIds.Should().BeEquivalentTo(new List<long> { ActorId, BobId, CarolId });
+    }
+
+    [Fact]
+    public async Task SendMessageAsync_ShouldExcludeDirectlyMentioned_FromEveryoneOnly()
+    {
+        var h = new Harness();
+        h.SetUpGuildSendContext();
+        h.SetUpGuildMembers(new Dictionary<long, string>
+        {
+            [ActorId] = "actor", [BobId] = "bob", [CarolId] = "carol",
+        });
+        h.Permissions
+            .Setup(p => p.HasAsync(ActorId, GuildId, Permission.MentionEveryone, ChannelId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+        var sut = h.BuildSut();
+
+        await sut.SendMessageAsync(ActorId, GuildId, ChannelId, new SendMessageRequest(Content: "@bob @everyone gm"));
+
+        // Bob was named directly, so he must still notify even if the scope suppresses @everyone —
+        // he's excluded from the everyone-only set. Actor + carol were reached only via @everyone.
+        h.PublishedEvent!.MentionIds.Should().BeEquivalentTo(new List<long> { ActorId, BobId, CarolId });
+        h.PublishedEvent!.EveryoneMentionIds.Should().BeEquivalentTo(new List<long> { ActorId, CarolId });
+    }
+
+    [Fact]
+    public async Task SendMessageAsync_ShouldLeaveEveryoneOnlyEmpty_ForDirectMentionOnly()
+    {
+        var h = new Harness();
+        h.SetUpGuildSendContext();
+        h.SetUpGuildMembers(new Dictionary<long, string> { [ActorId] = "actor", [BobId] = "bob" });
+        var sut = h.BuildSut();
+
+        await sut.SendMessageAsync(ActorId, GuildId, ChannelId, new SendMessageRequest(Content: "hey @bob"));
+
+        h.PublishedEvent!.MentionIds.Should().BeEquivalentTo(new List<long> { BobId });
+        h.PublishedEvent!.EveryoneMentionIds.Should().BeEmpty();
+    }
 }

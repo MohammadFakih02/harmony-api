@@ -108,6 +108,44 @@ public class SearchTests : ApiTestBase, IClassFixture<HarmonyWebApplicationFacto
             intervalMs: 100
         );
 
+    private async Task<long> CreateDmAsync(string token, long targetUserId)
+    {
+        Auth(token);
+        var resp = await Client.PostAsJsonAsync("/api/dm", new { targetUserId });
+        resp.EnsureSuccessStatusCode();
+        return (await resp.Content.ReadFromJsonAsync<DmDto>())!.ChannelId;
+    }
+
+    private async Task<long> SendDmAsync(long channelId, string content)
+    {
+        var resp = await Client.PostAsJsonAsync($"/api/dm/{channelId}/messages", new { content });
+        resp.EnsureSuccessStatusCode();
+        return (await resp.Content.ReadFromJsonAsync<SendDto>())!.MessageId;
+    }
+
+    private async Task<SearchResults> SearchDmAsync(string token, long channelId, string query)
+    {
+        Auth(token);
+        var resp = await Client.GetAsync(
+            $"/api/dm/{channelId}/search?q={Uri.EscapeDataString(query)}"
+        );
+        resp.EnsureSuccessStatusCode();
+        return (await resp.Content.ReadFromJsonAsync<SearchResults>())!;
+    }
+
+    private Task<SearchResults> SearchDmUntilFoundAsync(
+        string token,
+        long channelId,
+        string query,
+        long messageId
+    ) =>
+        Eventually.GetAsync(
+            action: () => SearchDmAsync(token, channelId, query),
+            predicate: r => r.Results.Any(x => x.MessageId == messageId),
+            retries: 100,
+            intervalMs: 100
+        );
+
     private static long EveryoneRoleId(HarmonyWebApplicationFactory factory, long guildId)
     {
         using var scope = factory.Services.CreateScope();
@@ -221,6 +259,40 @@ public class SearchTests : ApiTestBase, IClassFixture<HarmonyWebApplicationFacto
         resp.StatusCode.Should().Be(HttpStatusCode.Forbidden);
     }
 
+    [Fact]
+    public async Task DmSearch_FindsMatchingMessage_ForParticipant()
+    {
+        var (aToken, _) = await RegisterAsync("dmsearch_a", "dmsearch_a@test.com");
+        var (_, bId) = await RegisterAsync("dmsearch_b", "dmsearch_b@test.com");
+
+        var channelId = await CreateDmAsync(aToken, bId);
+        Auth(aToken);
+        var hitId = await SendDmAsync(channelId, "the tangerine dream is real");
+        await SendDmAsync(channelId, "completely unrelated banter");
+
+        var results = await SearchDmUntilFoundAsync(aToken, channelId, "tangerine", hitId);
+
+        var hit = results.Results.Single(r => r.MessageId == hitId);
+        hit.ChannelId.Should().Be(channelId);
+        hit.GuildId.Should().BeNull();
+        hit.Content.Should().Contain("tangerine");
+        results.Results.Should().NotContain(r => r.Content.Contains("unrelated"));
+    }
+
+    [Fact]
+    public async Task DmSearch_NonParticipant_IsForbidden()
+    {
+        var (aToken, _) = await RegisterAsync("dmsearch_a2", "dmsearch_a2@test.com");
+        var (_, bId) = await RegisterAsync("dmsearch_b2", "dmsearch_b2@test.com");
+        var (outsiderToken, _) = await RegisterAsync("dmsearch_out2", "dmsearch_out2@test.com");
+
+        var channelId = await CreateDmAsync(aToken, bId);
+
+        Auth(outsiderToken);
+        var resp = await Client.GetAsync($"/api/dm/{channelId}/search?q=anything");
+        resp.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+    }
+
     // -------------------------------------------------------------------------
     // DTOs
     // -------------------------------------------------------------------------
@@ -231,6 +303,8 @@ public class SearchTests : ApiTestBase, IClassFixture<HarmonyWebApplicationFacto
 
     private record IdDto(long Id);
 
+    private record DmDto(long ChannelId);
+
     private record SendDto(long MessageId);
 
     private record SearchResults(List<SearchResult> Results, bool HasMore);
@@ -239,6 +313,7 @@ public class SearchTests : ApiTestBase, IClassFixture<HarmonyWebApplicationFacto
         long MessageId,
         long ChannelId,
         string ChannelName,
+        long? GuildId,
         long UserId,
         string Username,
         string Content

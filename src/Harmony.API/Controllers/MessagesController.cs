@@ -40,6 +40,26 @@ public class MessagesController : ControllerBase
         return Ok(response);
     }
 
+    [HttpPost("forward")]
+    public async Task<IActionResult> ForwardMessage(
+        long guildId,
+        long channelId,
+        [FromBody] ForwardMessageRequest request
+    )
+    {
+        var userId = GetUserId();
+        if (userId is null)
+            return Unauthorized();
+
+        var response = await _messageService.ForwardMessageAsync(
+            userId.Value,
+            guildId,
+            channelId,
+            request
+        );
+        return Ok(response);
+    }
+
     [HttpGet]
     public async Task<IActionResult> GetMessages(
         long guildId,

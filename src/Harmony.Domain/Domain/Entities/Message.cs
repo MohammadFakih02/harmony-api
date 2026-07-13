@@ -14,9 +14,22 @@ public class Message
     public DateTime? EditedAt { get; set; }
     public string MessageType { get; set; } = "text";
 
+    // Server-built snapshot of the original message when this message is a forward (§Slice 4).
+    // Null for ordinary messages. Persisted as JSON in the messages_by_channel.forward_snapshot
+    // column (channel table only — mirrors MessageType). Authoritative: the server resolves the
+    // author + content, so a client can never forge an attributed forward.
+    public MessageForwardSnapshot? Forward { get; set; }
+
     // Derived from Snowflake ID — not stored in Scylla
     public DateTime CreatedAt =>
         DateTimeOffset
             .FromUnixTimeMilliseconds((MessageId >> 22) + 1704067200000L) // custom epoch: 2024-01-01
             .UtcDateTime;
 }
+
+/// <summary>
+/// A server-authoritative snapshot of the message being forwarded — the original author, their
+/// display name, the original text, and when it was sent. Copied at forward time so it survives
+/// deletion of the source and never leaks the source across a permission/DM boundary.
+/// </summary>
+public record MessageForwardSnapshot(long AuthorId, string AuthorName, string Content, long SentAt);

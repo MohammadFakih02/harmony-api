@@ -4,8 +4,9 @@ namespace Harmony.Application.Interfaces.Services;
 /// Canonical per-guild / per-channel notification levels (§5.31, roadmap E#16), shared by the
 /// validator, the controller and the resolver so they never drift.
 /// <list type="bullet">
-/// <item><c>all</c> — notify on every message. (No per-message notification producer exists yet,
-/// so today this behaves identically to <c>mentions</c>; stored for forward-compat.)</item>
+/// <item><c>all</c> — notify on every message in the scope. Produced by
+/// <c>NotificationService.CreateMessageNotificationsAsync</c> (Type <c>"message"</c>), which the
+/// consumer runs for every guild text message against the (opt-in) set resolved to this level.</item>
 /// <item><c>mentions</c> — only @mentions notify. This is the default when no setting exists.</item>
 /// <item><c>nothing</c> — suppress every notification from this scope.</item>
 /// </list>

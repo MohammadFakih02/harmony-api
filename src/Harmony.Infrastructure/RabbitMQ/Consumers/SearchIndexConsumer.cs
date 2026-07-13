@@ -21,6 +21,7 @@ public class SearchIndexConsumer : BackgroundService
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<SearchIndexConsumer> _logger;
     private readonly ResiliencePipeline _retryPipeline;
+    private readonly bool _isTestEnv;
     private IChannel? _channel;
     private string? _consumerTag;
     private CancellationToken _stoppingToken;
@@ -33,11 +34,13 @@ public class SearchIndexConsumer : BackgroundService
     public SearchIndexConsumer(
         RabbitMQConnection connection,
         IServiceScopeFactory scopeFactory,
+        IHostEnvironment hostEnvironment,
         ILogger<SearchIndexConsumer> logger
     )
     {
         _connection = connection;
         _scopeFactory = scopeFactory;
+        _isTestEnv = hostEnvironment.IsEnvironment("Test");
         _logger = logger;
 
         _retryPipeline = new ResiliencePipelineBuilder()
@@ -305,19 +308,9 @@ public class SearchIndexConsumer : BackgroundService
 
             if (deliveryChannel.IsOpen)
             {
-                bool isTestEnv =
-                    string.Equals(
-                        Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT"),
-                        "Test",
-                        StringComparison.OrdinalIgnoreCase
-                    )
-                    || AppDomain
-                        .CurrentDomain.GetAssemblies()
-                        .Any(a =>
-                            a.FullName!.Contains("xunit", StringComparison.OrdinalIgnoreCase)
-                        );
-
-                bool shouldRequeue = !isTestEnv || !ea.Redelivered;
+                // In the Test env (resolved once from the injected IHostEnvironment), requeue at most
+                // once — then DLQ — so a stuck out-of-order write can't burn the full backoff budget.
+                bool shouldRequeue = !_isTestEnv || !ea.Redelivered;
 
                 await deliveryChannel.BasicNackAsync(
                     ea.DeliveryTag,

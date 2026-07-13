@@ -25,13 +25,15 @@ public class SearchService : ISearchService
     private readonly IChannelRepository _channels;
     private readonly IUserRepository _users;
     private readonly IPermissionService _permissions;
+    private readonly IDirectMessageRepository _dms;
 
     public SearchService(
         IMessageSearchRepository search,
         IGuildRepository guilds,
         IChannelRepository channels,
         IUserRepository users,
-        IPermissionService permissions
+        IPermissionService permissions,
+        IDirectMessageRepository dms
     )
     {
         _search = search;
@@ -39,6 +41,7 @@ public class SearchService : ISearchService
         _channels = channels;
         _users = users;
         _permissions = permissions;
+        _dms = dms;
     }
 
     public async Task<SearchResultsResponse> SearchGuildAsync(
@@ -106,6 +109,53 @@ public class SearchService : ISearchService
                     MessageId: r.MessageId,
                     ChannelId: r.ChannelId,
                     ChannelName: channelNames.GetValueOrDefault(r.ChannelId, "unknown"),
+                    GuildId: r.GuildId,
+                    UserId: r.UserId,
+                    Username: user?.UserName ?? "Unknown",
+                    AvatarKey: user?.AvatarKey,
+                    Content: r.Content,
+                    CreatedAt: r.CreatedAt
+                );
+            })
+            .ToList();
+
+        return new SearchResultsResponse(results, hasMore);
+    }
+
+    public async Task<SearchResultsResponse> SearchDmChannelAsync(
+        long userId,
+        long channelId,
+        string query,
+        long? before,
+        CancellationToken ct = default
+    )
+    {
+        query = query?.Trim() ?? string.Empty;
+        if (query.Length == 0)
+            return new SearchResultsResponse([], HasMore: false);
+
+        // Participation IS the authorization — a guild channel has no dm_participants row, so this
+        // also rejects any attempt to search a guild channel through the DM endpoint.
+        if (!await _dms.IsParticipantAsync(channelId, userId))
+            throw new UnauthorizedAccessException("You are not a participant of this conversation.");
+
+        // Single channel, no per-row visibility filtering — fetch exactly one page + 1 to know if
+        // there's more.
+        var raw = await _search.SearchChannelAsync(channelId, query, before, PageSize + 1, ct);
+        var hasMore = raw.Count > PageSize;
+        var page = hasMore ? raw.GetRange(0, PageSize) : raw;
+
+        var users = await _users.GetByIdsAsync(page.Select(r => r.UserId).Distinct());
+        var channel = await _channels.GetByIdAsync(channelId);
+        var channelName = channel?.Name ?? "Direct Message";
+
+        var results = page.Select(r =>
+            {
+                users.TryGetValue(r.UserId, out var user);
+                return new SearchResultResponse(
+                    MessageId: r.MessageId,
+                    ChannelId: r.ChannelId,
+                    ChannelName: channelName,
                     GuildId: r.GuildId,
                     UserId: r.UserId,
                     Username: user?.UserName ?? "Unknown",

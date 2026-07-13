@@ -58,6 +58,7 @@ public class MessageConsumerHandler : IMessageConsumerHandler
             IsDeleted = false,
             IsEdited = false,
             MessageType = evt.MessageType,
+            Forward = evt.Forward,
         };
 
         await _messageRepository.SaveAsync(message, ct);
@@ -77,6 +78,7 @@ public class MessageConsumerHandler : IMessageConsumerHandler
                     evt.ChannelId,
                     evt.MessageId,
                     evt.SentAt.ToUnixTimeMilliseconds(),
+                    evt.EveryoneMentionIds,
                     ct
                 );
             }
@@ -123,6 +125,37 @@ public class MessageConsumerHandler : IMessageConsumerHandler
                 _logger.LogWarning(
                     ex,
                     "MessageSent: reply-notification creation failed for MessageId {MessageId} — message persisted, continuing",
+                    evt.MessageId
+                );
+            }
+        }
+
+        // Per-message ("all" level) notifications — guild text messages only, best-effort. Notifies
+        // members who opted this guild/channel into the "all" level, minus anyone already pinged by a
+        // mention/reply above (no double notification for one message).
+        if (evt.GuildId is { } allGuildId && evt.MessageType == "text")
+        {
+            try
+            {
+                var already = new HashSet<long>(evt.MentionIds);
+                if (replyRecipientId is { } replied)
+                    already.Add(replied);
+
+                await _notificationService.CreateMessageNotificationsAsync(
+                    evt.UserId,
+                    allGuildId,
+                    evt.ChannelId,
+                    evt.MessageId,
+                    evt.SentAt.ToUnixTimeMilliseconds(),
+                    already,
+                    ct
+                );
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "MessageSent: per-message (all-level) notification creation failed for MessageId {MessageId} — message persisted, continuing",
                     evt.MessageId
                 );
             }
@@ -249,6 +282,7 @@ public class MessageConsumerHandler : IMessageConsumerHandler
                     evt.ChannelId,
                     evt.MessageId,
                     evt.EditedAt.ToUnixTimeMilliseconds(),
+                    evt.EveryoneMentionIds,
                     ct
                 );
             }

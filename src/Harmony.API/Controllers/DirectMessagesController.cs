@@ -42,6 +42,7 @@ public class DirectMessagesController : ControllerBase
     private readonly IUnreadCountService _unread;
     private readonly IFileService _files;
     private readonly IHubBroadcaster _broadcaster;
+    private readonly ISearchService _search;
     private readonly ILogger<DirectMessagesController> _logger;
 
     public DirectMessagesController(
@@ -56,6 +57,7 @@ public class DirectMessagesController : ControllerBase
         IUnreadCountService unread,
         IFileService files,
         IHubBroadcaster broadcaster,
+        ISearchService search,
         ILogger<DirectMessagesController> logger
     )
     {
@@ -70,6 +72,7 @@ public class DirectMessagesController : ControllerBase
         _unread = unread;
         _files = files;
         _broadcaster = broadcaster;
+        _search = search;
         _logger = logger;
     }
 
@@ -364,6 +367,27 @@ public class DirectMessagesController : ControllerBase
     {
         var response = await _messageService.SendMessageAsync(GetUserId(), guildId: null, channelId, request);
         return Ok(response);
+    }
+
+    // POST /api/dm/{channelId}/messages/forward — forward into this DM (source-view + target authz in the service)
+    [HttpPost("{channelId:long}/messages/forward")]
+    public async Task<IActionResult> ForwardMessage(long channelId, [FromBody] ForwardMessageRequest request)
+    {
+        var response = await _messageService.ForwardMessageAsync(GetUserId(), guildId: null, channelId, request);
+        return Ok(response);
+    }
+
+    // GET /api/dm/{channelId}/search — channel-scoped full-text search (participant-gated in the service)
+    [HttpGet("{channelId:long}/search")]
+    public async Task<IActionResult> Search(
+        long channelId,
+        [FromQuery] string? q,
+        [FromQuery] long? before,
+        CancellationToken ct
+    )
+    {
+        var results = await _search.SearchDmChannelAsync(GetUserId(), channelId, q ?? string.Empty, before, ct);
+        return Ok(results);
     }
 
     // GET /api/dm/{channelId}/messages — history

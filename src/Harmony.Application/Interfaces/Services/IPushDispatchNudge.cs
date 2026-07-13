@@ -13,6 +13,14 @@ public static class PushKind
     public const string FriendRequest = "friend_request";
     public const string Dm = "dm";
     public const string Call = "call";
+
+    // A per-message ("all" level) notification — a Notification row exists, so it's offline-gated
+    // like mention/reply (not the un-suppressed "dm" fan-out).
+    public const string Message = "message";
+
+    // A friend invited the recipient to a server (invite-a-friend flow). Mirrors the guild_invite
+    // Notification row.
+    public const string GuildInvite = "guild_invite";
 }
 
 /// <summary>

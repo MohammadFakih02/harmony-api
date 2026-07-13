@@ -27,6 +27,36 @@ public interface INotificationService
         long channelId,
         long messageId,
         long createdAt,
+        IReadOnlyCollection<long>? everyoneOriginIds = null,
+        CancellationToken ct = default
+    );
+
+    /// <summary>
+    /// The per-message ("all" level) producer: creates a <c>"message"</c> notification for each user
+    /// who opted this guild/channel into the <c>all</c> level — minus the sender and anyone in
+    /// <paramref name="alreadyNotifiedIds"/> (mention/reply recipients for this same message, to avoid
+    /// a double ping) — subject to the usual mute/block/DnD suppression chain. Guild messages only;
+    /// no-op when <paramref name="guildId"/> is null or nobody opted in.
+    /// </summary>
+    Task CreateMessageNotificationsAsync(
+        long actorId,
+        long guildId,
+        long channelId,
+        long messageId,
+        long createdAt,
+        IReadOnlyCollection<long> alreadyNotifiedIds,
+        CancellationToken ct = default
+    );
+
+    /// <summary>
+    /// Creates (and pushes) a "guild_invite" notification for a user a friend invited to a server,
+    /// unless suppressed by their GuildInvites preference, a mute on the inviter, or a block between
+    /// the two. Fired by the server-side invite-a-friend flow (never client-triggered).
+    /// </summary>
+    Task CreateGuildInviteNotificationAsync(
+        long recipientId,
+        long actorId,
+        long guildId,
         CancellationToken ct = default
     );
 

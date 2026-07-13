@@ -26,6 +26,7 @@ public record InvitePreviewResponse(
     string GuildName,
     string? IconKey,
     int MemberCount,
+    int OnlineCount,
     long? ChannelId
 );
 

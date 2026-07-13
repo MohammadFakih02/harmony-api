@@ -29,13 +29,17 @@ public class NotificationsController : ControllerBase
     private readonly IPushSubscriptionRepository _pushSubscriptions;
     private readonly IWebPushSender _webPush;
     private readonly ISnowflakeIdGenerator _snowflake;
+    private readonly IHubBroadcaster _broadcaster;
+    private readonly ILogger<NotificationsController> _logger;
 
     public NotificationsController(
         INotificationRepository notifications,
         INotificationPreferenceRepository preferences,
         IPushSubscriptionRepository pushSubscriptions,
         IWebPushSender webPush,
-        ISnowflakeIdGenerator snowflake
+        ISnowflakeIdGenerator snowflake,
+        IHubBroadcaster broadcaster,
+        ILogger<NotificationsController> logger
     )
     {
         _notifications = notifications;
@@ -43,6 +47,8 @@ public class NotificationsController : ControllerBase
         _pushSubscriptions = pushSubscriptions;
         _webPush = webPush;
         _snowflake = snowflake;
+        _broadcaster = broadcaster;
+        _logger = logger;
     }
 
     // GET /api/notifications?limit=20 — most recent first.
@@ -94,6 +100,7 @@ public class NotificationsController : ControllerBase
         }
         notification.IsRead = true;
         await _notifications.SaveChangesAsync();
+        await BroadcastBadgeAsync(userId.Value);
         return NoContent();
     }
 
@@ -104,6 +111,7 @@ public class NotificationsController : ControllerBase
         if (userId is null)
             return Unauthorized();
         await _notifications.MarkAllReadAsync(userId.Value);
+        await BroadcastBadgeAsync(userId.Value);
         return NoContent();
     }
 
@@ -117,6 +125,8 @@ public class NotificationsController : ControllerBase
         if (userId is null)
             return Unauthorized();
         var deleted = await _notifications.DeleteForUserAsync(id, userId.Value);
+        if (deleted)
+            await BroadcastBadgeAsync(userId.Value);
         return deleted ? NoContent() : NotFound();
     }
 
@@ -129,7 +139,24 @@ public class NotificationsController : ControllerBase
         if (userId is null)
             return Unauthorized();
         await _notifications.DeleteAllForUserAsync(userId.Value);
+        await BroadcastBadgeAsync(userId.Value);
         return NoContent();
+    }
+
+    // After the caller mutates their own read/deleted state, push the fresh unread count so
+    // other open tabs update the bell badge live. Best-effort — a broadcast failure must never
+    // fail the already-committed mutation (the client also re-derives the count on next fetch).
+    private async Task BroadcastBadgeAsync(long userId)
+    {
+        try
+        {
+            var count = await _notifications.GetUnreadCountAsync(userId);
+            await _broadcaster.BroadcastNotificationBadgeAsync(userId, count);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to broadcast notification badge for user {UserId}", userId);
+        }
     }
 
     // GET /api/notifications/preferences — the caller's toggles. A user with no row yet reads
