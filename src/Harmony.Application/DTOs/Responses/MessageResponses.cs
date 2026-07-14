@@ -60,7 +60,10 @@ public record ForwardSnapshotResponse(
 
 public record ChannelMessagesResponse(
     IEnumerable<MessageResponse> Messages,
-    bool Degraded
+    bool Degraded,
+    // Whole seconds left on the caller's slowmode cooldown in this channel (0 = none). Populated only
+    // on a latest/open load so the client can restore the countdown across leave/rejoin.
+    int SlowmodeRemainingSeconds = 0
 );
 
 /// <summary>

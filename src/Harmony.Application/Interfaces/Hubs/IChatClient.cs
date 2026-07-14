@@ -265,6 +265,14 @@ public interface IChatClient
     /// <summary>Fired when a user removes their reaction. Broadcast to the channel group; the client
     /// applies the inverse delta (--count, drops the pill at zero).</summary>
     Task ReactionRemoved(ReactionPayload payload);
+
+    /// <summary>
+    /// Fired when a channel's permission overrides change (upsert or delete). Broadcast to the
+    /// guild group as a coarse "resync" signal: an override can grant or revoke any per-channel
+    /// capability (including ViewChannel), so clients re-resolve the guild's channel list and the
+    /// open channel's capabilities through the permission-enforcing GETs.
+    /// </summary>
+    Task ChannelOverridesChanged(ChannelOverridesChangedPayload payload);
 }
 
 /// <summary>Minimal delete notification — no content, just identity. GuildId is null for DMs.</summary>
@@ -428,3 +436,6 @@ public record CallDeclinedPayload(long ChannelId, long UserId);
 /// for a DM. Reused for both ReactionAdded and ReactionRemoved.
 /// </summary>
 public record ReactionPayload(long MessageId, long ChannelId, long? GuildId, string Emoji, long UserId);
+
+/// <summary>A channel's permission overrides changed — clients resync channel list + capabilities.</summary>
+public record ChannelOverridesChangedPayload(long GuildId, long ChannelId);

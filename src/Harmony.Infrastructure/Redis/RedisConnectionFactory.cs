@@ -46,6 +46,18 @@ public static class RedisConnectionFactory
         // This keeps the pod alive if Redis is briefly unreachable at startup.
         options.AbortOnConnectFail = false;
 
+        // Fail FAST when Redis is down. The defaults (5s connect / 5s sync, 3 connect retries)
+        // let a single send stack multiple 5s blocks during the down-detection window → the
+        // "20–30s slow send with Redis down" symptom. Every Redis touch on the hot path already
+        // fails OPEN (rate-limit, slowmode, dedup), so a tight ~1–2s ceiling per op just gets us
+        // to that open path sooner. Only override when the connection string didn't set them.
+        if (options.ConnectTimeout >= 5000)
+            options.ConnectTimeout = 2000;
+        if (options.SyncTimeout >= 5000)
+            options.SyncTimeout = 1000;
+        if (options.ConnectRetry > 1)
+            options.ConnectRetry = 1;
+
         logger.LogInformation("Connecting to Redis at {Endpoints}", connectionString);
 
         var multiplexer = ConnectionMultiplexer.Connect(options);

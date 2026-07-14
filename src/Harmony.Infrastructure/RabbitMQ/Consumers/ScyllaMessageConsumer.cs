@@ -340,13 +340,16 @@ public class ScyllaMessageConsumer : BackgroundService
             // swallowed as a duplicate (Decision D). The handler throws before the broadcast, so
             // there is no double-broadcast/double-unread risk from relaxing dedup here.
             long messageId = 0;
+            // Same per-edit discriminator as the dedup gate, so clear/requeue-count target the right key.
+            string editedEventType = IMessageDeduplicator.Edited;
             try
             {
                 var evt = JsonSerializer.Deserialize<MessageEditedEvent>(body, JsonOptions);
                 if (evt is not null)
                 {
                     messageId = evt.MessageId;
-                    await _deduplicator.ClearAsync(IMessageDeduplicator.Edited, evt.MessageId);
+                    editedEventType = EditedEventType(evt);
+                    await _deduplicator.ClearAsync(editedEventType, evt.MessageId);
                 }
             }
             catch (Exception clearEx)
@@ -364,7 +367,7 @@ public class ScyllaMessageConsumer : BackgroundService
             if (deliveryChannel.IsOpen)
             {
                 var attempts = await _deduplicator.IncrementRequeueCountAsync(
-                    IMessageDeduplicator.Edited,
+                    editedEventType,
                     messageId
                 );
 
@@ -566,14 +569,23 @@ public class ScyllaMessageConsumer : BackgroundService
         );
     }
 
+    // A message can be edited many times, so the edit dedup key must be per-EDIT, not per-message —
+    // keying on messageId alone made a second edit within the 60s dedup TTL look like a duplicate and
+    // silently drop its broadcast (the message still edited in Scylla via the synchronous API write,
+    // so only a refresh revealed it). Discriminating by the edit's timestamp (100ns ticks) keeps a
+    // genuine RabbitMQ redelivery of the SAME edit deduped (same EditedAt → same key) while letting
+    // distinct edits each broadcast.
+    private static string EditedEventType(MessageEditedEvent evt) =>
+        $"{IMessageDeduplicator.Edited}:{evt.EditedAt.UtcTicks}";
+
     private async Task HandleMessageEditedAsync(IMessageConsumerHandler handler, string body)
     {
         var evt = JsonSerializer.Deserialize<MessageEditedEvent>(body, JsonOptions);
         if (evt is null)
             return;
 
-        // 1. Deduplication gate
-        if (await _deduplicator.IsDuplicateAsync(IMessageDeduplicator.Edited, evt.MessageId))
+        // 1. Deduplication gate (per-edit — see EditedEventType)
+        if (await _deduplicator.IsDuplicateAsync(EditedEventType(evt), evt.MessageId))
         {
             _logger.LogInformation(
                 "ScyllaConsumer: duplicate MessageEdited skipped — MessageId: {MessageId}",

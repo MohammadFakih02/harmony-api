@@ -129,6 +129,15 @@ public static class DependencyInjection
                     options.Configuration.ChannelPrefix = StackExchange.Redis.RedisChannel.Literal(
                         "harmony"
                     );
+                    // Same fast-fail posture as the shared multiplexer (RedisConnectionFactory):
+                    // don't let a downed backplane block hub broadcasts on the 5s defaults.
+                    options.Configuration.AbortOnConnectFail = false;
+                    if (options.Configuration.ConnectTimeout >= 5000)
+                        options.Configuration.ConnectTimeout = 2000;
+                    if (options.Configuration.SyncTimeout >= 5000)
+                        options.Configuration.SyncTimeout = 1000;
+                    if (options.Configuration.ConnectRetry > 1)
+                        options.Configuration.ConnectRetry = 1;
                 }
             );
         }
@@ -243,7 +252,11 @@ public static class DependencyInjection
                     FailureRatio = 0.5,
                     MinimumThroughput = 5,
                     SamplingDuration = TimeSpan.FromSeconds(30),
-                    BreakDuration = TimeSpan.FromSeconds(30),
+                    // Short break so reads resume within a few seconds of Scylla recovering —
+                    // a longer window made a recovered node take "several refreshes" to serve
+                    // history again while the breaker stayed open. The half-open probe still
+                    // guards against re-hammering a node that hasn't actually come back.
+                    BreakDuration = TimeSpan.FromSeconds(5),
                     OnOpened = args =>
                     {
                         scyllaCircuitLogger?.LogError(

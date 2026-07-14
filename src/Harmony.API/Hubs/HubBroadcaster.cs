@@ -224,6 +224,12 @@ public class HubBroadcaster : IHubBroadcaster
         CancellationToken ct = default
     ) => _hubContext.Clients.Group(ChatHub.GuildGroup(guildId)).MemberRoleUpdated(payload);
 
+    public Task BroadcastChannelOverridesChangedAsync(
+        long guildId,
+        ChannelOverridesChangedPayload payload,
+        CancellationToken ct = default
+    ) => _hubContext.Clients.Group(ChatHub.GuildGroup(guildId)).ChannelOverridesChanged(payload);
+
     public Task BroadcastDmChannelUpdatedAsync(
         IReadOnlyList<long> userIds,
         DmChannelUpdatedPayload payload,
