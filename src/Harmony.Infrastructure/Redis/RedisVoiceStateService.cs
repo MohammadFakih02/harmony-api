@@ -26,8 +26,8 @@ public sealed class RedisVoiceStateService : IVoiceStateService
 {
     private const string UsersSetKey = "voice:users";
 
-    /// <summary>Ring-key TTL backstop — outlives the clients' 60s timers so a caller crash can't leave a stuck ring.</summary>
-    private static readonly TimeSpan RingTtl = TimeSpan.FromSeconds(75);
+    /// <summary>Ring-key TTL backstop — outlives the clients' 2-min ring timers so a caller crash can't leave a stuck ring.</summary>
+    private static readonly TimeSpan RingTtl = TimeSpan.FromSeconds(135);
 
     private readonly IRedisConnectionProvider _redisProvider;
     private readonly IHubBroadcaster _broadcaster;

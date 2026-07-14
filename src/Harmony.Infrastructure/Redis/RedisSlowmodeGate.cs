@@ -53,4 +53,32 @@ public sealed class RedisSlowmodeGate : ISlowmodeGate
             return true;
         }
     }
+
+    /// <inheritdoc/>
+    public async Task<int> GetRemainingSecondsAsync(
+        long channelId,
+        long userId,
+        CancellationToken ct = default
+    )
+    {
+        if (!_redisProvider.IsConnected)
+            return 0;
+
+        try
+        {
+            var db = _redisProvider.Connection!.GetDatabase();
+            var key = $"slowmode:{channelId}:{userId}";
+            var ttl = await db.KeyTimeToLiveAsync(key);
+            if (ttl is null || ttl.Value <= TimeSpan.Zero)
+                return 0;
+            return (int)Math.Ceiling(ttl.Value.TotalSeconds);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "SlowmodeGate: Redis TTL error for channel {ChannelId} user {UserId} — treating as no cooldown",
+                channelId, userId);
+            return 0;
+        }
+    }
 }

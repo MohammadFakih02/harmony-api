@@ -90,7 +90,7 @@ public class RabbitMQConnection : IAsyncDisposable
         // Dead letter exchange — declared first
         await channel.ExchangeDeclareAsync(
             exchange: Topology.DeadLetterExchange,
-            type: ExchangeType.Direct,
+            type: ExchangeType.Fanout,
             durable: true,
             autoDelete: false
         );
@@ -105,7 +105,7 @@ public class RabbitMQConnection : IAsyncDisposable
         await channel.QueueBindAsync(
             queue: Topology.DeadLetterQueue,
             exchange: Topology.DeadLetterExchange,
-            routingKey: "#"
+            routingKey: String.Empty
         );
 
         // Message exchange

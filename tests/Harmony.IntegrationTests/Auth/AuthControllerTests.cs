@@ -297,6 +297,26 @@ public class AuthControllerTests : ApiTestBase, IClassFixture<HarmonyWebApplicat
         response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
     }
 
+    [Fact]
+    public async Task Logout_ShouldSucceedAndKillToken_WithoutAccessToken()
+    {
+        // Regression: logout must work off the refresh cookie alone. It used to be
+        // [Authorize], so an expired 15-min access token 401'd before Logout ran —
+        // the refresh token stayed alive and cookie intact, letting a later silent
+        // refresh (e.g. a push-notification click) re-log the "logged-out" user in.
+        await RegisterUserAsync("logoutnoaccess", "logoutnoaccess@example.com", "Password123!");
+
+        // No Authorization header — mimics an expired/absent access token.
+        Client.DefaultRequestHeaders.Authorization = null;
+
+        var logout = await Client.PostAsJsonAsync("/api/auth/logout", new { });
+        logout.StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        // The refresh token/cookie must now be dead — no silent re-login possible.
+        var refresh = await Client.PostAsJsonAsync("/api/auth/refresh", new { });
+        refresh.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+    }
+
     // --- Theft detection ---
 
     [Fact]
