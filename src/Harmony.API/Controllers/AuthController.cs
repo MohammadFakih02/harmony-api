@@ -61,8 +61,13 @@ public class AuthController : ControllerBase
         return Ok(response);
     }
 
+    // AllowAnonymous (like Refresh): logout is driven entirely by the refresh_token
+    // cookie, not the bearer token. If this required [Authorize], an expired 15-min
+    // access token would 401 before Logout ran — leaving the refresh token unrevoked
+    // and the cookie intact, so a later silent refresh (e.g. a push-notification click)
+    // would log the "logged-out" user back in with no credentials.
     [HttpPost("logout")]
-    [Authorize]
+    [AllowAnonymous]
     public async Task<IActionResult> Logout()
     {
         var rawToken = Request.Cookies["refresh_token"];

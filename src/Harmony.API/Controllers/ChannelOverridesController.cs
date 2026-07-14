@@ -2,6 +2,7 @@ using System.Security.Claims;
 using Harmony.API.Filters;
 using Harmony.Application.DTOs.Requests;
 using Harmony.Application.DTOs.Responses;
+using Harmony.Application.Hubs;
 using Harmony.Application.Interfaces.Services;
 using Harmony.Domain.Domain.Entities;
 using Harmony.Domain.Domain.Enums;
@@ -32,6 +33,7 @@ public class ChannelOverridesController : ControllerBase
     private readonly IRoleRepository _roles;
     private readonly IPermissionService _permissions;
     private readonly ISnowflakeIdGenerator _snowflake;
+    private readonly IHubBroadcaster _broadcaster;
 
     public ChannelOverridesController(
         IChannelPermissionOverrideRepository overrides,
@@ -39,7 +41,8 @@ public class ChannelOverridesController : ControllerBase
         IGuildRepository guilds,
         IRoleRepository roles,
         IPermissionService permissions,
-        ISnowflakeIdGenerator snowflake
+        ISnowflakeIdGenerator snowflake,
+        IHubBroadcaster broadcaster
     )
     {
         _overrides = overrides;
@@ -48,6 +51,7 @@ public class ChannelOverridesController : ControllerBase
         _roles = roles;
         _permissions = permissions;
         _snowflake = snowflake;
+        _broadcaster = broadcaster;
     }
 
     // GET /api/guilds/{guildId}/channels/{channelId}/overrides
@@ -122,6 +126,7 @@ public class ChannelOverridesController : ControllerBase
 
         await _overrides.SaveChangesAsync();
         await InvalidateForTarget(request.TargetType, targetId, guildId);
+        await BroadcastChanged(guildId, channelId);
 
         return Ok(ToResponse(entity));
     }
@@ -141,6 +146,7 @@ public class ChannelOverridesController : ControllerBase
         _overrides.Remove(existing);
         await _overrides.SaveChangesAsync();
         await InvalidateForTarget(existing.TargetType, targetId, guildId);
+        await BroadcastChanged(guildId, channelId);
 
         return NoContent();
     }
@@ -164,6 +170,25 @@ public class ChannelOverridesController : ControllerBase
         targetType == "role"
             ? _permissions.InvalidateGuildAsync(guildId)
             : _permissions.InvalidateUserAsync(targetId, guildId);
+
+    /// <summary>
+    /// Best-effort live resync signal — the write already persisted and the cache is
+    /// invalidated, so a failed broadcast must not fail the request.
+    /// </summary>
+    private async Task BroadcastChanged(long guildId, long channelId)
+    {
+        try
+        {
+            await _broadcaster.BroadcastChannelOverridesChangedAsync(
+                guildId,
+                new ChannelOverridesChangedPayload(guildId, channelId)
+            );
+        }
+        catch
+        {
+            // Clients that miss the event still resync on next navigation/load.
+        }
+    }
 
     private long GetUserId() => long.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
 

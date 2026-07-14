@@ -70,10 +70,6 @@ services:
       timeout: 5s
       retries: 5
 
-  # NOTE: voice/video runs on LiveKit Cloud (cloud.livekit.io) for BOTH dev and prod —
-  # there is no local livekit-server. Set LIVEKIT_KEY/LIVEKIT_SECRET (dev: user-secrets,
-  # prod: env) and the LiveKit:Host to the Cloud project URL. See §5.57.
-
 volumes:
   postgres_data:
   scylla_data:

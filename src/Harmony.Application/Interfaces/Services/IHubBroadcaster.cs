@@ -248,6 +248,14 @@ public interface IHubBroadcaster
         CancellationToken ct = default
     );
 
+    /// <summary>Broadcasts a channel permission-override change (upsert/delete) to the guild group,
+    /// so members re-resolve their channel list and capabilities.</summary>
+    Task BroadcastChannelOverridesChangedAsync(
+        long guildId,
+        ChannelOverridesChangedPayload payload,
+        CancellationToken ct = default
+    );
+
     /// <summary>
     /// Notifies the given users (all their tabs) that a DM/group channel's membership changed,
     /// so each resyncs its DM list. Sent via Clients.Users to the explicit recipient set.

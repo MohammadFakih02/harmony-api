@@ -105,17 +105,39 @@ async Task SeedAsync()
         await PostRaw($"/api/invites/{invite.Code}/join", new { }, u.Token);
     Console.WriteLine($"✓ Guild '{GuildName}' created, 4 members joined");
 
-    // Channels (owner has ManageChannels).
+    // Channels (owner has ManageChannels) — a lived-in layout: three categories, a spread of text
+    // channels, and voice channels exercising every option (default / max-bitrate / user-capped /
+    // min-bitrate). Positions are a running counter so the sidebar order matches creation order.
     var channelsPath = $"/api/guilds/{guildId}/channels";
-    var category = (await Post<ChannelRef>(channelsPath,
-        new { name = "Text Channels", type = "category", position = 0 }, owner.Token))!;
-    var general = (await Post<ChannelRef>(channelsPath,
-        new { name = "general", type = "text", position = 1, categoryId = category.Id }, owner.Token))!;
-    var random = (await Post<ChannelRef>(channelsPath,
-        new { name = "random", type = "text", position = 2, categoryId = category.Id }, owner.Token))!;
-    var staff = (await Post<ChannelRef>(channelsPath,
-        new { name = "staff", type = "text", position = 3, categoryId = category.Id }, owner.Token))!;
-    Console.WriteLine("✓ Channels: #general, #random, #staff");
+    var pos = 0;
+    async Task<ChannelRef> Text(string name, long categoryId) => (await Post<ChannelRef>(channelsPath,
+        new { name, type = "text", position = pos++, categoryId }, owner.Token))!;
+    async Task<ChannelRef> Category(string name) => (await Post<ChannelRef>(channelsPath,
+        new { name, type = "category", position = pos++ }, owner.Token))!;
+    async Task Voice(string name, long categoryId, int bitrate, int? userLimit = null) =>
+        await Post<ChannelRef>(channelsPath,
+            new { name, type = "voice", position = pos++, categoryId, bitrate, userLimit }, owner.Token);
+
+    // Information
+    var info = await Category("Information");
+    var welcome = await Text("welcome", info.Id);
+    var announcements = await Text("announcements", info.Id);
+    var rules = await Text("rules", info.Id);
+
+    // Text Channels
+    var textCat = await Category("Text Channels");
+    var general = await Text("general", textCat.Id);
+    var random = await Text("random", textCat.Id);
+    var offTopic = await Text("off-topic", textCat.Id);
+    var staff = await Text("staff", textCat.Id);
+
+    // Voice Channels — one per option so the channel-settings UI has something to show for each.
+    var voiceCat = await Category("Voice Channels");
+    await Voice("General", voiceCat.Id, bitrate: 64000);              // default
+    await Voice("Music", voiceCat.Id, bitrate: 96000);               // max bitrate
+    await Voice("Duo", voiceCat.Id, bitrate: 64000, userLimit: 2);   // capped at 2
+    await Voice("AFK", voiceCat.Id, bitrate: 8000);                  // min bitrate
+    Console.WriteLine("✓ Channels: Information / Text (general,random,off-topic,staff) / Voice (General,Music,Duo,AFK)");
 
     // DB-only bits: Admin role + assignment, and the muted member's timeout.
     // Returns the @everyone role id (needed for the channel override below).
@@ -135,31 +157,50 @@ async Task SeedAsync()
         new { targetType = "user", allowBits = 0L, denyBits = send }, owner.Token);
     Console.WriteLine("✓ Overrides: #staff hidden from @everyone (Admin allowed); restricted can't send in #general");
 
-    // Seed messages through the real send pipeline (RabbitMQ → consumer → Scylla).
-    var authors = new[] { (owner, "owner"), (admin, "admin"), (member, "member") };
+    // Seed messages through the real send pipeline (RabbitMQ → consumer → Scylla). Say fire-and-
+    // forgets; SayId captures the returned id (needed to attach seeded reactions).
+    Task Say(long channelId, string content, string token) =>
+        PostRaw($"/api/guilds/{guildId}/channels/{channelId}/messages", new { content }, token);
+    async Task<long> SayId(long channelId, string content, string token) =>
+        (await Post<MessageRef>($"/api/guilds/{guildId}/channels/{channelId}/messages",
+            new { content }, token))!.MessageId;
+
+    await Say(welcome.Id, "Welcome to the Harmony test server! 👋", owner.Token);
+    await Say(welcome.Id, "Log in as each seeded user in a separate browser profile to see the permission tiers.", owner.Token);
+    await Say(rules.Id, "1. Be excellent to each other.   2. This is a dev sandbox — expect resets.", owner.Token);
+    await Say(announcements.Id, "📣 Voice, video and screenshare are live — hop into a Voice channel to try them.", owner.Token);
+
+    var authors = new[] { owner, admin, member };
     string[] generalLines =
     {
         "Welcome to the Harmony test server! 👋",
         "This guild was provisioned by the dev seeder.",
-        "Try logging in as each of the seeded users in separate browser profiles.",
         "owner sees everything; admin can manage; member is a plain user.",
         "muted is timed out — they can read but can't send anywhere.",
-        "restricted can read this channel but can't post here.",
+        "restricted can read #general but can't post here.",
         "#staff is invisible to everyone except owner + admin.",
-        "Scroll up and down to exercise the virtual scroll.",
+        "Scroll up and down to exercise the message window.",
         "Send a message and watch it reconcile from optimistic → confirmed.",
         "Edit and delete your own messages to test those paths.",
+        "React to a message — the pills below are seeded reactions. 🎉",
     };
+    var generalIds = new List<long>();
     for (var i = 0; i < generalLines.Length; i++)
-    {
-        var (author, _) = authors[i % authors.Length];
-        await PostRaw($"/api/guilds/{guildId}/channels/{general.Id}/messages",
-            new { content = generalLines[i] }, author.Token);
-    }
+        generalIds.Add(await SayId(general.Id, generalLines[i], authors[i % authors.Length].Token));
+
     foreach (var line in new[] { "random channel chatter", "anyone here? 🎲", "ship it 🚢" })
-        await PostRaw($"/api/guilds/{guildId}/channels/{random.Id}/messages",
-            new { content = line }, member.Token);
-    Console.WriteLine($"✓ Seeded {generalLines.Length} messages in #general, 3 in #random");
+        await Say(random.Id, line, member.Token);
+    foreach (var line in new[] { "post your memes here 😹", "off-topic goes here", "what are you playing this week?" })
+        await Say(offTopic.Id, line, admin.Token);
+    Console.WriteLine("✓ Seeded messages across #welcome / #announcements / #rules / #general / #random / #off-topic");
+
+    // Reactions — inserted straight into Postgres (deterministic, and no wait on the async Scylla
+    // persist the reactable-message check would otherwise race).
+    await SeedReactionsAsync(general.Id, generalIds, owner.Id, admin.Id, member.Id);
+    Console.WriteLine("✓ Seeded reactions on #general messages");
+
+    // Social graph — friendships + a 1:1 DM + a group DM, so /friends and DMs aren't empty on login.
+    await SeedSocialAsync(owner, admin, member);
 
     Console.WriteLine();
     PrintCheatSheet(guildId);
@@ -218,9 +259,101 @@ async Task<(long everyoneRoleId, long adminRoleId)> ApplyDbTouchesAsync(
 }
 
 // ---------------------------------------------------------------------------
+// Seed helpers (reactions + social graph)
+// ---------------------------------------------------------------------------
+
+// Reactions live in Postgres (no FK to the Scylla message), so we insert them directly — fast,
+// deterministic, and immune to the send→consumer→Scylla lag. Fresh message ids every --reset mean
+// no PK clash (old rows harmlessly orphan). The (message, emoji, user) triple is the composite PK.
+async Task SeedReactionsAsync(long channelId, List<long> messageIds, long ownerId, long adminId, long memberId)
+{
+    if (messageIds.Count == 0)
+        return;
+
+    var options = new DbContextOptionsBuilder<HarmonyDbContext>().UseNpgsql(pgConn).Options;
+    await using var db = new HarmonyDbContext(options);
+    var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
+    (int Msg, string Emoji, long User)[] plan =
+    {
+        (0, "👋", ownerId), (0, "👋", memberId), (0, "🎉", adminId),
+        (1, "👍", memberId),
+        (2, "❤️", ownerId), (2, "😄", adminId),
+        (9, "🎉", ownerId), (9, "🎉", memberId), (9, "🚀", adminId),
+    };
+    foreach (var (msg, emoji, user) in plan)
+    {
+        if (msg >= messageIds.Count)
+            continue;
+        db.MessageReactions.Add(new MessageReaction
+        {
+            MessageId = messageIds[msg],
+            ChannelId = channelId,
+            Emoji = emoji,
+            UserId = user,
+            CreatedAt = now,
+        });
+    }
+    await db.SaveChangesAsync();
+}
+
+// Friendships + a 1:1 DM + a group DM. Idempotent across --reset: friends and DM channels persist on
+// the users (only the guild is dropped on reset), so we skip re-seeding once the owner already has
+// the seed friendship — which also prevents duplicate group DMs piling up on repeated resets.
+async Task SeedSocialAsync(Seeded owner, Seeded admin, Seeded member)
+{
+    var friends = await Get<List<FriendRef>>("/api/friends", owner.Token) ?? [];
+    if (friends.Any(f => f.Username == member.Username))
+    {
+        Console.WriteLine("✓ Social graph already present (friends/DMs persist across --reset) — skipped");
+        return;
+    }
+
+    await Friend(owner, member);
+    await Friend(owner, admin);
+    await Friend(member, admin);
+
+    var dm = await Post<DmRef>("/api/dm", new { targetUserId = member.Id }, owner.Token);
+    if (dm is not null)
+    {
+        await DmSay(dm.ChannelId, "hey! this is a seeded 1:1 direct message 👋", owner.Token);
+        await DmSay(dm.ChannelId, "nice — DMs work end to end", member.Token);
+    }
+
+    var group = await Post<DmRef>("/api/dm/group",
+        new { userIds = new[] { member.Id, admin.Id } }, owner.Token);
+    if (group is not null)
+    {
+        await DmSay(group.ChannelId, "group DM seeded — owner, member, admin 👋", owner.Token);
+        await DmSay(group.ChannelId, "handy for testing group calls too 📞", member.Token);
+        await DmSay(group.ChannelId, "agreed 🎉", admin.Token);
+    }
+
+    Console.WriteLine("✓ Seeded friendships + a 1:1 DM + a group DM");
+}
+
+// Establishes an accepted friendship: A requests B, then B requests A back — the API auto-accepts a
+// mutual request (Discord behavior), so no request-id juggling. Conflicts are swallowed (idempotent).
+async Task Friend(Seeded a, Seeded b)
+{
+    await TrySend("/api/friends/request", new { username = b.Username }, a.Token);
+    await TrySend("/api/friends/request", new { username = a.Username }, b.Token);
+}
+
+Task DmSay(long channelId, string content, string token) =>
+    PostRaw($"/api/dm/{channelId}/messages", new { content }, token);
+
+// POST that swallows a non-2xx (used for idempotent social ops — e.g. an already-friends 409).
+async Task TrySend(string path, object body, string token)
+{
+    try { await SendAsync<object>(HttpMethod.Post, path, body, token); }
+    catch { /* idempotent seed — already-exists is fine */ }
+}
+
+// ---------------------------------------------------------------------------
 // HTTP helpers
 // ---------------------------------------------------------------------------
-async Task<(string Token, long Id)> EnsureUser(string username, string email)
+async Task<Seeded> EnsureUser(string username, string email)
 {
     var reg = await WithRetry(() => http.PostAsJsonAsync(
         "/api/auth/register", new { username, email, password = Password }, json));
@@ -243,7 +376,7 @@ async Task<(string Token, long Id)> EnsureUser(string username, string email)
 
     var auth = await ok.Content.ReadFromJsonAsync<AuthResp>(json)
         ?? throw new Exception($"empty auth response for {email}");
-    return (auth.AccessToken, auth.User.Id);
+    return new Seeded(username, auth.AccessToken, auth.User.Id);
 }
 
 async Task<T?> Get<T>(string path, string token) =>
@@ -313,6 +446,10 @@ void PrintCheatSheet(long guildId)
     Console.WriteLine("  muted@harmony.dev       timed out    → can read, CANNOT send anywhere (24h)");
     Console.WriteLine("  restricted@harmony.dev  override      → reads #general but CANNOT send there");
     Console.WriteLine("────────────────────────────────────────────────────────────────");
+    Console.WriteLine("  Channels: Information (welcome/announcements/rules) · Text (general/random/");
+    Console.WriteLine("            off-topic/staff) · Voice (General/Music/Duo[cap 2]/AFK)");
+    Console.WriteLine("  Social:   owner↔member↔admin friends · a 1:1 DM · a group DM · seeded reactions");
+    Console.WriteLine("────────────────────────────────────────────────────────────────");
     Console.WriteLine("  Tip: log in as each in a SEPARATE browser profile / incognito");
     Console.WriteLine("       (the refresh-token cookie is per-profile — tabs share it).");
     Console.WriteLine("════════════════════════════════════════════════════════════════");
@@ -326,3 +463,9 @@ file record UserRef(long Id);
 file record GuildRef(long Id, string Name);
 file record InviteRef(string Code);
 file record ChannelRef(long Id, string Name, string Type);
+file record MessageRef(long MessageId);
+file record DmRef(long ChannelId);
+file record FriendRef(string Username);
+
+/// <summary>A seeded user's identity — username (for friend requests), token, and id.</summary>
+file record Seeded(string Username, string Token, long Id);

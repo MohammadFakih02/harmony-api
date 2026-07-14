@@ -610,6 +610,17 @@ public class MessageService : IMessageService
 
         limit = Math.Clamp(limit, 1, 100);
 
+        // Remaining slowmode cooldown for the caller — only on a latest/open load (no cursor), so the
+        // client can restore the countdown timer on channel open (it's lost on leave/rejoin otherwise).
+        // Guild channels only; the client gates its own display on whether slowmode applies to it.
+        var slowmodeRemaining =
+            guildId is not null
+            && beforeMessageId is null
+            && aroundMessageId is null
+            && afterMessageId is null
+                ? await _slowmode.GetRemainingSecondsAsync(channelId, userId, ct)
+                : 0;
+
         try
         {
             // Cursor precedence (mutually exclusive from the client): a jump target (around) loads a
@@ -638,12 +649,13 @@ public class MessageService : IMessageService
 
             return new ChannelMessagesResponse(
                 messageList.Select(m => MapMessage(m, guildId, users, reactions)),
-                Degraded: false
+                Degraded: false,
+                SlowmodeRemainingSeconds: slowmodeRemaining
             );
         }
         catch (BrokenCircuitException)
         {
-            return new ChannelMessagesResponse([], Degraded: true);
+            return new ChannelMessagesResponse([], Degraded: true, SlowmodeRemainingSeconds: slowmodeRemaining);
         }
     }
 
