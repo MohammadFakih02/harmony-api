@@ -43,7 +43,7 @@ public class MessageServiceReactionTests
                 Permissions.Object, Mock.Of<IFileAttachmentRepository>(), Dms.Object,
                 Mock.Of<IUserBlockRepository>(), Mock.Of<IFriendRepository>(), Mock.Of<IPresenceService>(),
                 Mock.Of<IAuditLogService>(), Broadcaster.Object, Mock.Of<IRoleRepository>(),
-                Mock.Of<ISlowmodeGate>(), Reactions.Object
+                Mock.Of<ISlowmodeGate>(), Reactions.Object, Mock.Of<IFileStorageService>()
             );
 
         public void SetUpGuild(bool canReact, bool deleted = false)

@@ -25,6 +25,7 @@ using Microsoft.EntityFrameworkCore;
 
 const string Password = "Password123!";
 const string GuildName = "Harmony Test Server";
+const string LoadTestChannelName = "loadtest";
 
 var flags = args.Where(a => a.StartsWith("--")).ToHashSet();
 var positional = args.Where(a => !a.StartsWith("--")).ToArray();
@@ -46,9 +47,17 @@ Console.WriteLine($"→ API:      {apiBase}");
 Console.WriteLine($"→ Postgres: {Mask(pgConn)}");
 Console.WriteLine();
 
+// --load-test-users=N — provisions N throwaway accounts in the seed guild and dumps their JWTs
+// for k6 (see load-tests/README.md). Separate from the normal seed: it needs the guild to already
+// exist, and it deliberately does NOT touch the five permission-tier users the demo relies on.
+var loadTestCount = ParseLoadTestCount(flags);
+
 try
 {
-    await SeedAsync();
+    if (loadTestCount is { } count)
+        await SeedLoadTestUsersAsync(count);
+    else
+        await SeedAsync();
     return 0;
 }
 catch (HttpRequestException ex)
@@ -351,6 +360,84 @@ async Task TrySend(string path, object body, string token)
 }
 
 // ---------------------------------------------------------------------------
+// Load-test seeding (k6)
+// ---------------------------------------------------------------------------
+
+static int? ParseLoadTestCount(HashSet<string> flags)
+{
+    // "--load-test-users=N", not "--load-test-users N": a bare positional N would be swallowed by
+    // the apiBase/pgConn positional slots above.
+    var flag = flags.FirstOrDefault(f => f.StartsWith("--load-test-users=", StringComparison.Ordinal));
+    if (flag is null)
+        return null;
+
+    var raw = flag["--load-test-users=".Length..];
+    if (!int.TryParse(raw, out var count) || count < 1)
+        throw new Exception($"--load-test-users needs a positive integer, got '{raw}'.");
+    return count;
+}
+
+async Task SeedLoadTestUsersAsync(int count)
+{
+    var owner = await EnsureUser("seed_owner", "owner@harmony.dev");
+
+    var guild = (await Get<List<GuildRef>>("/api/users/me/guilds", owner.Token) ?? [])
+        .FirstOrDefault(g => g.Name == GuildName)
+        ?? throw new Exception(
+            $"the '{GuildName}' guild does not exist yet — run the plain seed first "
+            + "(dotnet run --project tools/Harmony.DevSeed)."
+        );
+
+    // A dedicated channel keeps the load run's traffic out of the channels used for manual demos,
+    // and gives the k6 fan-out scenario a single well-known target.
+    var channels = await Get<List<ChannelRef>>($"/api/guilds/{guild.Id}/channels", owner.Token) ?? [];
+    var channel =
+        channels.FirstOrDefault(c => c.Name == LoadTestChannelName)
+        ?? await Post<ChannelRef>(
+            $"/api/guilds/{guild.Id}/channels",
+            new { name = LoadTestChannelName, type = "text", position = 99 },
+            owner.Token
+        )
+        ?? throw new Exception("load-test channel create returned no body");
+
+    var invite = await Post<InviteRef>($"/api/guilds/{guild.Id}/invites", new { }, owner.Token)
+        ?? throw new Exception("invite create returned no body");
+
+    Console.WriteLine($"→ Seeding {count} load-test users into '{GuildName}' #{LoadTestChannelName}…");
+
+    var users = new List<LoadUser>(count);
+    for (var i = 1; i <= count; i++)
+    {
+        var u = await EnsureUser($"load_u{i}", $"load_u{i}@harmony.dev");
+        // Idempotent: a re-run re-joins an already-joined user, which 409s harmlessly.
+        await TrySend($"/api/invites/{invite.Code}/join", new { }, u.Token);
+        // Snowflake ids are emitted as STRINGS: k6 runs on goja, whose numbers are float64, so a
+        // 64-bit id parsed as a JS number silently loses its low bits and stops matching anything.
+        users.Add(new LoadUser(u.Id.ToString(), u.Username, u.Token));
+
+        if (i % 25 == 0 || i == count)
+            Console.WriteLine($"  …{i}/{count}");
+    }
+
+    var outPath = Environment.GetEnvironmentVariable("SEED_LOAD_OUT") ?? "load-tests/users.json";
+    var full = Path.GetFullPath(outPath);
+    Directory.CreateDirectory(Path.GetDirectoryName(full)!);
+    await File.WriteAllTextAsync(
+        full,
+        JsonSerializer.Serialize(
+            new LoadFixture(apiBase, guild.Id.ToString(), channel.Id.ToString(), users),
+            new JsonSerializerOptions(JsonSerializerDefaults.Web) { WriteIndented = true }
+        )
+    );
+
+    Console.WriteLine($"\n✓ {count} users ready → {full}");
+    Console.WriteLine(
+        "  Tokens expire per Jwt:AccessTokenExpiryMinutes (15 by default) — for a longer run, raise\n"
+        + "  that key in appsettings.Development.json and re-seed, or the VUs will 401 mid-test.\n"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // HTTP helpers
 // ---------------------------------------------------------------------------
 async Task<Seeded> EnsureUser(string username, string email)
@@ -365,9 +452,12 @@ async Task<Seeded> EnsureUser(string username, string email)
     }
     else
     {
-        // Already registered (re-run) → log in instead.
+        // Already registered (re-run) → log in instead. The field is "identifier", not "email":
+        // LoginRequest takes an email-OR-username identifier (§5.33), so posting {email} bound
+        // Identifier to null, tripped the NotEmpty validator, and 400'd — which made every re-run
+        // (including --reset) throw on the very first seeded user.
         var login = await WithRetry(() => http.PostAsJsonAsync(
-            "/api/auth/login", new { email, password = Password }, json));
+            "/api/auth/login", new { identifier = email, password = Password }, json));
         if (!login.IsSuccessStatusCode)
             throw new Exception($"register ({(int)reg.StatusCode}) and login ({(int)login.StatusCode}) "
                 + $"both failed for {email}");
@@ -469,3 +559,8 @@ file record FriendRef(string Username);
 
 /// <summary>A seeded user's identity — username (for friend requests), token, and id.</summary>
 file record Seeded(string Username, string Token, long Id);
+
+// --load-test-users output. Every id is a string on purpose — see SeedLoadTestUsersAsync.
+file record LoadUser(string Id, string Username, string Token);
+
+file record LoadFixture(string ApiBase, string GuildId, string ChannelId, List<LoadUser> Users);

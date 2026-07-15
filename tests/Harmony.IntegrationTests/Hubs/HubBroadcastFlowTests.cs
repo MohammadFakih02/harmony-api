@@ -177,7 +177,17 @@ public class HubBroadcastFlowTests : ApiTestBase, IClassFixture<HarmonyWebApplic
         try
         {
             // Act — send via hub
-            await senderConn.InvokeAsync("SendMessage", channelId, guildId, "hub message");
+            // attachmentIds/replyToId/nonce passed explicitly — SignalR requires an exact argument
+            // count and does not honour C# default values over the wire.
+            await senderConn.InvokeAsync(
+                "SendMessage",
+                channelId,
+                guildId,
+                "hub message",
+                null,
+                null,
+                null
+            );
 
             // Assert — BOTH connections receive MessageReceived (including sender)
             await Eventually.GetAsync(

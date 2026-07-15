@@ -29,8 +29,14 @@ public record MessageResponse(
     long? ReplyToId,
     List<long> MentionIds,
     // Snowflake ids → JSON strings so the browser keeps full precision (the attachment
-    // renderer fetches GET /files/{id} with these; a rounded id would 404).
-    [property: JsonNumberHandling(JsonNumberHandling.WriteAsString)] List<long> AttachmentIds,
+    // renderer fetches GET /files/{id} with these; a rounded id would 404). AllowReadingFromString
+    // is paired with it so the type round-trips: WriteAsString alone emits a string this same
+    // record then refuses to parse back, which breaks any consumer that deserializes it (the
+    // integration suite does). It does not change a single emitted byte.
+    [property: JsonNumberHandling(
+        JsonNumberHandling.WriteAsString | JsonNumberHandling.AllowReadingFromString
+    )]
+        List<long> AttachmentIds,
     long SentAt,
     long? EditedAt,
     // Aggregated reaction pills (emoji → count + whether the requester reacted). Empty for a
@@ -52,7 +58,11 @@ public record ReactionSummaryResponse(string Emoji, int Count, bool MeReacted);
 
 /// <summary>The attributed-quote snapshot rendered above a forwarded message.</summary>
 public record ForwardSnapshotResponse(
-    [property: JsonNumberHandling(JsonNumberHandling.WriteAsString)] long AuthorId,
+    // Paired with AllowReadingFromString for the same round-trip reason as AttachmentIds above.
+    [property: JsonNumberHandling(
+        JsonNumberHandling.WriteAsString | JsonNumberHandling.AllowReadingFromString
+    )]
+        long AuthorId,
     string AuthorName,
     string Content,
     long SentAt

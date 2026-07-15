@@ -112,10 +112,16 @@ public class RoleService : IRoleService
 
         var bitsChanged = newBits != role.PermissionBits;
 
-        // The @everyone role keeps its name; everything else is editable.
-        if (request.Name is not null && !role.IsDefault) role.Name = request.Name;
-        if (request.Color is { } color) role.Color = color;
-        if (request.IsHoisted is { } hoisted) role.IsHoisted = hoisted;
+        // @everyone is the guild-wide baseline every member carries, so its name, colour and hoist
+        // are all locked (Discord locks the same three): a colour would tint every member's name at
+        // once, and hoisting would create a sidebar group containing the entire guild. Mentionable
+        // stays editable — @everyone mentions are gated on the MentionEveryone permission, not here.
+        if (!role.IsDefault)
+        {
+            if (request.Name is not null) role.Name = request.Name;
+            if (request.Color is { } color) role.Color = color;
+            if (request.IsHoisted is { } hoisted) role.IsHoisted = hoisted;
+        }
         if (request.IsMentionable is { } mentionable) role.IsMentionable = mentionable;
         role.PermissionBits = newBits;
 

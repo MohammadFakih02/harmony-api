@@ -196,11 +196,11 @@ public class GuildsController : ControllerBase
             return BadRequest(new { error = "Owner cannot leave. Transfer ownership or delete the guild." });
 
         await _guilds.RemoveMemberAsync(member);
-
-        var guild = await _guilds.GetByIdAsync(id);
-        if (guild is not null) guild.MemberCount--;
-
         await _guilds.SaveChangesAsync();
+
+        // Atomic, zero-clamped — and no longer needs to load the whole guild (with its channels and
+        // roles) just to decrement one column.
+        await _guilds.AdjustMemberCountAsync(id, -1);
 
         return NoContent();
     }

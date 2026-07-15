@@ -220,7 +220,7 @@ public class GuildInvitesController : ControllerBase
             GetUserId(),
             AuditLogAction.InviteDelete,
             targetId: invite.ChannelId,
-            changes: new { code }
+            changes: new { code = MaskInviteCode(code) }
         );
 
         await BroadcastInvitesChangedAsync(guildId);
@@ -277,7 +277,7 @@ public class GuildInvitesController : ControllerBase
             targetId: channelId,
             changes: new
             {
-                code,
+                code = MaskInviteCode(code),
                 channelId,
                 maxUses,
                 expiresAt = invite.ExpiresAt,
@@ -328,4 +328,16 @@ public class GuildInvitesController : ControllerBase
             .Replace("/", "")
             .Replace("+", "")
             .Replace("=", "")[..8];
+
+    /// <summary>
+    /// An invite code is a bearer credential — holding it is enough to join. Viewing the audit log
+    /// (ViewAuditLog) is a *separate* permission from minting or listing invites (CreateInvite /
+    /// ManageInvites), so logging the raw code would hand a working invite to someone the guild
+    /// deliberately withheld invite rights from. Keep a short prefix so an admin can still match the
+    /// entry against the real invite list, and redact the rest — the remainder is unguessable.
+    /// </summary>
+    private static string MaskInviteCode(string code) =>
+        code.Length <= VisibleCodeChars ? "•••" : $"{code[..VisibleCodeChars]}•••••";
+
+    private const int VisibleCodeChars = 3;
 }

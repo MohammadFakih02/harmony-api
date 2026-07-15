@@ -73,7 +73,8 @@ public class MessageServiceMentionTests
                 Messages.Object, Users.Object, Permissions.Object, Files.Object,
                 Dms.Object, Blocks.Object, Friends.Object, Presence.Object, AuditLog.Object,
                 Mock.Of<IHubBroadcaster>(), Roles.Object, Mock.Of<ISlowmodeGate>(),
-                Mock.Of<IMessageReactionRepository>()
+                Mock.Of<IMessageReactionRepository>(),
+                Mock.Of<IFileStorageService>()
             );
         }
 
@@ -418,5 +419,43 @@ public class MessageServiceMentionTests
 
         h.PublishedEvent!.MentionIds.Should().BeEquivalentTo(new List<long> { BobId });
         h.PublishedEvent!.EveryoneMentionIds.Should().BeEmpty();
+    }
+
+    // ---- No-'@' early exit ---------------------------------------------------
+
+    [Fact]
+    public async Task SendMessageAsync_WithoutAnAtSign_ShouldSkipMentionResolutionEntirely()
+    {
+        // Mention resolution costs four round-trips (member ids, their User rows, the GuildMember
+        // rows again for nicknames, the guild's roles) and MentionParser ignores every character
+        // that isn't '@' — so a message with no '@' must not pay for any of it. This is the common
+        // case on the send hot path, which is why the skip is asserted rather than just the result.
+        var h = new Harness();
+        h.SetUpGuildSendContext();
+        h.SetUpGuildMembers(new Dictionary<long, string> { [ActorId] = "actor", [BobId] = "bob" });
+        var sut = h.BuildSut();
+
+        await sut.SendMessageAsync(ActorId, GuildId, ChannelId, new SendMessageRequest(Content: "no mentions here"));
+
+        h.PublishedEvent!.MentionIds.Should().BeEmpty();
+        h.PublishedEvent!.EveryoneMentionIds.Should().BeEmpty();
+        h.Guilds.Verify(g => g.GetMemberIdsAsync(It.IsAny<long>()), Times.Never);
+        h.Users.Verify(u => u.GetByIdsAsync(It.IsAny<IEnumerable<long>>()), Times.Never);
+        h.Guilds.Verify(g => g.GetMembersAsync(It.IsAny<long>()), Times.Never);
+        h.Roles.Verify(r => r.GetByGuildAsync(It.IsAny<long>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task SendMessageAsync_WithoutAnAtSign_ShouldSkipMentionResolutionInDms()
+    {
+        // Same skip on the DM path, where the round-trip saved is the participant lookup.
+        var h = new Harness();
+        h.SetUpDmSendContext([ActorId, BobId]);
+        var sut = h.BuildSut();
+
+        await sut.SendMessageAsync(ActorId, guildId: null, ChannelId, new SendMessageRequest(Content: "hey there"));
+
+        h.PublishedEvent!.MentionIds.Should().BeEmpty();
+        h.Users.Verify(u => u.GetByIdsAsync(It.IsAny<IEnumerable<long>>()), Times.Never);
     }
 }

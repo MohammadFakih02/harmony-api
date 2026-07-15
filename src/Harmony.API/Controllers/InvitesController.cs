@@ -154,10 +154,14 @@ public class InvitesController : ControllerBase
         };
 
         await _guilds.AddMemberAsync(member);
-        guild.MemberCount++;
         invite.UseCount++; // tracked on the shared request DbContext; persisted by the save below
 
         await _guilds.SaveChangesAsync();
+
+        // The membership row is the truth; MemberCount is a denormalized display counter, so bump
+        // it atomically after the join lands rather than read-modify-writing the tracked entity
+        // (two simultaneous joins would otherwise each write count+1 and lose one).
+        await _guilds.AdjustMemberCountAsync(guild.Id, 1);
 
         await PostWelcomeMessageAsync(guild, userId, _channels, _messages, _logger);
         await BroadcastMemberJoinedAsync(guild.Id, userId, member.JoinedAt, _users, _broadcaster, _logger);
@@ -172,7 +176,10 @@ public class InvitesController : ControllerBase
             _logger.LogWarning(ex, "Failed to broadcast GuildInvitesChanged for guild {GuildId}", guild.Id);
         }
 
-        return Ok(ToResponse(guild));
+        // The atomic bump above bypassed the change tracker, so the loaded entity still holds the
+        // pre-join count. Report the joiner's own arrival without re-reading (and without dirtying
+        // the tracked property, which a later SaveChanges on this scope would double-count).
+        return Ok(ToResponse(guild) with { MemberCount = guild.MemberCount + 1 });
     }
 
     /// <summary>

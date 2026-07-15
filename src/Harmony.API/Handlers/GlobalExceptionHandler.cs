@@ -106,11 +106,17 @@ public class GlobalExceptionHandler : IExceptionHandler
             _ => (StatusCodes.Status500InternalServerError, "Server Error"),
         };
 
+        // 4xx are our own deliberately-thrown, user-facing exceptions (KeyNotFound/Unauthorized/
+        // Argument/Validation) — their message is safe to return. 5xx are unexpected/infra failures
+        // whose raw message can leak Npgsql/Cassandra/S3 internals (schema, keyspace, host config),
+        // so we surface only the generic title. The full exception is still logged above.
+        var detail = statusCode >= StatusCodes.Status500InternalServerError ? title : exception.Message;
+
         var problemDetails = new ProblemDetails
         {
             Status = statusCode,
             Title = title,
-            Detail = exception.Message,
+            Detail = detail,
             Instance = httpContext.Request.Path,
         };
 

@@ -37,6 +37,7 @@ public class MessageServiceDeleteAuditTests
         public Mock<IUserBlockRepository> Blocks { get; } = new();
         public Mock<IPresenceService> Presence { get; } = new();
         public Mock<IAuditLogService> AuditLog { get; } = new();
+        public Mock<IFileStorageService> Storage { get; } = new();
 
         public MessageService BuildSut() =>
             new(
@@ -44,15 +45,25 @@ public class MessageServiceDeleteAuditTests
                 Messages.Object, Users.Object, Permissions.Object, Files.Object,
                 Dms.Object, Blocks.Object, Mock.Of<IFriendRepository>(), Presence.Object, AuditLog.Object,
                 Mock.Of<IHubBroadcaster>(), Mock.Of<IRoleRepository>(), Mock.Of<ISlowmodeGate>(),
-                Mock.Of<IMessageReactionRepository>()
+                Mock.Of<IMessageReactionRepository>(), Storage.Object
             );
 
-        public void SetUpGuildDelete(long messageAuthorId, bool canManageMessages)
+        public void SetUpGuildDelete(
+            long messageAuthorId,
+            bool canManageMessages,
+            List<long>? attachmentIds = null
+        )
         {
             Channels.Setup(c => c.GetByIdAndGuildIdAsync(ChannelId, GuildId))
                 .ReturnsAsync(new Channel { Id = ChannelId, GuildId = GuildId });
             Messages.Setup(m => m.GetByIdAsync(MessageId, It.IsAny<CancellationToken>()))
-                .ReturnsAsync(new Message { MessageId = MessageId, ChannelId = ChannelId, UserId = messageAuthorId });
+                .ReturnsAsync(new Message
+                {
+                    MessageId = MessageId,
+                    ChannelId = ChannelId,
+                    UserId = messageAuthorId,
+                    AttachmentIds = attachmentIds ?? [],
+                });
             Permissions.Setup(p => p.HasAsync(ModeratorId, GuildId, Permission.ManageMessages, ChannelId, It.IsAny<CancellationToken>()))
                 .ReturnsAsync(canManageMessages);
         }
@@ -96,5 +107,60 @@ public class MessageServiceDeleteAuditTests
             ),
             Times.Never
         );
+    }
+
+    [Fact]
+    public async Task DeletingMessageWithAttachments_DeletesTheObjectsAndTheRows()
+    {
+        var ctx = new Ctx();
+        ctx.SetUpGuildDelete(
+            messageAuthorId: ModeratorId,
+            canManageMessages: true,
+            attachmentIds: [10, 11]
+        );
+        ctx.Files.Setup(f => f.GetByIdAsync(10))
+            .ReturnsAsync(new FileAttachment { Id = 10, MinioKey = "attachments/a.png" });
+        ctx.Files.Setup(f => f.GetByIdAsync(11))
+            .ReturnsAsync(new FileAttachment { Id = 11, MinioKey = "attachments/b.png" });
+
+        await ctx.BuildSut().DeleteMessageAsync(ModeratorId, GuildId, ChannelId, MessageId);
+
+        ctx.Storage.Verify(
+            s => s.DeleteObjectAsync("attachments/a.png", It.IsAny<CancellationToken>()),
+            Times.Once
+        );
+        ctx.Storage.Verify(
+            s => s.DeleteObjectAsync("attachments/b.png", It.IsAny<CancellationToken>()),
+            Times.Once
+        );
+        ctx.Files.Verify(
+            f => f.RemoveRange(It.Is<IEnumerable<FileAttachment>>(a => a.Count() == 2)),
+            Times.Once
+        );
+        ctx.Files.Verify(f => f.SaveChangesAsync(), Times.Once);
+    }
+
+    /// <summary>
+    /// The object store failing must not strand the row: a leftover object is reclaimable by a
+    /// bucket lifecycle rule, a leftover row is not — and the delete itself must still succeed.
+    /// </summary>
+    [Fact]
+    public async Task AttachmentObjectDeleteFailing_StillRemovesTheRow()
+    {
+        var ctx = new Ctx();
+        ctx.SetUpGuildDelete(
+            messageAuthorId: ModeratorId,
+            canManageMessages: true,
+            attachmentIds: [10]
+        );
+        ctx.Files.Setup(f => f.GetByIdAsync(10))
+            .ReturnsAsync(new FileAttachment { Id = 10, MinioKey = "attachments/a.png" });
+        ctx.Storage.Setup(s => s.DeleteObjectAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new Exception("object store unavailable"));
+
+        await ctx.BuildSut().DeleteMessageAsync(ModeratorId, GuildId, ChannelId, MessageId);
+
+        ctx.Files.Verify(f => f.RemoveRange(It.IsAny<IEnumerable<FileAttachment>>()), Times.Once);
+        ctx.Files.Verify(f => f.SaveChangesAsync(), Times.Once);
     }
 }

@@ -249,3 +249,141 @@ public sealed class SavePushSubscriptionRequestValidator
         RuleFor(x => x.AuthKey).NotEmpty().WithMessage("Auth key is required.");
     }
 }
+
+/// <summary>
+/// PATCH /api/users/me. Every field is optional (null = leave unchanged), so each rule is
+/// <c>.When(...is not null)</c>. Username matches <see cref="RegisterRequestValidator"/> and the
+/// 32-char column; bio is <c>text</c> with no column limit, so this cap is the only thing standing
+/// between a client and an arbitrarily large profile. BannerColor/DateOfBirth *format* is parsed in
+/// UsersController (it owns the clear-on-empty-string semantics) — shape-only here.
+/// </summary>
+public sealed class UpdateUserRequestValidator : AbstractValidator<UpdateUserRequest>
+{
+    public const int MaxBioLength = 512;
+
+    public UpdateUserRequestValidator()
+    {
+        RuleFor(x => x.Username!)
+            .NotEmpty().WithMessage("Username must not be empty.")
+            .Length(2, 32).WithMessage("Username must be between 2 and 32 characters.")
+            .When(x => x.Username is not null);
+
+        RuleFor(x => x.Bio!)
+            .MaximumLength(MaxBioLength)
+            .WithMessage($"Bio must be {MaxBioLength} characters or fewer.")
+            .When(x => x.Bio is not null);
+
+        RuleFor(x => x.StatusMessage!)
+            .MaximumLength(128).WithMessage("Custom status must be 128 characters or fewer.")
+            .When(x => x.StatusMessage is not null);
+    }
+}
+
+public sealed class CreateGuildRequestValidator : AbstractValidator<CreateGuildRequest>
+{
+    // Matches the name column; description is `text`, so its cap exists only here.
+    public const int MaxNameLength = 100;
+    public const int MaxDescriptionLength = 1024;
+
+    public CreateGuildRequestValidator()
+    {
+        RuleFor(x => x.Name)
+            .NotEmpty().WithMessage("Server name is required.")
+            .Length(2, MaxNameLength)
+            .WithMessage($"Server name must be between 2 and {MaxNameLength} characters.");
+
+        RuleFor(x => x.Description!)
+            .MaximumLength(MaxDescriptionLength)
+            .WithMessage($"Description must be {MaxDescriptionLength} characters or fewer.")
+            .When(x => x.Description is not null);
+    }
+}
+
+public sealed class UpdateGuildRequestValidator : AbstractValidator<UpdateGuildRequest>
+{
+    public UpdateGuildRequestValidator()
+    {
+        RuleFor(x => x.Name!)
+            .NotEmpty().WithMessage("Server name must not be empty.")
+            .Length(2, CreateGuildRequestValidator.MaxNameLength)
+            .WithMessage($"Server name must be between 2 and {CreateGuildRequestValidator.MaxNameLength} characters.")
+            .When(x => x.Name is not null);
+
+        RuleFor(x => x.Description!)
+            .MaximumLength(CreateGuildRequestValidator.MaxDescriptionLength)
+            .WithMessage($"Description must be {CreateGuildRequestValidator.MaxDescriptionLength} characters or fewer.")
+            .When(x => x.Description is not null);
+    }
+}
+
+public sealed class UpdateGuildWelcomeRequestValidator : AbstractValidator<UpdateGuildWelcomeRequest>
+{
+    public UpdateGuildWelcomeRequestValidator()
+    {
+        // Null/blank is valid (falls back to the built-in greeting). 2000 matches both the column
+        // and the message-content cap this text is ultimately posted as.
+        RuleFor(x => x.WelcomeMessage!)
+            .MaximumLength(2000).WithMessage("Welcome message must be 2000 characters or fewer.")
+            .When(x => x.WelcomeMessage is not null);
+
+        // That the channel belongs to this guild is semantic — GuildsController checks it.
+        RuleFor(x => x.WelcomeChannelId!.Value)
+            .GreaterThan(0).WithMessage("WelcomeChannelId must be a valid id.")
+            .When(x => x.WelcomeChannelId.HasValue);
+    }
+}
+
+/// <summary>
+/// Channel shape rules. Type validity, the voice-only bitrate/user-limit ranges, and the
+/// category-belongs-to-this-guild check are all semantic and stay in ChannelsController.
+/// </summary>
+public sealed class CreateChannelRequestValidator : AbstractValidator<CreateChannelRequest>
+{
+    public const int MaxNameLength = 100;
+    public const int MaxTopicLength = 1024;
+
+    /// <summary>Discord's slowmode ceiling (6 hours). Unbounded, this could freeze a channel forever.</summary>
+    public const int MaxSlowmodeSeconds = 21600;
+
+    public CreateChannelRequestValidator()
+    {
+        RuleFor(x => x.Name)
+            .NotEmpty().WithMessage("Channel name is required.")
+            .MaximumLength(MaxNameLength)
+            .WithMessage($"Channel name must be {MaxNameLength} characters or fewer.");
+
+        RuleFor(x => x.Topic!)
+            .MaximumLength(MaxTopicLength)
+            .WithMessage($"Channel topic must be {MaxTopicLength} characters or fewer.")
+            .When(x => x.Topic is not null);
+
+        RuleFor(x => x.SlowmodeSeconds)
+            .InclusiveBetween(0, MaxSlowmodeSeconds)
+            .WithMessage($"Slowmode must be between 0 and {MaxSlowmodeSeconds} seconds (6 hours).");
+
+        RuleFor(x => x.Position)
+            .GreaterThanOrEqualTo(0).WithMessage("Position must not be negative.");
+    }
+}
+
+public sealed class UpdateChannelRequestValidator : AbstractValidator<UpdateChannelRequest>
+{
+    public UpdateChannelRequestValidator()
+    {
+        RuleFor(x => x.Name!)
+            .NotEmpty().WithMessage("Channel name must not be empty.")
+            .MaximumLength(CreateChannelRequestValidator.MaxNameLength)
+            .WithMessage($"Channel name must be {CreateChannelRequestValidator.MaxNameLength} characters or fewer.")
+            .When(x => x.Name is not null);
+
+        RuleFor(x => x.Topic!)
+            .MaximumLength(CreateChannelRequestValidator.MaxTopicLength)
+            .WithMessage($"Channel topic must be {CreateChannelRequestValidator.MaxTopicLength} characters or fewer.")
+            .When(x => x.Topic is not null);
+
+        RuleFor(x => x.SlowmodeSeconds!.Value)
+            .InclusiveBetween(0, CreateChannelRequestValidator.MaxSlowmodeSeconds)
+            .WithMessage($"Slowmode must be between 0 and {CreateChannelRequestValidator.MaxSlowmodeSeconds} seconds (6 hours).")
+            .When(x => x.SlowmodeSeconds.HasValue);
+    }
+}

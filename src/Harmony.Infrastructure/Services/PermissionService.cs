@@ -86,6 +86,96 @@ public sealed class PermissionService : IPermissionService
         return (bits & (long)permission) == (long)permission;
     }
 
+    /// <inheritdoc />
+    public async Task<List<long>> FilterByPermissionAsync(
+        IReadOnlyList<long> userIds,
+        long guildId,
+        Permission permission,
+        long? channelId = null,
+        CancellationToken ct = default
+    )
+    {
+        if (userIds.Count == 0)
+            return [];
+
+        var field = channelId?.ToString() ?? "0";
+        var bit = (long)permission;
+        var granted = new HashSet<long>();
+
+        // One round-trip for the whole group. Each user's entry is its own Redis hash, so this is a
+        // pipelined batch rather than an HMGET — same effect: the per-user latency stops stacking.
+        var cached = await TryGetCachedManyAsync(userIds, guildId, field);
+
+        var misses = new List<long>();
+        foreach (var id in userIds)
+        {
+            if (cached.TryGetValue(id, out var bits))
+            {
+                if ((bits & bit) == bit)
+                    granted.Add(id);
+            }
+            else
+            {
+                misses.Add(id);
+            }
+        }
+
+        // Misses resolve ONE AT A TIME, on purpose. A miss falls through to ComputeAsync, which
+        // reads roles/overrides from Postgres via the scoped DbContext — and a DbContext permits
+        // exactly one operation at a time, so resolving misses concurrently would throw "A second
+        // operation was started on this context instance". The batch above already removes the cost
+        // that mattered: in the steady state every entry is warm and this loop does nothing.
+        foreach (var id in misses)
+        {
+            if (await HasAsync(id, guildId, permission, channelId, ct))
+                granted.Add(id);
+        }
+
+        // Preserve the caller's ordering — callers pass member lists that are already ordered.
+        return userIds.Where(granted.Contains).ToList();
+    }
+
+    /// <summary>
+    /// Pipelined cache read for many users at once. Returns only the hits; a user absent from the
+    /// result is a miss the caller must resolve itself. Fails open to "everything missed" so a
+    /// Redis hiccup degrades to the slow path rather than to a wrong answer.
+    /// </summary>
+    private async Task<Dictionary<long, long>> TryGetCachedManyAsync(
+        IReadOnlyList<long> userIds,
+        long guildId,
+        string field
+    )
+    {
+        var hits = new Dictionary<long, long>(userIds.Count);
+        if (!_redisProvider.IsConnected)
+            return hits;
+
+        try
+        {
+            var db = _redisProvider.Connection!.GetDatabase();
+            var batch = db.CreateBatch();
+            var pending = userIds
+                .Select(id => (id, task: batch.HashGetAsync(CacheKey(id, guildId), field)))
+                .ToList();
+            batch.Execute(); // flush every HGET together
+            await Task.WhenAll(pending.Select(p => p.task));
+
+            foreach (var (id, task) in pending)
+            {
+                var value = task.Result;
+                if (value.HasValue && long.TryParse((string?)value, out var bits))
+                    hits[id] = bits;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Permission cache batch read failed — resolving per user");
+            return [];
+        }
+
+        return hits;
+    }
+
     public Task InvalidateUserAsync(long userId, long guildId, CancellationToken ct = default)
     {
         if (!_redisProvider.IsConnected)
