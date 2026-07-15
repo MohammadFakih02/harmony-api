@@ -15,6 +15,15 @@ public interface IGuildRepository
     Task DeleteAsync(Guild guild);
 
     /// <summary>
+    /// Adjusts a guild's denormalized member count by <paramref name="delta"/> as a single
+    /// <c>SET member_count = member_count + delta</c> statement, so concurrent joins/leaves can't
+    /// lose each other's update the way a read-modify-write on a tracked entity does. Decrements
+    /// are clamped at zero. Runs its own UPDATE immediately — it needs no SaveChangesAsync, and it
+    /// does NOT refresh the value on any already-tracked Guild instance.
+    /// </summary>
+    Task AdjustMemberCountAsync(long guildId, int delta);
+
+    /// <summary>
     /// Returns just the user ids of a guild's members — no User include, no order.
     /// Hot-path lean variant for the unread fan-out. Backed by IX_GuildMembers_guild_id.
     /// </summary>

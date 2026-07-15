@@ -24,11 +24,13 @@ public interface IUserMuteRepository
     void Remove(UserMute mute);
 
     /// <summary>
-    /// Removes every mute whose <c>MutedUntil</c> has passed <paramref name="nowUnixMs"/>
-    /// and returns the removed rows so the caller can notify each owner (MuteExpired).
-    /// Indefinite mutes (null <c>MutedUntil</c>) are never swept.
+    /// Removes mutes whose <c>MutedUntil</c> has passed <paramref name="nowUnixMs"/> and returns
+    /// the removed rows so the caller can notify each owner (MuteExpired). Indefinite mutes (null
+    /// <c>MutedUntil</c>) are never swept. Capped by <paramref name="limit"/> so one sweep can't
+    /// load an unbounded backlog into memory — the caller runs on a timer, so a larger backlog
+    /// simply drains over consecutive passes.
     /// </summary>
-    Task<List<UserMute>> DeleteExpiredAsync(long nowUnixMs);
+    Task<List<UserMute>> DeleteExpiredAsync(long nowUnixMs, int limit = 500);
 
     Task SaveChangesAsync();
 }

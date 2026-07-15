@@ -276,10 +276,11 @@ public class GuildMemberService : IGuildMemberService
 
     private async Task DecrementMemberCountAndSaveAsync(long guildId)
     {
-        var guild = await _guilds.GetByIdAsync(guildId);
-        if (guild is not null && guild.MemberCount > 0)
-            guild.MemberCount--;
+        // Save first (this is what persists the caller's pending member removal / ban row), then
+        // adjust the count atomically. The repo clamps at zero, so this no longer has to load the
+        // guild to read-modify-write the counter — which lost updates under concurrent removals.
         await _guilds.SaveChangesAsync();
+        await _guilds.AdjustMemberCountAsync(guildId, -1);
     }
 
     private async Task BroadcastRemovalAsync(long guildId, long targetId, string? reason, bool banned)

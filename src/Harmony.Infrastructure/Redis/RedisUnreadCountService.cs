@@ -86,26 +86,33 @@ public sealed class RedisUnreadCountService : IUnreadCountService
             return;
         }
 
-        foreach (var (uid, incrTask) in pending)
-        {
-            try
+        // Dispatched together, not one-await-at-a-time. Each send is an independent trip through the
+        // Redis backplane, so awaiting them in sequence stacked ~54 round-trips onto every message
+        // (~17ms measured — the same order as the resolve loop above). IHubContext is built for
+        // concurrent use and the broadcaster holds nothing per-call, so this is safe; the per-user
+        // try/catch stays INSIDE the task so one failed recipient still can't take out the rest.
+        await Task.WhenAll(
+            pending.Select(async p =>
             {
-                await _broadcaster.BroadcastUnreadCountAsync(
-                    uid,
-                    new UnreadCountPayload(channelId, guildId, (int)incrTask.Result),
-                    ct
-                );
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(
-                    ex,
-                    "Unread: broadcast failed for user {UserId} on channel {ChannelId} — continuing",
-                    uid,
-                    channelId
-                );
-            }
-        }
+                try
+                {
+                    await _broadcaster.BroadcastUnreadCountAsync(
+                        p.userId,
+                        new UnreadCountPayload(channelId, guildId, (int)p.incr.Result),
+                        ct
+                    );
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(
+                        ex,
+                        "Unread: broadcast failed for user {UserId} on channel {ChannelId} — continuing",
+                        p.userId,
+                        channelId
+                    );
+                }
+            })
+        );
     }
 
     public async Task MarkReadAsync(
@@ -224,17 +231,19 @@ public sealed class RedisUnreadCountService : IUnreadCountService
 
         // Only members who can actually view the channel accrue unread for it — otherwise a
         // member would get a badge (and a non-zero /me/unread) for an override-hidden channel
-        // like #staff. Resolution is cached per (user, channel), so repeated fan-outs are cheap.
-        var recipients = new List<long>(memberIds.Count);
-        foreach (var id in memberIds)
-        {
-            if (id == senderUserId)
-                continue;
-            if (await _permissions.HasAsync(id, gid, Permission.ViewChannel, channelId))
-                recipients.Add(id);
-        }
-
-        return recipients;
+        // like #staff.
+        //
+        // Resolved as ONE batched call rather than an await-per-member loop. The per-user cache
+        // made each check cheap, but not free, and this runs for every message: at 54 members the
+        // loop's stacked round-trips measured ~17ms, ~37% of the consumer's whole per-message
+        // budget — and since dispatch is serial, that was a direct cap on messages/second.
+        var candidates = memberIds.Where(id => id != senderUserId).ToList();
+        return await _permissions.FilterByPermissionAsync(
+            candidates,
+            gid,
+            Permission.ViewChannel,
+            channelId
+        );
     }
 
     public static string UnreadKey(long userId, long channelId) => $"unread:{userId}:{channelId}";

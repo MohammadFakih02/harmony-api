@@ -30,6 +30,27 @@ public interface IPermissionService
         CancellationToken ct = default
     );
 
+    /// <summary>
+    /// Of <paramref name="userIds"/>, returns those granted <paramref name="permission"/> (in the
+    /// order given). Equivalent to calling <see cref="HasAsync"/> per user, but reads the whole
+    /// group's cache in one Redis round-trip instead of one per user.
+    ///
+    /// This exists for the message hot path. The unread fan-out asks "which of this guild's members
+    /// can see this channel?" for EVERY message, and doing that one await at a time cost ~17ms in a
+    /// 54-member guild — measured as ~37% of the consumer's entire per-message budget, and the
+    /// consumer dispatches serially, so that time is a direct throughput ceiling.
+    ///
+    /// Only the cache read is batched. Cache misses still resolve one at a time, deliberately —
+    /// see the implementation.
+    /// </summary>
+    Task<List<long>> FilterByPermissionAsync(
+        IReadOnlyList<long> userIds,
+        long guildId,
+        Permission permission,
+        long? channelId = null,
+        CancellationToken ct = default
+    );
+
     /// <summary>Drops the cached permissions for one member of a guild (all channels).</summary>
     Task InvalidateUserAsync(long userId, long guildId, CancellationToken ct = default);
 

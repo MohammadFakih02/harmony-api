@@ -221,4 +221,57 @@ public class PermissionServiceTests
         (await sut.HasAsync(UserId, GuildId, Permission.SendMessage)).Should().BeTrue();
         (await sut.HasAsync(UserId, GuildId, Permission.BanMembers)).Should().BeFalse();
     }
+
+    // ---- FilterByPermissionAsync (the unread fan-out's batched gate) --------
+    //
+    // Redis reads as disconnected in this harness, so the batched cache read returns nothing and
+    // every user falls through to the per-user resolve. That is the path worth pinning: it must
+    // agree with HasAsync exactly, because it decides who accrues an unread badge.
+
+    [Fact]
+    public async Task FilterByPermission_KeepsOnlyGrantedUsers_AndPreservesOrder()
+    {
+        var (sut, guilds, roles, _) = BuildSut();
+        const long denied = 2;
+        const long owner = 3;
+
+        // `denied` is not a member at all → resolves to 0 bits → filtered out.
+        guilds.Setup(g => g.GetMemberAsync(GuildId, denied)).ReturnsAsync((GuildMember?)null);
+        // `owner` bypasses everything.
+        guilds
+            .Setup(g => g.GetMemberAsync(GuildId, owner))
+            .ReturnsAsync(new GuildMember { GuildId = GuildId, UserId = owner, IsOwner = true });
+
+        var result = await sut.FilterByPermissionAsync(
+            [owner, denied, UserId],
+            GuildId,
+            Permission.ViewChannel
+        );
+
+        result.Should().Equal(owner, UserId);
+    }
+
+    [Fact]
+    public async Task FilterByPermission_AgreesWithHasAsync_ForEveryCandidate()
+    {
+        var (sut, _, roles, _) = BuildSut();
+        // @everyone grants ViewChannel but not BanMembers (DefaultEveryone), so the same member
+        // must be kept for one permission and dropped for the other.
+        (await sut.FilterByPermissionAsync([UserId], GuildId, Permission.ViewChannel))
+            .Should()
+            .Equal(UserId);
+        (await sut.FilterByPermissionAsync([UserId], GuildId, Permission.BanMembers))
+            .Should()
+            .BeEmpty();
+    }
+
+    [Fact]
+    public async Task FilterByPermission_EmptyInput_ShortCircuits_WithoutTouchingRepositories()
+    {
+        var (sut, guilds, _, _) = BuildSut();
+
+        (await sut.FilterByPermissionAsync([], GuildId, Permission.ViewChannel)).Should().BeEmpty();
+
+        guilds.Verify(g => g.GetMemberAsync(It.IsAny<long>(), It.IsAny<long>()), Times.Never);
+    }
 }

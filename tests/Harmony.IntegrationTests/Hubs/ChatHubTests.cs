@@ -284,11 +284,19 @@ public class ChatHubTests : ApiTestBase, IClassFixture<HarmonyWebApplicationFact
         await connection.StartAsync();
         try
         {
+            // Every optional parameter must be passed explicitly: SignalR binds hub arguments
+            // positionally and rejects a count mismatch outright ("Invocation provides 3
+            // argument(s) but target expects 6"), before the method body ever runs — C# default
+            // values do not make a hub parameter optional over the wire. The real client does the
+            // same (harmony-hub.client.ts sends attachmentIds/replyToId/nonce as explicit nulls).
             var result = await connection.InvokeAsync<HubResultDto<SendMessageResponseDto>>(
                 "SendMessage",
                 channelId,
                 guildId,
-                "hello from hub"
+                "hello from hub",
+                null,
+                null,
+                null
             );
 
             result.Should().NotBeNull();
@@ -322,7 +330,10 @@ public class ChatHubTests : ApiTestBase, IClassFixture<HarmonyWebApplicationFact
                 "SendMessage",
                 channelId,
                 guildId,
-                ""
+                "",
+                null,
+                null,
+                null
             );
 
             result.Should().NotBeNull();
@@ -352,7 +363,10 @@ public class ChatHubTests : ApiTestBase, IClassFixture<HarmonyWebApplicationFact
                 "SendMessage",
                 channelId,
                 guildId,
-                new string('x', 2001)
+                new string('x', 2001),
+                null,
+                null,
+                null
             );
 
             result.Should().NotBeNull();
@@ -381,7 +395,10 @@ public class ChatHubTests : ApiTestBase, IClassFixture<HarmonyWebApplicationFact
                 "SendMessage",
                 999999L,
                 guildId,
-                "hello"
+                "hello",
+                null,
+                null,
+                null
             );
 
             result.Should().NotBeNull();
@@ -412,7 +429,10 @@ public class ChatHubTests : ApiTestBase, IClassFixture<HarmonyWebApplicationFact
                 "SendMessage",
                 channelId,
                 null,
-                "hello over the dm hub"
+                "hello over the dm hub",
+                null,
+                null,
+                null
             );
 
             result.Should().NotBeNull();

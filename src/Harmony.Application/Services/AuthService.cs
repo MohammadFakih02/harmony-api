@@ -1,6 +1,7 @@
 using System.Security.Authentication;
 using Harmony.Application.DTOs.Requests;
 using Harmony.Application.DTOs.Responses;
+using Harmony.Application.Interfaces.Services;
 using Harmony.Application.Services;
 using Harmony.Domain.Domain.Entities;
 using Harmony.Domain.Interfaces.Repositories;
@@ -54,7 +55,7 @@ public class AuthService : IAuthService
             Id = _snowflake.NextId(),
             UserName = request.Username,
             Email = request.Email,
-            AccountStatus = "active",
+            AccountStatus = UserAccountStatus.Active,
             CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
         };
 
@@ -83,7 +84,7 @@ public class AuthService : IAuthService
         if (user is null || !await _identityService.CheckPasswordAsync(user, request.Password))
             throw new AuthenticationException("Invalid credentials.");
 
-        if (user.AccountStatus != "active")
+        if (!UserAccountStatus.IsActive(user.AccountStatus))
             throw new AuthenticationException("Account is not active.");
 
         var (accessToken, rawRefreshToken) = await IssueTokensAsync(user);

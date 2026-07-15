@@ -454,3 +454,6 @@ publish/
 repomix-output.xml
 
 HISTORY.md
+
+# Load-test fixture: real JWTs for throwaway seeded accounts (dev-only artifact).
+load-tests/users.json

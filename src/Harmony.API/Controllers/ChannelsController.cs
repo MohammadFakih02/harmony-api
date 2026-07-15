@@ -65,6 +65,12 @@ public class ChannelsController : ControllerBase
         if (ValidateVoiceSettings(request.Bitrate, request.UserLimit) is { } voiceError)
             return BadRequest(new { error = voiceError });
 
+        if (
+            request.CategoryId is { } parentId
+            && !await CategoryExistsInGuildAsync(guildId, parentId)
+        )
+            return BadRequest(new { error = "Target category does not exist in this guild." });
+
         var channel = new Channel
         {
             Id = _snowflake.NextId(),
@@ -105,6 +111,18 @@ public class ChannelsController : ControllerBase
         return null;
     }
 
+    /// <summary>
+    /// True when the id names a real category channel belonging to this guild. Both endpoints that
+    /// accept a CategoryId gate on this — otherwise a channel could be parked under a dangling id,
+    /// a non-category channel, or another guild's category (NON-NEGOTIABLE #8: the id is the
+    /// client's, so it proves nothing on its own).
+    /// </summary>
+    private async Task<bool> CategoryExistsInGuildAsync(long guildId, long categoryId)
+    {
+        var category = await _channels.GetByIdAsync(categoryId);
+        return category is not null && category.GuildId == guildId && category.Type == "category";
+    }
+
     // PATCH /api/guilds/{guildId}/channels/{channelId}
     [HttpPatch("{channelId:long}")]
     [RequirePermission(Permission.ManageChannels)]
@@ -120,6 +138,12 @@ public class ChannelsController : ControllerBase
 
         if (ValidateVoiceSettings(request.Bitrate, request.UserLimit) is { } voiceError)
             return BadRequest(new { error = voiceError });
+
+        if (
+            request.CategoryId is { } newCategoryId
+            && !await CategoryExistsInGuildAsync(guildId, newCategoryId)
+        )
+            return BadRequest(new { error = "Target category does not exist in this guild." });
 
         if (request.Name is not null)
             channel.Name = request.Name;
@@ -157,6 +181,14 @@ public class ChannelsController : ControllerBase
         if (channel is null || channel.GuildId != guildId)
             return NotFound();
 
+        // welcome_channel_id is a plain column, not an FK, so deleting the channel would leave the
+        // guild pointing at a dead id — and PostWelcomeMessageAsync only falls back to the first
+        // text channel when the pointer is *null*, so every future join's welcome notice would be
+        // published into nothing. Clear it in the same save as the delete.
+        var guild = await _guilds.GetByIdAsync(guildId);
+        if (guild is not null && guild.WelcomeChannelId == channelId)
+            guild.WelcomeChannelId = null;
+
         await _channels.DeleteAsync(channel);
         await _channels.SaveChangesAsync();
 
@@ -190,12 +222,11 @@ public class ChannelsController : ControllerBase
         if (channel is null || channel.GuildId != guildId)
             return NotFound();
 
-        if (request.CategoryId is { } categoryId)
-        {
-            var category = await _channels.GetByIdAsync(categoryId);
-            if (category is null || category.GuildId != guildId || category.Type != "category")
-                return BadRequest(new { error = "Target category does not exist in this guild." });
-        }
+        if (
+            request.CategoryId is { } categoryId
+            && !await CategoryExistsInGuildAsync(guildId, categoryId)
+        )
+            return BadRequest(new { error = "Target category does not exist in this guild." });
 
         var siblings = await _channels.GetByGuildIdAsync(guildId);
         var maxPosition = siblings

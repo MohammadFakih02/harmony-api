@@ -56,6 +56,16 @@ public class UnreadCountServiceTests : IAsyncLifetime
                 It.IsAny<long?>(),
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(true);
+        // The guild fan-out gates on the batched filter rather than per-user HasAsync — echo the
+        // candidates back to keep the "everyone can view" default.
+        permissions
+            .Setup(p => p.FilterByPermissionAsync(
+                It.IsAny<IReadOnlyList<long>>(),
+                It.IsAny<long>(),
+                It.IsAny<Harmony.Domain.Domain.Enums.Permission>(),
+                It.IsAny<long?>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync((IReadOnlyList<long> ids, long _, Harmony.Domain.Domain.Enums.Permission _, long? _, CancellationToken _) => ids.ToList());
 
         var dms = new Mock<IDirectMessageRepository>();
 

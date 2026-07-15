@@ -111,6 +111,16 @@ public class DirectMessagesController : ControllerBase
         }
         else
         {
+            // A deactivated account can't log in, so it can never read or answer a new
+            // conversation. Gated here rather than at the top of the action on purpose: an
+            // *existing* DM stays openable, so history with someone who later deactivated
+            // doesn't vanish from the caller's list.
+            if (!UserAccountStatus.IsActive(target.AccountStatus))
+                return StatusCode(
+                    StatusCodes.Status403Forbidden,
+                    new { error = "Unable to message this user." }
+                );
+
             // Opening a *new* conversation: honour the target's DM-privacy checklist (friends /
             // guild members / everyone). Existing conversations above are exempt — this only
             // gates first contact.

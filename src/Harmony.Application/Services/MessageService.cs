@@ -31,6 +31,7 @@ public class MessageService : IMessageService
     private readonly IRoleRepository _roles;
     private readonly ISlowmodeGate _slowmode;
     private readonly IMessageReactionRepository _reactions;
+    private readonly IFileStorageService _storage;
 
     /// <summary>Max attachments per message (Discord parity).</summary>
     public const int MaxAttachments = 10;
@@ -55,7 +56,8 @@ public class MessageService : IMessageService
         IHubBroadcaster broadcaster,
         IRoleRepository roles,
         ISlowmodeGate slowmode,
-        IMessageReactionRepository reactions
+        IMessageReactionRepository reactions,
+        IFileStorageService storage
     )
     {
         _channelRepository = channelRepository;
@@ -75,6 +77,7 @@ public class MessageService : IMessageService
         _roles = roles;
         _slowmode = slowmode;
         _reactions = reactions;
+        _storage = storage;
     }
 
     /// <summary>
@@ -102,6 +105,14 @@ public class MessageService : IMessageService
         CancellationToken ct
     )
     {
+        // Everything below is setup for MentionParser, and the parser ignores every character that
+        // isn't '@'. So a message with no '@' cannot produce a mention, an @everyone, an @here or a
+        // @role — yet resolving one still costs four round-trips on the send hot path: every member
+        // id, every member's User row, every GuildMember row again (for nicknames), and every role.
+        // The overwhelming majority of messages contain no '@' at all.
+        if (!content.Contains('@'))
+            return new ResolvedMentions([], []);
+
         var guildContext = guildId.HasValue;
         var candidateIds = guildContext
             ? await _guildRepository.GetMemberIdsAsync(guildId!.Value)
@@ -486,6 +497,49 @@ public class MessageService : IMessageService
             // ignore — pin cleanup must never fail an otherwise-successful delete
         }
 
+        // 1c. Reclaim the message's attachments — the rows AND the stored objects. Nothing else can
+        //     reference them: a send validates every attachment as uploader-owned and scoped to this
+        //     exact channel, and a forward re-uploads its own copies under fresh keys, so no other
+        //     message shares these objects. Without this, deleting a message left the bytes in the
+        //     bucket forever — the OrphanFileSweep only collects *unconfirmed* rows, and these are
+        //     confirmed. Best-effort, like the pin cleanup above: the message is already gone, so a
+        //     storage hiccup must not turn a successful delete into a 500.
+        if (message.AttachmentIds.Count > 0)
+        {
+            try
+            {
+                var attachments = new List<FileAttachment>();
+                foreach (var attachmentId in message.AttachmentIds)
+                {
+                    if (await _attachments.GetByIdAsync(attachmentId) is { } attachment)
+                        attachments.Add(attachment);
+                }
+
+                foreach (var attachment in attachments)
+                {
+                    try
+                    {
+                        await _storage.DeleteObjectAsync(attachment.MinioKey, ct);
+                    }
+                    catch
+                    {
+                        // Drop the row regardless: a leftover object is reclaimable by a bucket
+                        // lifecycle rule, a leftover row would never be retried by anything.
+                    }
+                }
+
+                if (attachments.Count > 0)
+                {
+                    _attachments.RemoveRange(attachments);
+                    await _attachments.SaveChangesAsync();
+                }
+            }
+            catch
+            {
+                // ignore — attachment cleanup must never fail an otherwise-successful delete
+            }
+        }
+
         // 2. Publish event to background queues (search index update)
         await _publisher.PublishMessageDeletedAsync(
             new MessageDeletedEvent(
@@ -539,6 +593,31 @@ public class MessageService : IMessageService
 
         if (message.UserId != userId)
             throw new UnauthorizedAccessException("You can only edit your own messages.");
+
+        // An edit re-posts content, so it must clear the same posting gate as a send — otherwise a
+        // timed-out member, or one whose SendMessage bit was revoked by a channel override, could
+        // bypass the block by rewriting an old message. Mirrors SendMessageAsync (minus slowmode:
+        // an edit doesn't claim a cooldown slot). Own-message ownership already implies participation.
+        if (guildId is { } gid)
+        {
+            const long sendMask = (long)(Permission.ViewChannel | Permission.SendMessage);
+            var bits = await _permissions.ResolveAsync(userId, gid, channelId, ct);
+            if ((bits & sendMask) != sendMask)
+                throw new UnauthorizedAccessException(
+                    "You do not have permission to edit messages in this channel."
+                );
+
+            var member = await _guildRepository.GetMemberAsync(gid, userId);
+            if (member?.CommunicationDisabledUntil is { } until
+                && until > DateTimeOffset.UtcNow.ToUnixTimeMilliseconds())
+                throw new UnauthorizedAccessException("You are timed out and cannot edit messages.");
+        }
+        else
+        {
+            // DM: same participant + not-blocked gate as sending (blocking hides the peer AND
+            // blocks new content, edits included).
+            await AuthorizeDmSendAsync(userId, channelId);
+        }
 
         // Capture the pre-edit mention set BEFORE overwriting Scylla — the consumer diffs
         // against this to notify only newly-added mentions. (It can't read the old set

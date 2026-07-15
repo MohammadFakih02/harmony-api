@@ -43,10 +43,26 @@ public static class DependencyInjection
         // config key), so the environment string alone is authoritative — no assembly scan needed.
         bool isTest = env.Equals("Test", StringComparison.OrdinalIgnoreCase);
 
+        // Mirrors the flag Program.cs uses for the HTTP limiter — see the note there. Defaults ON:
+        // an unset key must never silently disable a protection.
+        bool rateLimitingEnabled = !isTest && configuration.GetValue("RateLimiting:Enabled", true);
+
         // -----------------------------------------------------------------------
         // PostgreSQL (With Global Split Queries configured to prevent Cartesian warnings)
+        //
+        // Pooled: every request resolves a scoped HarmonyDbContext, and constructing one rebuilds
+        // its internal service provider, change tracker and state manager each time.
+        // AddDbContextPool keeps instances alive and resets their state on return, turning that
+        // per-request construction into a rent/return.
+        //
+        // The pattern has real preconditions and this context meets them: exactly one constructor,
+        // taking only DbContextOptions<HarmonyDbContext>; no fields of its own that could leak
+        // across requests; no OnConfiguring override anywhere in the solution (a pooled context is
+        // configured once, so per-instance configuration would silently apply to whoever rents it
+        // next). Keep it that way — adding constructor state to HarmonyDbContext breaks pooling at
+        // runtime, not at compile time.
         // -----------------------------------------------------------------------
-        services.AddDbContext<HarmonyDbContext>(options =>
+        services.AddDbContextPool<HarmonyDbContext>(options =>
             options.UseNpgsql(
                 configuration.GetConnectionString("Postgres"),
                 npgsqlOptions =>
@@ -103,8 +119,9 @@ public static class DependencyInjection
                 // Rate-limit before the exception filter so a rejected (throttled) call is
                 // still surfaced to the client through the normal hub error path. Disabled
                 // under Test (same posture as the HTTP rate limiter) so message-burst tests
-                // aren't throttled by the real test Redis.
-                if (!isTest)
+                // aren't throttled by the real test Redis, and by RateLimiting:Enabled=false so
+                // a load test isn't capped at SendMessage's 5/s while HTTP runs unlimited.
+                if (rateLimitingEnabled)
                     options.AddFilter<RateLimitHubFilter>();
                 options.AddFilter<HubExceptionFilter>();
             })

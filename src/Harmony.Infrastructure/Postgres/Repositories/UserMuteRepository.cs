@@ -44,10 +44,15 @@ public class UserMuteRepository : IUserMuteRepository
 
     public void Remove(UserMute mute) => _db.UserMutes.Remove(mute);
 
-    public async Task<List<UserMute>> DeleteExpiredAsync(long nowUnixMs)
+    public async Task<List<UserMute>> DeleteExpiredAsync(long nowUnixMs, int limit = 500)
     {
+        // Oldest expiry first, so a capped sweep drains a backlog in the order it accrued rather
+        // than starving the same tail every pass. Not ExecuteDelete: the caller needs the rows
+        // themselves to broadcast MuteExpired to each owner, and that returns only a count.
         var expired = await _db
             .UserMutes.Where(m => m.MutedUntil != null && m.MutedUntil <= nowUnixMs)
+            .OrderBy(m => m.MutedUntil)
+            .Take(limit)
             .ToListAsync();
 
         if (expired.Count == 0)
