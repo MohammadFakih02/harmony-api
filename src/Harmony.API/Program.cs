@@ -1,3 +1,4 @@
+using System.IO.Compression;
 using System.Text;
 using FluentValidation;
 using Harmony.API.Extensions;
@@ -13,6 +14,7 @@ using Harmony.Infrastructure.RabbitMQ;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Identity;
+using Microsoft.AspNetCore.ResponseCompression;
 using Microsoft.IdentityModel.Tokens;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -42,19 +44,61 @@ builder.Services.Configure<ForwardedHeadersOptions>(options =>
 
 // -----------------------------------------------------------------------
 // CORS
+//
+// Origins come from config so a deployment can point at its real client host without a rebuild
+// (Cors__AllowedOrigins__0=https://app.example.com as an env var, per §20's ECS/CloudFront split
+// where the SPA is served from a different origin than the API). The localhost fallback keeps a
+// fresh checkout working with no config. Trailing slashes are trimmed because WithOrigins compares
+// origins exactly — "http://x:4200/" would silently never match.
+//
+// AllowAnyOrigin is deliberately NOT an option here: AllowCredentials (required for the SignalR
+// WebSocket handshake) is incompatible with a wildcard origin.
 // -----------------------------------------------------------------------
+var corsOrigins = (
+    builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>()
+    ?? ["http://localhost:4200"]
+)
+    .Select(o => o.TrimEnd('/'))
+    .ToArray();
+
 builder.Services.AddCors(options =>
 {
     options.AddPolicy(
         "HarmonyClient",
-        policy =>
-            policy
-                .WithOrigins("http://localhost:4200")
-                .AllowAnyHeader()
-                .AllowAnyMethod()
-                .AllowCredentials()
+        policy => policy.WithOrigins(corsOrigins).AllowAnyHeader().AllowAnyMethod().AllowCredentials()
     );
 });
+
+// -----------------------------------------------------------------------
+// Response compression
+//
+// The JSON this API returns is highly compressible and the payloads that dominate a session are
+// the big ones — a message page, a member list, a guild bootstrap — so this is the cheapest
+// bandwidth win available. application/json is already in ResponseCompressionDefaults.MimeTypes;
+// problem+json (every error from GlobalExceptionHandler) is not, so it's added.
+//
+// EnableForHttps is on. That default exists because compressing a response that mixes a secret
+// with attacker-influenced text leaks the secret's length (BREACH/CRIME) — so the endpoints where
+// that shape actually occurs are excluded from the middleware entirely, below.
+//
+// CompressionLevel.Fastest is not a minor tuning knob: .NET maps Brotli's Optimal to quality 11,
+// which is built for compress-once-serve-many static assets and is orders of magnitude too slow to
+// sit on a dynamic response path. Fastest (quality 1) gets most of the ratio for a small fraction
+// of the CPU.
+// -----------------------------------------------------------------------
+builder.Services.AddResponseCompression(options =>
+{
+    options.EnableForHttps = true;
+    options.Providers.Add<BrotliCompressionProvider>();
+    options.Providers.Add<GzipCompressionProvider>();
+    options.MimeTypes = ResponseCompressionDefaults.MimeTypes.Concat(
+        ["application/problem+json"]
+    );
+});
+builder.Services.Configure<BrotliCompressionProviderOptions>(o =>
+    o.Level = CompressionLevel.Fastest
+);
+builder.Services.Configure<GzipCompressionProviderOptions>(o => o.Level = CompressionLevel.Fastest);
 
 // -----------------------------------------------------------------------
 // Data protection + Identity
@@ -111,8 +155,22 @@ builder.Services.AddAuthorization();
 
 // -----------------------------------------------------------------------
 // Rate limiting
+//
+// Defaults ON — an unset config key must never mean "unprotected" (NON-NEGOTIABLE #7). The flag
+// exists so load testing can measure the app rather than the limiter (a k6 run drives thousands of
+// requests per second from ONE partition key, which every policy here is designed to reject), and
+// so the limiter's own per-user partition cost can be A/B'd. Test stays hard-gated off regardless
+// of config, as before.
+//
+// The same flag also gates the SignalR hub limiter inside AddInfrastructureServices — that one is a
+// separate Redis-backed IHubFilter, because middleware only ever sees the negotiate request and
+// never the WebSocket frames that carry SendMessage.
 // -----------------------------------------------------------------------
-if (!builder.Environment.IsEnvironment("Test"))
+var rateLimitingEnabled =
+    !builder.Environment.IsEnvironment("Test")
+    && builder.Configuration.GetValue("RateLimiting:Enabled", true);
+
+if (rateLimitingEnabled)
 {
     builder.Services.AddHarmonyRateLimiting();
 }
@@ -166,12 +224,37 @@ await using (var startupChannel = await rabbitConnection.CreateChannelAsync())
 }
 
 app.UseForwardedHeaders();
+
+// Compression wraps every downstream body writer, so it goes early — but NOT around two branches:
+//
+//   /api/auth — a login/register/refresh response embeds a freshly-minted JWT alongside text the
+//     caller controls (the username it echoes back). That is the exact shape BREACH needs: vary the
+//     controlled text, watch the compressed length, and recover the secret byte by byte. These
+//     responses are a few hundred bytes; there is nothing to win by compressing them. Excluding the
+//     branch outright is stronger than IHttpsCompressionFeature's DoNotCompress, which the
+//     middleware only consults for HTTPS requests and would therefore skip on plain-HTTP dev traffic.
+//
+//   /hubs — SignalR. WebSocket frames never pass through this middleware anyway, negotiate is far
+//     too small to benefit, and the SSE/long-polling fallbacks stream their bodies, which a
+//     buffering compressor would stall.
+//
+// UseWhen (not MapWhen) so the branch rejoins the main pipeline.
+app.UseWhen(
+    ctx =>
+        !ctx.Request.Path.StartsWithSegments("/api/auth")
+        && !ctx.Request.Path.StartsWithSegments("/hubs"),
+    branch => branch.UseResponseCompression()
+);
+
 app.UseCors("HarmonyClient");
 app.UseAuthentication();
 app.UseAuthorization();
 if (!app.Environment.IsEnvironment("Test"))
 {
     app.UseHttpsRedirection();
+}
+if (rateLimitingEnabled)
+{
     app.UseRateLimiter();
 }
 app.UseExceptionHandler();

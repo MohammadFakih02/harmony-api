@@ -74,6 +74,20 @@ public class GuildRepository : IGuildRepository
             .ExecuteDeleteAsync();
     }
 
+    public async Task AdjustMemberCountAsync(long guildId, int delta)
+    {
+        var guilds = _db.Guilds.Where(g => g.Id == guildId);
+
+        // Clamp in the predicate rather than with a GREATEST expression: if a double-leave race
+        // would drive the count below zero, the UPDATE simply matches no rows.
+        if (delta < 0)
+            guilds = guilds.Where(g => g.MemberCount >= -delta);
+
+        await guilds.ExecuteUpdateAsync(s =>
+            s.SetProperty(g => g.MemberCount, g => g.MemberCount + delta)
+        );
+    }
+
     public void Delete(Guild guild)
     {
         _db.Guilds.Remove(guild);

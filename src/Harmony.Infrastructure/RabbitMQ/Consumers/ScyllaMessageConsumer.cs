@@ -1,11 +1,13 @@
 using System.Text;
 using System.Text.Json;
+using Cassandra;
 using Harmony.Application.DTOs.Responses;
 using Harmony.Application.Exceptions;
 using Harmony.Application.Hubs;
 using Harmony.Application.Interfaces.Services;
 using Harmony.Domain.Interfaces;
 using Harmony.Domain.Interfaces.Repositories;
+using Harmony.Infrastructure.Scylla;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -40,12 +42,27 @@ public class ScyllaMessageConsumer : BackgroundService
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly IHubBroadcaster _hubBroadcaster;
     private readonly IMessageDeduplicator _deduplicator;
+    private readonly IScyllaSessionFactory _sessionFactory;
     private readonly ILogger<ScyllaMessageConsumer> _logger;
     private readonly ResiliencePipeline _retryPipeline;
     private readonly bool _isTestEnv;
     private IChannel? _channel;
     private string? _consumerTag;
     private CancellationToken _stoppingToken;
+
+    // ── Scylla write-side circuit breaker ────────────────────────────────────────────────────
+    // When Scylla is unreachable, retrying per-message (on the single dispatch thread) both burns
+    // the ladder pointlessly and head-of-line-blocks the queue. Instead we treat a
+    // NoHostAvailableException as "dependency down": requeue the in-flight message (durable), end
+    // the consume session, and pause — probing Scylla every ScyllaProbeInterval — until it answers,
+    // then re-subscribe. Messages wait safely in the queue and drain automatically on recovery.
+    // _scyllaCircuitOpen is written on the dispatch thread and read on the consume-loop thread.
+    private volatile bool _scyllaCircuitOpen;
+    // The current session's completion source, so the dispatch handler can end the session (mirrors
+    // the channel-shutdown callbacks). Reassigned per session; TrySetResult is idempotent.
+    private volatile TaskCompletionSource? _sessionEnded;
+    private static readonly TimeSpan ScyllaProbeInterval = TimeSpan.FromSeconds(3);
+    private const int ScyllaProbeReadTimeoutMs = 3000;
 
     // Out-of-order edit handling: a MessageEdited whose MessageSent hasn't landed yet is
     // requeued with a short backoff, up to a bounded number of times before being DLQ'd — so a
@@ -63,6 +80,7 @@ public class ScyllaMessageConsumer : BackgroundService
         IServiceScopeFactory scopeFactory,
         IHubBroadcaster hubBroadcaster,
         IMessageDeduplicator deduplicator,
+        IScyllaSessionFactory sessionFactory,
         IHostEnvironment hostEnvironment,
         ILogger<ScyllaMessageConsumer> logger
     )
@@ -71,6 +89,7 @@ public class ScyllaMessageConsumer : BackgroundService
         _scopeFactory = scopeFactory;
         _hubBroadcaster = hubBroadcaster;
         _deduplicator = deduplicator;
+        _sessionFactory = sessionFactory;
         _isTestEnv = hostEnvironment.IsEnvironment("Test");
         _logger = logger;
 
@@ -83,6 +102,10 @@ public class ScyllaMessageConsumer : BackgroundService
                         // Out-of-order edit signal — not retried on the ladder; handled by a
                         // dedicated catch that backs off and requeues (see OnMessageReceivedAsync).
                         && ex is not ServiceUnavailableException
+                        // Scylla unreachable — not retried on the ladder either. A dedicated catch
+                        // trips the write-side circuit breaker: requeue + pause + probe until healthy,
+                        // instead of burning the ladder + head-of-line-blocking the queue.
+                        && ex is not NoHostAvailableException
                         // Symmetry + safety net: constraint-violation poison fast-fails to the DLQ
                         // instead of laddering. The Scylla write itself can't throw a PostgresException;
                         // the one Postgres touch (mention notifications) is best-effort in the handler,
@@ -132,6 +155,18 @@ public class ScyllaMessageConsumer : BackgroundService
 
         while (!stoppingToken.IsCancellationRequested)
         {
+            // Write-side circuit breaker: if a delivery hit Scylla-unreachable, don't re-subscribe
+            // (and start re-failing + requeuing) until Scylla actually answers. Messages wait in the
+            // durable queue meanwhile. Health-gate here rather than spinning the ladder per message.
+            if (_scyllaCircuitOpen)
+            {
+                await WaitForScyllaHealthyAsync(stoppingToken);
+                _scyllaCircuitOpen = false;
+                if (stoppingToken.IsCancellationRequested)
+                    break;
+                delay = InitialReconnectDelay;
+            }
+
             try
             {
                 await RunConsumeSessionAsync(stoppingToken);
@@ -190,11 +225,14 @@ public class ScyllaMessageConsumer : BackgroundService
         // reordering; the out-of-order edit requeue path below is the safety net if it ever is.
         await channel.BasicQosAsync(prefetchSize: 0, prefetchCount: 10, global: false);
 
-        // Completes when the channel reports shutdown / a callback exception, or the host stops —
-        // replaces the old `Task.Delay(Timeout.Infinite)` so a dead channel actually wakes the loop.
+        // Completes when the channel reports shutdown / a callback exception, the host stops, or a
+        // delivery trips the Scylla circuit breaker — replaces the old `Task.Delay(Timeout.Infinite)`
+        // so a dead channel (or an unreachable Scylla) actually wakes the loop.
         var sessionEnded = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously
         );
+        // Expose it so the dispatch handler can end this session on Scylla-unreachable.
+        _sessionEnded = sessionEnded;
 
         Task OnChannelShutdown(object? _, ShutdownEventArgs e)
         {
@@ -288,6 +326,27 @@ public class ScyllaMessageConsumer : BackgroundService
         var deliveryChannel = ((AsyncEventingBasicConsumer)sender).Channel;
 
         _logger.LogDebug("ScyllaConsumer received — RoutingKey: {RoutingKey}", routingKey);
+
+        // ── Deduplication pre-check — ONCE per delivery, OUTSIDE the retry ladder ─────────────
+        // The dedup gate is check-and-set (Redis SET NX). It must NOT live inside the retried
+        // lambda: attempt 0 claims the key, so every subsequent retry attempt re-hits its own key,
+        // reads it as a "duplicate", returns normally, and the delivery gets ACKed — even though
+        // the persist never succeeded. That silently drops the message (never persisted, never
+        // DLQ'd, no MessageFailed broadcast → the sender's optimistic bubble stays grey forever).
+        // Evaluating it here, exactly once, lets the pipeline actually retry the persist and — on
+        // terminal failure — reach the DLQ + MessageFailed path in the catch below.
+        var dedupKey = ResolveDedupKey(routingKey, body);
+        if (dedupKey is { } dk && await _deduplicator.IsDuplicateAsync(dk.EventType, dk.MessageId))
+        {
+            _logger.LogInformation(
+                "ScyllaConsumer: duplicate {EventType} skipped — MessageId: {MessageId}",
+                dk.EventType,
+                dk.MessageId
+            );
+            if (deliveryChannel.IsOpen)
+                await deliveryChannel.BasicAckAsync(ea.DeliveryTag, multiple: false);
+            return;
+        }
 
         try
         {
@@ -389,6 +448,44 @@ public class ScyllaMessageConsumer : BackgroundService
                 );
             }
         }
+        catch (NoHostAvailableException ex)
+        {
+            // Scylla is unreachable — this is a DEPENDENCY outage, not a poison message. Do NOT DLQ
+            // (that would fail every message of a transient outage) and do NOT ladder (it just
+            // head-of-line-blocks the single dispatch thread). Instead: clear the dedup claim,
+            // requeue the message durably, and trip the circuit breaker so the consume loop pauses
+            // and probes Scylla until it recovers — then this message redelivers and persists.
+            _logger.LogWarning(
+                ex,
+                "ScyllaConsumer: Scylla unreachable for {RoutingKey} — requeuing and pausing until healthy",
+                routingKey
+            );
+
+            // CRITICAL: the dedup key was claimed in the pre-check above. Clear it, or the requeued
+            // redelivery is swallowed as a duplicate and lost. Scylla writes are idempotent upserts,
+            // so reprocessing is safe. Best-effort — a clear failure must not suppress the requeue.
+            try
+            {
+                var requeueKey = ResolveDedupKey(routingKey, body);
+                if (requeueKey is { } key)
+                    await _deduplicator.ClearAsync(key.EventType, key.MessageId);
+            }
+            catch (Exception clearEx)
+            {
+                _logger.LogWarning(
+                    clearEx,
+                    "ScyllaConsumer: failed to clear dedup key before circuit-breaker requeue — continuing"
+                );
+            }
+
+            if (deliveryChannel.IsOpen)
+                await deliveryChannel.BasicNackAsync(ea.DeliveryTag, multiple: false, requeue: true);
+
+            // Open the breaker and end the session; the outer loop health-gates before re-subscribing.
+            // Other prefetched-but-undispatched deliveries are requeued by the channel teardown.
+            _scyllaCircuitOpen = true;
+            _sessionEnded?.TrySetResult();
+        }
         catch (Exception ex)
         {
             _logger.LogError(
@@ -430,8 +527,103 @@ public class ScyllaMessageConsumer : BackgroundService
         }
     }
 
+    /// <summary>
+    /// Resolves the (eventType, messageId) dedup key for a delivery — evaluated ONCE, before the
+    /// retry ladder (see <see cref="OnMessageReceivedAsync"/>). Returns <c>null</c> for routing
+    /// keys that aren't deduplicated (ChannelDeleted / unknown) or bodies that don't parse — in the
+    /// unparseable case the retry pipeline re-throws the same JsonException and the delivery DLQs,
+    /// exactly as before. Never throws.
+    /// </summary>
+    private (string EventType, long MessageId)? ResolveDedupKey(string routingKey, string body)
+    {
+        try
+        {
+            switch (routingKey)
+            {
+                case Topology.MessageSentKey:
+                    var sent = JsonSerializer.Deserialize<MessageSentEvent>(body, JsonOptions);
+                    return sent is null ? null : (IMessageDeduplicator.Sent, sent.MessageId);
+                case Topology.MessageDeletedKey:
+                    var deleted = JsonSerializer.Deserialize<MessageDeletedEvent>(body, JsonOptions);
+                    return deleted is null ? null : (IMessageDeduplicator.Deleted, deleted.MessageId);
+                case Topology.MessageEditedKey:
+                    var edited = JsonSerializer.Deserialize<MessageEditedEvent>(body, JsonOptions);
+                    return edited is null ? null : (EditedEventType(edited), edited.MessageId);
+                default:
+                    // ChannelDeleted (idempotent partition purge, never deduped) + unknown keys.
+                    return null;
+            }
+        }
+        catch (JsonException)
+        {
+            // Let the retry pipeline hit the same JsonException (its ShouldHandle excludes
+            // JsonException → immediate throw → DLQ). Swallowing it here would change that.
+            return null;
+        }
+    }
+
     // -------------------------------------------------------------------------
-    // Per-event handlers — dedup → persist → broadcast
+    // Scylla circuit breaker — pause + probe while the store is unreachable
+    // -------------------------------------------------------------------------
+
+    /// <summary>
+    /// Blocks until a lightweight Scylla query succeeds (or the host stops), probing every
+    /// <see cref="ScyllaProbeInterval"/>. Called by the consume loop while the circuit is open, so
+    /// the consumer doesn't re-subscribe (and start re-failing deliveries) before Scylla is back.
+    /// </summary>
+    private async Task WaitForScyllaHealthyAsync(CancellationToken ct)
+    {
+        _logger.LogWarning(
+            "ScyllaMessageConsumer: circuit OPEN — consumption paused, probing Scylla every {Interval:0.0}s",
+            ScyllaProbeInterval.TotalSeconds
+        );
+
+        while (!ct.IsCancellationRequested)
+        {
+            if (await ProbeScyllaAsync())
+            {
+                _logger.LogInformation(
+                    "ScyllaMessageConsumer: Scylla healthy — circuit CLOSED, resuming consumption"
+                );
+                return;
+            }
+
+            try
+            {
+                await Task.Delay(ScyllaProbeInterval, ct);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+        }
+    }
+
+    /// <summary>
+    /// A single Scylla liveness probe: a bounded read against <c>system.local</c>. Any exception —
+    /// including the <see cref="IScyllaSessionFactory.Session"/> getter throwing while Scylla is
+    /// still down — means "not healthy yet". Never throws.
+    /// </summary>
+    private async Task<bool> ProbeScyllaAsync()
+    {
+        try
+        {
+            var statement = new SimpleStatement(
+                "SELECT release_version FROM system.local"
+            ).SetReadTimeoutMillis(ScyllaProbeReadTimeoutMs);
+
+            await _sessionFactory.Session.ExecuteAsync(statement);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "ScyllaMessageConsumer: Scylla probe failed — still down");
+            return false;
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Per-event handlers — persist → broadcast (dedup runs once in the pre-check)
     // -------------------------------------------------------------------------
 
     private async Task HandleMessageSentAsync(
@@ -443,16 +635,6 @@ public class ScyllaMessageConsumer : BackgroundService
         var evt = JsonSerializer.Deserialize<MessageSentEvent>(body, JsonOptions);
         if (evt is null)
             return;
-
-        // 1. Deduplication gate — skip if already processed (protects the increment too)
-        if (await _deduplicator.IsDuplicateAsync(IMessageDeduplicator.Sent, evt.MessageId))
-        {
-            _logger.LogInformation(
-                "ScyllaConsumer: duplicate MessageSent skipped — MessageId: {MessageId}",
-                evt.MessageId
-            );
-            return;
-        }
 
         // 2. Persist to ScyllaDB + create mention notifications
         await handler.HandleMessageSentAsync(evt);
@@ -539,16 +721,6 @@ public class ScyllaMessageConsumer : BackgroundService
         if (evt is null)
             return;
 
-        // 1. Deduplication gate
-        if (await _deduplicator.IsDuplicateAsync(IMessageDeduplicator.Deleted, evt.MessageId))
-        {
-            _logger.LogInformation(
-                "ScyllaConsumer: duplicate MessageDeleted skipped — MessageId: {MessageId}",
-                evt.MessageId
-            );
-            return;
-        }
-
         // 2. Soft-delete in ScyllaDB
         await handler.HandleMessageDeletedAsync(evt);
 
@@ -583,16 +755,6 @@ public class ScyllaMessageConsumer : BackgroundService
         var evt = JsonSerializer.Deserialize<MessageEditedEvent>(body, JsonOptions);
         if (evt is null)
             return;
-
-        // 1. Deduplication gate (per-edit — see EditedEventType)
-        if (await _deduplicator.IsDuplicateAsync(EditedEventType(evt), evt.MessageId))
-        {
-            _logger.LogInformation(
-                "ScyllaConsumer: duplicate MessageEdited skipped — MessageId: {MessageId}",
-                evt.MessageId
-            );
-            return;
-        }
 
         // 2. Update content in ScyllaDB
         await handler.HandleMessageEditedAsync(evt);

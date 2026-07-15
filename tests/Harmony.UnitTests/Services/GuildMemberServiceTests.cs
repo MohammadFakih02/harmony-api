@@ -101,6 +101,9 @@ public class GuildMemberServiceTests
 
         guilds.Verify(g => g.RemoveMemberAsync(It.IsAny<GuildMember>()), Times.Once);
         guilds.Verify(g => g.SaveChangesAsync(), Times.Once);
+        // Exactly one atomic decrement — never a read-modify-write on a tracked Guild, which
+        // loses updates when two removals land at once.
+        guilds.Verify(g => g.AdjustMemberCountAsync(GuildId, -1), Times.Once);
         perms.Verify(p => p.InvalidateUserAsync(TargetId, GuildId, It.IsAny<CancellationToken>()), Times.Once);
         audit.Verify(
             a => a.LogAsync(

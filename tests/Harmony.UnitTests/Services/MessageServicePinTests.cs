@@ -52,7 +52,7 @@ public class MessageServicePinTests
                 Messages.Object, Users.Object, Permissions.Object, Files.Object,
                 Dms.Object, Blocks.Object, Mock.Of<IFriendRepository>(), Presence.Object, AuditLog.Object,
                 Broadcaster.Object, Mock.Of<IRoleRepository>(), Mock.Of<ISlowmodeGate>(),
-                Mock.Of<IMessageReactionRepository>()
+                Mock.Of<IMessageReactionRepository>(), Mock.Of<IFileStorageService>()
             );
 
         /// <summary>Guild channel exists; the actor holds (or lacks) PinMessages; the message lives here.</summary>

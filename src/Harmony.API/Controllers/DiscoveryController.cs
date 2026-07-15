@@ -95,14 +95,18 @@ public class DiscoveryController : ControllerBase
         };
 
         await _guilds.AddMemberAsync(member);
-        guild.MemberCount++;
         await _guilds.SaveChangesAsync();
+
+        // See InvitesController.Join — atomic bump after the membership lands, so concurrent joins
+        // can't lose each other's increment.
+        await _guilds.AdjustMemberCountAsync(guild.Id, 1);
 
         await InvitesController.PostWelcomeMessageAsync(guild, userId, _channels, _messages, _logger);
         await InvitesController.BroadcastMemberJoinedAsync(
             guild.Id, userId, member.JoinedAt, _users, _broadcaster, _logger);
 
-        return Ok(ToResponse(guild));
+        // The tracked entity still holds the pre-join count (the bump bypassed the change tracker).
+        return Ok(ToResponse(guild) with { MemberCount = guild.MemberCount + 1 });
     }
 
     private long GetUserId() => long.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);

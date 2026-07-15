@@ -63,7 +63,8 @@ public class MessageServiceAttachmentTests
             messages.Object, users.Object, permissions.Object, files.Object,
             dms.Object, blocks.Object, friends.Object, presence.Object, auditLog.Object,
             Mock.Of<IHubBroadcaster>(), roles.Object, Mock.Of<ISlowmodeGate>(),
-            Mock.Of<IMessageReactionRepository>()
+            Mock.Of<IMessageReactionRepository>(),
+            Mock.Of<IFileStorageService>()
         );
         return (sut, publisher, files);
     }

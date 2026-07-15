@@ -30,11 +30,19 @@ public class JwtService : IJwtService
             new(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
         };
 
+        // Honour the configured lifetime. This key already existed in appsettings.json AND
+        // appsettings.Development.json AND the test host's config, but nothing read it — the 15
+        // minutes below was hardcoded, so the knob was dead config. It matters beyond tidiness:
+        // token validation runs with ClockSkew = TimeSpan.Zero (Program.cs), so expiry is exact,
+        // and any long-running client (a k6 run, a soak test) needs to either raise this or
+        // refresh. Falls back to the same 15 minutes when unset.
+        var expiryMinutes = _configuration.GetValue("Jwt:AccessTokenExpiryMinutes", 15);
+
         var token = new JwtSecurityToken(
             issuer: _configuration["Jwt:Issuer"],
             audience: _configuration["Jwt:Audience"],
             claims: claims,
-            expires: DateTime.UtcNow.AddMinutes(15),
+            expires: DateTime.UtcNow.AddMinutes(expiryMinutes),
             signingCredentials: creds
         );
 

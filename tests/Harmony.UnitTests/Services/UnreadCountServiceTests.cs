@@ -37,6 +37,17 @@ public class UnreadCountServiceTests
                 It.IsAny<long?>(),
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(true);
+        // The fan-out gates on the batched filter, not HasAsync. Mirror the "everyone can view"
+        // default by echoing the candidates back — without this the mock returns null and the
+        // fan-out NREs rather than failing on an assertion.
+        permissions
+            .Setup(p => p.FilterByPermissionAsync(
+                It.IsAny<IReadOnlyList<long>>(),
+                It.IsAny<long>(),
+                It.IsAny<Harmony.Domain.Domain.Enums.Permission>(),
+                It.IsAny<long?>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync((IReadOnlyList<long> ids, long _, Harmony.Domain.Domain.Enums.Permission _, long? _, CancellationToken _) => ids.ToList());
 
         var dms = new Mock<IDirectMessageRepository>();
 

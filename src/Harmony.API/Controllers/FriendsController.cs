@@ -122,6 +122,11 @@ public class FriendsController : ControllerBase
         if (target is null)
             return NotFound(new { error = "No user with that username." });
 
+        // A deactivated account can't log in (AuthService checks the same field), so it can never
+        // answer a request — treat it as nonexistent rather than parking a request nobody can accept.
+        if (!UserAccountStatus.IsActive(target.AccountStatus))
+            return NotFound(new { error = "No user with that username." });
+
         if (target.Id == me)
             return BadRequest(new { error = "You cannot friend yourself." });
 
@@ -198,6 +203,19 @@ public class FriendsController : ControllerBase
         // Only the addressee of a still-pending request can accept it.
         if (row is null || row.Status != StatusPending || row.AddresseeId != me)
             return NotFound(new { error = "No pending request from this user." });
+
+        // Blocking severs pending requests (POST /users/{id}/block), so normally there's nothing
+        // here to accept. But the two aren't serialized: a request that reads "not blocked" and
+        // commits *after* the block found no row to sever leaves a pending request from a blocked
+        // user. Re-check at accept and finish the severing the block intended — otherwise the two
+        // would end up friends with a block still standing between them. Same response as a missing
+        // request: whether a block exists isn't the caller's business.
+        if (await _blocks.AreBlockedAsync(me, requesterId))
+        {
+            _friends.Remove(row);
+            await _friends.SaveChangesAsync();
+            return NotFound(new { error = "No pending request from this user." });
+        }
 
         return await AcceptRow(row, me);
     }
