@@ -48,4 +48,5 @@ public class User : IdentityUser<long>
     public NotificationPreference? NotificationPreference { get; set; }
     public ICollection<UserPushSubscription> PushSubscriptions { get; set; } = [];
     public VoiceState? VoiceState { get; set; }
+    public ICollection<TrustedDevice> TrustedDevices { get; set; } = [];
 }

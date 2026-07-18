@@ -7,7 +7,6 @@ using Harmony.Application.Interfaces.Services;
 using Harmony.Domain.Domain.Entities;
 using Harmony.Domain.Interfaces.Repositories;
 using Microsoft.AspNetCore.Authorization;
-using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 
@@ -21,7 +20,6 @@ public class UsersController : ControllerBase
 {
     private readonly IUserRepository _users;
     private readonly IGuildRepository _guilds;
-    private readonly UserManager<User> _userManager;
     private readonly IPresenceService _presence;
     private readonly IUserBlockRepository _blocks;
     private readonly IFriendRepository _friends;
@@ -31,7 +29,6 @@ public class UsersController : ControllerBase
     public UsersController(
         IUserRepository users,
         IGuildRepository guilds,
-        UserManager<User> userManager,
         IPresenceService presence,
         IUserBlockRepository blocks,
         IFriendRepository friends,
@@ -41,7 +38,6 @@ public class UsersController : ControllerBase
     {
         _users = users;
         _guilds = guilds;
-        _userManager = userManager;
         _presence = presence;
         _blocks = blocks;
         _friends = friends;
@@ -67,18 +63,6 @@ public class UsersController : ControllerBase
         var user = await _users.GetByIdAsync(GetUserId());
         if (user is null)
             return NotFound();
-
-        if (request.Username is not null)
-        {
-            // Check username isn't already taken by someone else
-            var existing = await _userManager.FindByNameAsync(request.Username);
-            if (existing is not null && existing.Id != user.Id)
-                return Conflict(new { error = "Username already taken." });
-
-            user.UserName = request.Username;
-            // Keep normalized username in sync so Identity lookups still work
-            user.NormalizedUserName = request.Username.ToUpperInvariant();
-        }
 
         if (request.Bio is not null)
             user.Bio = request.Bio;
@@ -288,7 +272,8 @@ public class UsersController : ControllerBase
                 g.CreatedAt,
                 g.WelcomeChannelId,
                 g.WelcomeMessage,
-                g.SystemMessagesEnabled
+                g.SystemMessagesEnabled,
+                g.RequireVerifiedEmail
             ))
         );
     }

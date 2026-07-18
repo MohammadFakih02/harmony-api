@@ -150,8 +150,9 @@ async Task SeedAsync()
 
     // DB-only bits: Admin role + assignment, and the muted member's timeout.
     // Returns the @everyone role id (needed for the channel override below).
-    var (everyoneRoleId, adminRoleId) = await ApplyDbTouchesAsync(guildId, admin.Id, muted.Id);
-    Console.WriteLine("✓ Admin role assigned; muted member timed out (DB)");
+    var (everyoneRoleId, adminRoleId) = await ApplyDbTouchesAsync(
+        guildId, admin.Id, muted.Id, [owner.Id, admin.Id, member.Id, muted.Id, restricted.Id]);
+    Console.WriteLine("✓ Admin role assigned; muted member timed out; emails confirmed (DB)");
 
     // Channel overrides (real API — the feature we just built).
     var view = (long)Permission.ViewChannel;
@@ -219,7 +220,7 @@ async Task SeedAsync()
 // DB touches (no public API yet)
 // ---------------------------------------------------------------------------
 async Task<(long everyoneRoleId, long adminRoleId)> ApplyDbTouchesAsync(
-    long guildId, long adminUserId, long mutedUserId)
+    long guildId, long adminUserId, long mutedUserId, long[] allSeedUserIds)
 {
     var options = new DbContextOptionsBuilder<HarmonyDbContext>().UseNpgsql(pgConn).Options;
     await using var db = new HarmonyDbContext(options);
@@ -262,6 +263,10 @@ async Task<(long everyoneRoleId, long adminRoleId)> ApplyDbTouchesAsync(
         m.GuildId == guildId && m.UserId == mutedUserId);
     mutedMember.CommunicationDisabledUntil =
         DateTimeOffset.UtcNow.AddHours(24).ToUnixTimeMilliseconds();
+
+    // Seeded users skip the email-verification nag — nobody can read seed_owner@harmony.dev's inbox.
+    await db.Users.Where(u => allSeedUserIds.Contains(u.Id))
+        .ExecuteUpdateAsync(s => s.SetProperty(u => u.EmailConfirmed, true));
 
     await db.SaveChangesAsync();
     return (everyone.Id, adminRole.Id);

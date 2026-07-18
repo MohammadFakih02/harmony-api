@@ -180,6 +180,7 @@ public static class DependencyInjection
         services.AddScoped<MessageRepository>();
         services.AddScoped<IReadStateRepository, ReadStateRepository>();
         services.AddScoped<IRefreshTokenRepository, RefreshTokenRepository>();
+        services.AddScoped<ITrustedDeviceRepository, TrustedDeviceRepository>();
         services.AddScoped<IUserBlockRepository, UserBlockRepository>();
         services.AddScoped<IUserMuteRepository, UserMuteRepository>();
         services.AddScoped<IFriendRepository, FriendRepository>();
@@ -216,6 +217,19 @@ public static class DependencyInjection
         // to Infrastructure); the nudge is the producers' wake-up line to the dispatcher.
         services.AddSingleton<IWebPushSender, WebPushSender>();
         services.AddSingleton<IPushDispatchNudge, PushDispatchNudge>();
+
+        // Email — the sender owns the SMTP client (Smtp config section, MailKit confined to
+        // Infrastructure); the cooldown gate shares the same Redis connection as every other gate.
+        services.AddSingleton<IEmailSender, MailKitEmailSender>();
+        services.AddSingleton<IEmailCooldownGate, RedisEmailCooldownGate>();
+
+        // Google sign-in — verifies ID tokens from the frontend's Google Identity Services button
+        // (Google config section, Google.Apis.Auth confined to Infrastructure).
+        services.AddSingleton<IGoogleTokenVerifier, GoogleTokenVerifier>();
+
+        // Email-code 2FA challenge store — fails CLOSED (unlike every cooldown/dedup gate above),
+        // so it's kept separate from the email plumbing rather than folded into it.
+        services.AddSingleton<ITwoFactorChallengeStore, RedisTwoFactorChallengeStore>();
 
         // Voice — the token service owns the LiveKit signing keys (LiveKit config section, SDK
         // confined to Infrastructure). Singleton: immutable config, thread-safe, mints per call.

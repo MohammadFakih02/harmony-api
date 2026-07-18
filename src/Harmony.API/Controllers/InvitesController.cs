@@ -145,6 +145,20 @@ public class InvitesController : ControllerBase
                 }
             );
 
+        if (guild.RequireVerifiedEmail)
+        {
+            var joiner = await _users.GetByIdAsync(userId);
+            if (joiner is null || !joiner.EmailConfirmed)
+                return StatusCode(
+                    StatusCodes.Status403Forbidden,
+                    new
+                    {
+                        error = "This server requires a verified email address.",
+                        requiresVerifiedEmail = true,
+                    }
+                );
+        }
+
         var member = new GuildMember
         {
             UserId = userId,
@@ -300,5 +314,5 @@ public class InvitesController : ControllerBase
 
     private static GuildResponse ToResponse(Guild g) =>
         new(g.Id, g.Name, g.Description, g.OwnerId, g.IconKey, g.BannerKey, g.IsPublic, g.MemberCount, g.CreatedAt,
-            g.WelcomeChannelId, g.WelcomeMessage, g.SystemMessagesEnabled);
+            g.WelcomeChannelId, g.WelcomeMessage, g.SystemMessagesEnabled, g.RequireVerifiedEmail);
 }
