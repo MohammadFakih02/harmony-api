@@ -26,6 +26,7 @@ public class HarmonyDbContext
 
     // Harmony domain tables
     public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
+    public DbSet<TrustedDevice> TrustedDevices => Set<TrustedDevice>();
     public DbSet<Guild> Guilds => Set<Guild>();
     public DbSet<Channel> Channels => Set<Channel>();
     public DbSet<GuildMember> GuildMembers => Set<GuildMember>();

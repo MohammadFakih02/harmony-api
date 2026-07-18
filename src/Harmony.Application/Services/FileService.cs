@@ -430,7 +430,7 @@ public sealed class FileService : IFileService
     {
         try
         {
-            var payload = new ProfileUpdatedPayload(userId, avatarKey);
+            var payload = new ProfileUpdatedPayload(userId, avatarKey, Username: null);
 
             var guildIds = await _guilds.GetGuildIdsForUserAsync(userId);
             foreach (var guildId in guildIds)

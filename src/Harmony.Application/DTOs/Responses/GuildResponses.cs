@@ -12,7 +12,8 @@ public record GuildResponse(
     long CreatedAt,
     long? WelcomeChannelId,
     string? WelcomeMessage,
-    bool SystemMessagesEnabled
+    bool SystemMessagesEnabled,
+    bool RequireVerifiedEmail
 );
 
 public record GuildMemberResponse(

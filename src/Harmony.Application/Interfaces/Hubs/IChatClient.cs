@@ -198,10 +198,11 @@ public interface IChatClient
     Task DmChannelUpdated(DmChannelUpdatedPayload payload);
 
     /// <summary>
-    /// Fired when a user changes their profile avatar (uploaded or removed). Fanned out to every
-    /// guild the user is a member of (guild groups) plus their friends and their own tabs — the
-    /// surfaces that render the avatar live (member lists, chat authors, DM list, the user deck).
-    /// Carries the new key (null = removed) so clients patch it in place without a refetch.
+    /// Fired when a user changes their profile avatar (uploaded or removed) or renames their
+    /// username. Fanned out to every guild the user is a member of (guild groups) plus their
+    /// friends and their own tabs — the surfaces that render these live (member lists, chat
+    /// authors, DM list, the user deck). Each field is independent: an avatar-only update carries
+    /// <c>Username: null</c> and vice versa — the client patches only the fields it receives.
     /// </summary>
     Task ProfileUpdated(ProfileUpdatedPayload payload);
 
@@ -389,9 +390,12 @@ public record MemberRoleUpdatedPayload(long GuildId, long UserId, IEnumerable<lo
 /// <summary>A DM/group channel whose membership changed — the recipient should resync its DM list.</summary>
 public record DmChannelUpdatedPayload(long ChannelId);
 
-/// <summary>A user's profile avatar changed. <see cref="AvatarKey"/> is the new storage key, or null
-/// when the avatar was removed.</summary>
-public record ProfileUpdatedPayload(long UserId, string? AvatarKey);
+/// <summary>A user's avatar and/or username changed. <see cref="AvatarKey"/> is always the user's
+/// CURRENT storage key (null = genuinely no avatar) — every producer includes it, even a
+/// username-only change, so a client that applies it unconditionally never mistakes "didn't
+/// touch the avatar" for "avatar removed". <see cref="Username"/> is the new username, or null
+/// when this update didn't touch it (a client applies it only when non-null).</summary>
+public record ProfileUpdatedPayload(long UserId, string? AvatarKey, string? Username);
 
 /// <summary>A guild's invite set changed — clients with invite UI open should refetch the list.</summary>
 public record GuildInvitesChangedPayload(long GuildId);

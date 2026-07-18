@@ -2,7 +2,10 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using FluentAssertions;
+using Harmony.Infrastructure.Postgres;
 using Harmony.IntegrationTests.Infrastructure;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
 namespace Harmony.IntegrationTests.Guilds;
@@ -19,12 +22,29 @@ public class DiscoveryTests : ApiTestBase, IClassFixture<HarmonyWebApplicationFa
 
     private async Task<string> RegisterAsync(string username, string email)
     {
+        var (token, _) = await RegisterFullAsync(username, email);
+        return token;
+    }
+
+    private async Task<(string Token, long UserId)> RegisterFullAsync(string username, string email)
+    {
         var resp = await Client.PostAsJsonAsync(
             "/api/auth/register",
             new { username, email, password = "Password123!" }
         );
         resp.EnsureSuccessStatusCode();
-        return (await resp.Content.ReadFromJsonAsync<AuthResponse>())!.AccessToken;
+        var body = (await resp.Content.ReadFromJsonAsync<AuthResponse>())!;
+        return (body.AccessToken, body.User.Id);
+    }
+
+    /// <summary>Directly flips EmailConfirmed — bypasses the email flow for a test that only
+    /// cares about the RequireVerifiedEmail gate, not verification itself.</summary>
+    private async Task MarkEmailVerifiedAsync(long userId)
+    {
+        using var scope = Factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<HarmonyDbContext>();
+        await db.Users.Where(u => u.Id == userId)
+            .ExecuteUpdateAsync(s => s.SetProperty(u => u.EmailConfirmed, true));
     }
 
     private void Auth(string token) =>
@@ -110,7 +130,47 @@ public class DiscoveryTests : ApiTestBase, IClassFixture<HarmonyWebApplicationFa
         join.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 
-    private record AuthResponse(string AccessToken);
+    [Fact]
+    public async Task JoinPublicGuild_RequireVerifiedEmail_Returns403_ForUnverifiedJoiner()
+    {
+        var owner = await RegisterAsync("disc_reqver1", "disc_reqver1@test.com");
+        Auth(owner);
+        var guildId = await CreateGuildAsync("Verified Only", isPublic: true);
+        (await Client.PatchAsJsonAsync($"/api/guilds/{guildId}", new { requireVerifiedEmail = true }))
+            .EnsureSuccessStatusCode();
+
+        var (joinerToken, _) = await RegisterFullAsync("disc_reqver1b", "disc_reqver1b@test.com");
+        Auth(joinerToken);
+
+        var join = await Client.PostAsync($"/api/guilds/{guildId}/join", null);
+        join.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+
+        var body = await join.Content.ReadFromJsonAsync<JoinErrorResponse>();
+        body!.RequiresVerifiedEmail.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task JoinPublicGuild_RequireVerifiedEmail_Succeeds_ForVerifiedJoiner()
+    {
+        var owner = await RegisterAsync("disc_reqver2", "disc_reqver2@test.com");
+        Auth(owner);
+        var guildId = await CreateGuildAsync("Verified Only 2", isPublic: true);
+        (await Client.PatchAsJsonAsync($"/api/guilds/{guildId}", new { requireVerifiedEmail = true }))
+            .EnsureSuccessStatusCode();
+
+        var (joinerToken, joinerId) = await RegisterFullAsync("disc_reqver2b", "disc_reqver2b@test.com");
+        await MarkEmailVerifiedAsync(joinerId);
+        Auth(joinerToken);
+
+        var join = await Client.PostAsync($"/api/guilds/{guildId}/join", null);
+        join.StatusCode.Should().Be(HttpStatusCode.OK);
+    }
+
+    private record JoinErrorResponse(string Error, bool RequiresVerifiedEmail);
+
+    private record AuthResponse(string AccessToken, AuthUser User);
+
+    private record AuthUser(long Id);
 
     private record GuildDto(long Id, string Name, bool IsPublic, int MemberCount);
 }

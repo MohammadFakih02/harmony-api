@@ -133,6 +133,7 @@ public class GuildsController : ControllerBase
         if (request.Name is not null) guild.Name = request.Name;
         if (request.Description is not null) guild.Description = request.Description;
         if (request.IsPublic is not null) guild.IsPublic = request.IsPublic.Value;
+        if (request.RequireVerifiedEmail is not null) guild.RequireVerifiedEmail = request.RequireVerifiedEmail.Value;
 
         await _guilds.SaveChangesAsync();
 
@@ -254,7 +255,7 @@ public class GuildsController : ControllerBase
     private static GuildResponse ToResponse(Guild g) =>
         new(g.Id, g.Name, g.Description, g.OwnerId, g.IconKey, g.BannerKey,
             g.IsPublic, g.MemberCount, g.CreatedAt,
-            g.WelcomeChannelId, g.WelcomeMessage, g.SystemMessagesEnabled);
+            g.WelcomeChannelId, g.WelcomeMessage, g.SystemMessagesEnabled, g.RequireVerifiedEmail);
 
     private static GuildMemberResponse ToMemberResponse(GuildMember m, IEnumerable<long> roleIds) =>
         new(m.UserId, m.User.UserName!, m.Nickname,

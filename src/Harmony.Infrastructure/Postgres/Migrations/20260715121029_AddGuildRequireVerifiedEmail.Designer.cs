@@ -3,6 +3,7 @@ using System;
 using Harmony.Infrastructure.Postgres;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Harmony.Infrastructure.Postgres.Migrations
 {
     [DbContext(typeof(HarmonyDbContext))]
-    partial class HarmonyDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260715121029_AddGuildRequireVerifiedEmail")]
+    partial class AddGuildRequireVerifiedEmail
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -840,40 +843,6 @@ namespace Harmony.Infrastructure.Postgres.Migrations
                     b.ToTable("RoleAssignments", (string)null);
                 });
 
-            modelBuilder.Entity("Harmony.Domain.Domain.Entities.TrustedDevice", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid")
-                        .HasColumnName("id");
-
-                    b.Property<long>("CreatedAt")
-                        .HasColumnType("bigint")
-                        .HasColumnName("created_at");
-
-                    b.Property<DateTimeOffset>("ExpiresAt")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("expires_at");
-
-                    b.Property<string>("TokenHash")
-                        .IsRequired()
-                        .HasColumnType("text")
-                        .HasColumnName("token_hash");
-
-                    b.Property<long>("UserId")
-                        .HasColumnType("bigint")
-                        .HasColumnName("user_id");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("TokenHash")
-                        .IsUnique();
-
-                    b.HasIndex("UserId");
-
-                    b.ToTable("TrustedDevices", (string)null);
-                });
-
             modelBuilder.Entity("Harmony.Domain.Domain.Entities.User", b =>
                 {
                     b.Property<long>("Id")
@@ -1574,17 +1543,6 @@ namespace Harmony.Infrastructure.Postgres.Migrations
                     b.Navigation("User");
                 });
 
-            modelBuilder.Entity("Harmony.Domain.Domain.Entities.TrustedDevice", b =>
-                {
-                    b.HasOne("Harmony.Domain.Domain.Entities.User", "User")
-                        .WithMany("TrustedDevices")
-                        .HasForeignKey("UserId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("User");
-                });
-
             modelBuilder.Entity("Harmony.Domain.Domain.Entities.UserBlock", b =>
                 {
                     b.HasOne("Harmony.Domain.Domain.Entities.User", "Blocked")
@@ -1782,8 +1740,6 @@ namespace Harmony.Infrastructure.Postgres.Migrations
                     b.Navigation("RoleAssignments");
 
                     b.Navigation("SentFriendRequests");
-
-                    b.Navigation("TrustedDevices");
 
                     b.Navigation("VoiceState");
                 });

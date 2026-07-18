@@ -3,7 +3,6 @@ using System.Text.Json.Serialization;
 namespace Harmony.Application.DTOs.Requests;
 
 public record UpdateUserRequest(
-    string? Username,
     string? Bio,
     string? StatusMessage,
     // ISO date "yyyy-MM-dd". Null = leave unchanged; the empty string clears it.

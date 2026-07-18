@@ -79,6 +79,29 @@ public class RefreshTokenConfiguration : IEntityTypeConfiguration<RefreshToken>
     }
 }
 
+public class TrustedDeviceConfiguration : IEntityTypeConfiguration<TrustedDevice>
+{
+    public void Configure(EntityTypeBuilder<TrustedDevice> builder)
+    {
+        builder.ToTable("TrustedDevices");
+        builder.HasKey(d => d.Id);
+        builder.Property(d => d.Id).HasColumnName("id");
+        builder.Property(d => d.UserId).HasColumnName("user_id");
+        builder.Property(d => d.TokenHash).HasColumnName("token_hash").IsRequired();
+        builder.Property(d => d.ExpiresAt).HasColumnName("expires_at");
+        builder.Property(d => d.CreatedAt).HasColumnName("created_at");
+
+        builder
+            .HasOne(d => d.User)
+            .WithMany(u => u.TrustedDevices)
+            .HasForeignKey(d => d.UserId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        builder.HasIndex(d => d.TokenHash).IsUnique();
+        builder.HasIndex(d => d.UserId);
+    }
+}
+
 public class GuildConfiguration : IEntityTypeConfiguration<Guild>
 {
     public void Configure(EntityTypeBuilder<Guild> builder)
