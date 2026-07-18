@@ -19,6 +19,10 @@ public class Guild
     public string? WelcomeMessage { get; set; }
     public bool SystemMessagesEnabled { get; set; } = true;
 
+    /// <summary>When true, joining this guild (invite redeem or discovery join) requires a verified
+    /// email address. Default false — opt-in per guild.</summary>
+    public bool RequireVerifiedEmail { get; set; }
+
     // Navigation
     public User Owner { get; set; } = null!;
     public ICollection<Channel> Channels { get; set; } = [];

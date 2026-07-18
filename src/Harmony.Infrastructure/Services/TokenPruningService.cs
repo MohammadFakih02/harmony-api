@@ -52,6 +52,17 @@ public class TokenPruningService : BackgroundService
                         "Successfully pruned {Count} expired or historically revoked refresh tokens.",
                         deletedCount
                     );
+
+                    var deletedDevices = await db.Database.ExecuteSqlRawAsync(
+                        "DELETE FROM \"TrustedDevices\" WHERE \"expires_at\" < {0}",
+                        [DateTimeOffset.UtcNow],
+                        cancellationToken: stoppingToken
+                    );
+
+                    _logger.LogInformation(
+                        "Successfully pruned {Count} expired trusted devices.",
+                        deletedDevices
+                    );
                 }
             }
             catch (Exception ex)

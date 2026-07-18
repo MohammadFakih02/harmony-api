@@ -8,7 +8,8 @@ public record CreateGuildRequest(
 public record UpdateGuildRequest(
     string? Name,
     string? Description,
-    bool? IsPublic
+    bool? IsPublic,
+    bool? RequireVerifiedEmail
 );
 
 /// <summary>

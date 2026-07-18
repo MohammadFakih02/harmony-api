@@ -5,7 +5,9 @@ using FluentAssertions;
 using Harmony.Domain.Domain.Entities;
 using Harmony.Domain.Domain.Enums;
 using Harmony.Domain.Interfaces.Repositories;
+using Harmony.Infrastructure.Postgres;
 using Harmony.IntegrationTests.Infrastructure;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
@@ -58,6 +60,57 @@ public class InviteTests : ApiTestBase, IClassFixture<HarmonyWebApplicationFacto
         var guilds = scope.ServiceProvider.GetRequiredService<IGuildRepository>();
         return guilds.GetByIdAsync(guildId).GetAwaiter().GetResult()!.OwnerId;
     }
+
+    /// <summary>Directly flips EmailConfirmed — bypasses the email flow for a test that only
+    /// cares about the RequireVerifiedEmail gate, not verification itself.</summary>
+    private async Task MarkEmailVerifiedAsync(long userId)
+    {
+        using var scope = Factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<HarmonyDbContext>();
+        await db.Users.Where(u => u.Id == userId)
+            .ExecuteUpdateAsync(s => s.SetProperty(u => u.EmailConfirmed, true));
+    }
+
+    [Fact]
+    public async Task Join_RequireVerifiedEmail_Returns403_ForUnverifiedJoiner()
+    {
+        var (ownerToken, _) = await RegisterAsync("inv_reqver1", "inv_reqver1@test.com");
+        var guildId = await CreateGuildAsync(ownerToken);
+        var invite = await CreateInviteAsync(ownerToken, guildId);
+
+        Auth(ownerToken);
+        (await Client.PatchAsJsonAsync($"/api/guilds/{guildId}", new { requireVerifiedEmail = true }))
+            .EnsureSuccessStatusCode();
+
+        var (memberToken, _) = await RegisterAsync("inv_reqver1b", "inv_reqver1b@test.com");
+        Auth(memberToken);
+        var join = await Client.PostAsJsonAsync($"/api/invites/{invite.Code}/join", new { });
+        join.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+
+        var body = await join.Content.ReadFromJsonAsync<JoinErrorResponse>();
+        body!.RequiresVerifiedEmail.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Join_RequireVerifiedEmail_Succeeds_ForVerifiedJoiner()
+    {
+        var (ownerToken, _) = await RegisterAsync("inv_reqver2", "inv_reqver2@test.com");
+        var guildId = await CreateGuildAsync(ownerToken);
+        var invite = await CreateInviteAsync(ownerToken, guildId);
+
+        Auth(ownerToken);
+        (await Client.PatchAsJsonAsync($"/api/guilds/{guildId}", new { requireVerifiedEmail = true }))
+            .EnsureSuccessStatusCode();
+
+        var (memberToken, memberId) = await RegisterAsync("inv_reqver2b", "inv_reqver2b@test.com");
+        await MarkEmailVerifiedAsync(memberId);
+
+        Auth(memberToken);
+        var join = await Client.PostAsJsonAsync($"/api/invites/{invite.Code}/join", new { });
+        join.StatusCode.Should().Be(HttpStatusCode.OK);
+    }
+
+    private record JoinErrorResponse(string Error, bool RequiresVerifiedEmail);
 
     [Fact]
     public async Task Owner_CreatesInvite_AppearsInListWithCreatorIdentity()

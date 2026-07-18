@@ -32,12 +32,161 @@ public sealed class RegisterRequestValidator : AbstractValidator<RegisterRequest
     }
 }
 
+public sealed class ConfirmEmailRequestValidator : AbstractValidator<ConfirmEmailRequest>
+{
+    public ConfirmEmailRequestValidator()
+    {
+        RuleFor(x => x.UserId).NotEmpty().WithMessage("UserId is required.");
+        RuleFor(x => x.Token).NotEmpty().WithMessage("Token is required.");
+    }
+}
+
 public sealed class LoginRequestValidator : AbstractValidator<LoginRequest>
 {
     public LoginRequestValidator()
     {
         RuleFor(x => x.Identifier).NotEmpty().WithMessage("Email or username is required.");
         RuleFor(x => x.Password).NotEmpty().WithMessage("Password is required.");
+    }
+}
+
+public sealed class Verify2faRequestValidator : AbstractValidator<Verify2faRequest>
+{
+    public Verify2faRequestValidator()
+    {
+        RuleFor(x => x.ChallengeToken).NotEmpty().WithMessage("ChallengeToken is required.");
+        RuleFor(x => x.Code)
+            .NotEmpty().WithMessage("Code is required.")
+            .Matches("^[0-9]{6}$").WithMessage("Code must be exactly 6 digits.");
+    }
+}
+
+public sealed class Resend2faRequestValidator : AbstractValidator<Resend2faRequest>
+{
+    public Resend2faRequestValidator()
+    {
+        RuleFor(x => x.ChallengeToken).NotEmpty().WithMessage("ChallengeToken is required.");
+    }
+}
+
+public sealed class Enable2faRequestValidator : AbstractValidator<Enable2faRequest>
+{
+    public Enable2faRequestValidator()
+    {
+        RuleFor(x => x.Password).NotEmpty().WithMessage("Password is required.");
+    }
+}
+
+public sealed class Confirm2faRequestValidator : AbstractValidator<Confirm2faRequest>
+{
+    public Confirm2faRequestValidator()
+    {
+        RuleFor(x => x.Code)
+            .NotEmpty().WithMessage("Code is required.")
+            .Matches("^[0-9]{6}$").WithMessage("Code must be exactly 6 digits.");
+    }
+}
+
+public sealed class Disable2faRequestValidator : AbstractValidator<Disable2faRequest>
+{
+    public Disable2faRequestValidator()
+    {
+        RuleFor(x => x.Password).NotEmpty().WithMessage("Password is required.");
+    }
+}
+
+public sealed class ForgotPasswordRequestValidator : AbstractValidator<ForgotPasswordRequest>
+{
+    public ForgotPasswordRequestValidator()
+    {
+        RuleFor(x => x.Email)
+            .NotEmpty().WithMessage("Email is required.")
+            .EmailAddress().WithMessage("Invalid email format.");
+    }
+}
+
+public sealed class ResetPasswordRequestValidator : AbstractValidator<ResetPasswordRequest>
+{
+    public ResetPasswordRequestValidator()
+    {
+        RuleFor(x => x.UserId).NotEmpty().WithMessage("UserId is required.");
+        RuleFor(x => x.Token).NotEmpty().WithMessage("Token is required.");
+        RuleFor(x => x.NewPassword)
+            .NotEmpty().WithMessage("Password is required.")
+            .MinimumLength(8).WithMessage("Password must be at least 8 characters.");
+    }
+}
+
+public sealed class GoogleLoginRequestValidator : AbstractValidator<GoogleLoginRequest>
+{
+    public GoogleLoginRequestValidator()
+    {
+        RuleFor(x => x.IdToken).NotEmpty().WithMessage("IdToken is required.");
+    }
+}
+
+public sealed class ChangePasswordRequestValidator : AbstractValidator<ChangePasswordRequest>
+{
+    public ChangePasswordRequestValidator()
+    {
+        RuleFor(x => x.CurrentPassword).NotEmpty().WithMessage("Current password is required.");
+        RuleFor(x => x.NewPassword)
+            .NotEmpty().WithMessage("Password is required.")
+            .MinimumLength(8).WithMessage("Password must be at least 8 characters.");
+        // Code is only present on the 2FA step-up follow-up call (D20) — optional, but must be a
+        // 6-digit code when supplied.
+        RuleFor(x => x.Code)
+            .Matches("^[0-9]{6}$").WithMessage("Code must be exactly 6 digits.")
+            .When(x => x.Code is not null);
+    }
+}
+
+public sealed class SetPasswordRequestValidator : AbstractValidator<SetPasswordRequest>
+{
+    public SetPasswordRequestValidator()
+    {
+        RuleFor(x => x.NewPassword)
+            .NotEmpty().WithMessage("Password is required.")
+            .MinimumLength(8).WithMessage("Password must be at least 8 characters.");
+    }
+}
+
+public sealed class ChangeEmailRequestValidator : AbstractValidator<ChangeEmailRequest>
+{
+    public ChangeEmailRequestValidator()
+    {
+        RuleFor(x => x.Password).NotEmpty().WithMessage("Password is required.");
+        RuleFor(x => x.NewEmail)
+            .NotEmpty().WithMessage("Email is required.")
+            .EmailAddress().WithMessage("Invalid email format.");
+        // Code is only present on the 2FA step-up follow-up call (D20) — optional, but must be a
+        // 6-digit code when supplied.
+        RuleFor(x => x.Code)
+            .Matches("^[0-9]{6}$").WithMessage("Code must be exactly 6 digits.")
+            .When(x => x.Code is not null);
+    }
+}
+
+public sealed class ConfirmEmailChangeRequestValidator : AbstractValidator<ConfirmEmailChangeRequest>
+{
+    public ConfirmEmailChangeRequestValidator()
+    {
+        RuleFor(x => x.UserId).NotEmpty().WithMessage("UserId is required.");
+        RuleFor(x => x.Email)
+            .NotEmpty().WithMessage("Email is required.")
+            .EmailAddress().WithMessage("Invalid email format.");
+        RuleFor(x => x.Token).NotEmpty().WithMessage("Token is required.");
+    }
+}
+
+public sealed class ChangeUsernameRequestValidator : AbstractValidator<ChangeUsernameRequest>
+{
+    public ChangeUsernameRequestValidator()
+    {
+        RuleFor(x => x.Password).NotEmpty().WithMessage("Password is required.");
+        RuleFor(x => x.NewUsername)
+            .NotEmpty().WithMessage("Username is required.")
+            .Length(2, 32).WithMessage("Username must be between 2 and 32 characters.");
     }
 }
 
@@ -252,10 +401,11 @@ public sealed class SavePushSubscriptionRequestValidator
 
 /// <summary>
 /// PATCH /api/users/me. Every field is optional (null = leave unchanged), so each rule is
-/// <c>.When(...is not null)</c>. Username matches <see cref="RegisterRequestValidator"/> and the
-/// 32-char column; bio is <c>text</c> with no column limit, so this cap is the only thing standing
-/// between a client and an arbitrarily large profile. BannerColor/DateOfBirth *format* is parsed in
-/// UsersController (it owns the clear-on-empty-string semantics) — shape-only here.
+/// <c>.When(...is not null)</c>. Username rename lives on its own password-gated endpoint
+/// (POST /api/auth/change-username, Stage E) — not here. Bio is <c>text</c> with no column limit,
+/// so this cap is the only thing standing between a client and an arbitrarily large profile.
+/// BannerColor/DateOfBirth *format* is parsed in UsersController (it owns the
+/// clear-on-empty-string semantics) — shape-only here.
 /// </summary>
 public sealed class UpdateUserRequestValidator : AbstractValidator<UpdateUserRequest>
 {
@@ -263,11 +413,6 @@ public sealed class UpdateUserRequestValidator : AbstractValidator<UpdateUserReq
 
     public UpdateUserRequestValidator()
     {
-        RuleFor(x => x.Username!)
-            .NotEmpty().WithMessage("Username must not be empty.")
-            .Length(2, 32).WithMessage("Username must be between 2 and 32 characters.")
-            .When(x => x.Username is not null);
-
         RuleFor(x => x.Bio!)
             .MaximumLength(MaxBioLength)
             .WithMessage($"Bio must be {MaxBioLength} characters or fewer.")

@@ -109,7 +109,8 @@ public class BootstrapController : ControllerBase
                     g.CreatedAt,
                     g.WelcomeChannelId,
                     g.WelcomeMessage,
-                    g.SystemMessagesEnabled
+                    g.SystemMessagesEnabled,
+                    g.RequireVerifiedEmail
                 )),
                 counts.Select(kv => new UnreadCountResponse(kv.Key, channelGuildMap[kv.Key], kv.Value)),
                 friendRows

@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Harmony.Application.Interfaces.Services;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -19,6 +20,22 @@ public class HarmonyWebApplicationFactory : WebApplicationFactory<Program>
             // tests, not an HTTP call that waits out a timeout (it is fail-open in prod anyway).
             services.RemoveAll<ILiveKitRoomService>();
             services.AddSingleton<ILiveKitRoomService, NoOpLiveKitRoomService>();
+
+            // No real SMTP in tests — capture every send in-memory so a test can pull the
+            // verification/2FA/reset link or code straight out of the "sent" mail instead of
+            // needing Mailpit or a sleep-and-poll.
+            services.RemoveAll<IEmailSender>();
+            services.AddSingleton<CapturingEmailSender>();
+            services.AddSingleton<IEmailSender>(sp => sp.GetRequiredService<CapturingEmailSender>());
+
+            // No real Google verification in tests — a test "registers" a fake ID token string
+            // mapped to whatever GoogleUserInfo it wants VerifyAsync to return, instead of needing
+            // a real Google-signed JWT.
+            services.RemoveAll<IGoogleTokenVerifier>();
+            services.AddSingleton<FakeGoogleTokenVerifier>();
+            services.AddSingleton<IGoogleTokenVerifier>(sp =>
+                sp.GetRequiredService<FakeGoogleTokenVerifier>()
+            );
         });
         builder.ConfigureAppConfiguration(
             (context, config) =>
@@ -71,6 +88,47 @@ public class HarmonyWebApplicationFactory : WebApplicationFactory<Program>
                 );
             }
         );
+    }
+
+    /// <summary>In-memory <see cref="IEmailSender"/> fake for integration tests — records every
+    /// send instead of talking to SMTP so a test can grep the captured HTML/text for a link or
+    /// code. Singleton so every request in a test resolves the same queue.</summary>
+    public sealed class CapturingEmailSender : IEmailSender
+    {
+        public ConcurrentQueue<CapturedEmail> Sent { get; } = new();
+
+        public Task SendAsync(
+            string toEmail,
+            string subject,
+            string htmlBody,
+            string textBody,
+            CancellationToken ct = default
+        )
+        {
+            Sent.Enqueue(new CapturedEmail(toEmail, subject, htmlBody, textBody));
+            return Task.CompletedTask;
+        }
+    }
+
+    public sealed record CapturedEmail(string To, string Subject, string Html, string Text);
+
+    /// <summary>In-memory <see cref="IGoogleTokenVerifier"/> fake — a test calls
+    /// <see cref="Register"/> with the identity it wants to simulate and gets back an opaque
+    /// "idToken" string to POST; <see cref="VerifyAsync"/> just looks it up. An unregistered
+    /// string verifies as null, same as a real invalid/expired token.</summary>
+    public sealed class FakeGoogleTokenVerifier : IGoogleTokenVerifier
+    {
+        private readonly ConcurrentDictionary<string, GoogleUserInfo> _tokens = new();
+
+        public string Register(GoogleUserInfo info)
+        {
+            var token = Guid.NewGuid().ToString("N");
+            _tokens[token] = info;
+            return token;
+        }
+
+        public Task<GoogleUserInfo?> VerifyAsync(string idToken, CancellationToken ct = default) =>
+            Task.FromResult(_tokens.GetValueOrDefault(idToken));
     }
 
     private sealed class NoOpLiveKitRoomService : ILiveKitRoomService

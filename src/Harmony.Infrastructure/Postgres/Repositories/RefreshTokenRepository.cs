@@ -70,4 +70,16 @@ public class RefreshTokenRepository : IRefreshTokenRepository
             }
         });
     }
+
+    public async Task RevokeAllForUserAsync(long userId, CancellationToken ct = default)
+    {
+        // Backdated past AuthService.RefreshAsync's 30s grace-period window: that window exists to
+        // absorb a legitimate concurrent-retry during normal rotation (there's a successor token to
+        // fall back to). A global revocation has no successor — it must take effect immediately, or
+        // a just-stolen/old refresh cookie would keep working for another 30s after the "revocation".
+        var revokedAt = DateTimeOffset.UtcNow.AddSeconds(-31);
+        await _db
+            .RefreshTokens.Where(r => r.UserId == userId && r.RevokedAt == null)
+            .ExecuteUpdateAsync(s => s.SetProperty(r => r.RevokedAt, revokedAt), ct);
+    }
 }

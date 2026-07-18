@@ -17,4 +17,8 @@ public interface IRefreshTokenRepository
         RefreshToken newToken,
         CancellationToken ct = default
     );
+
+    /// <summary>Revokes every active (non-revoked) refresh token for a user, across every family —
+    /// used by password reset so every other session is logged out immediately.</summary>
+    Task RevokeAllForUserAsync(long userId, CancellationToken ct = default);
 }
