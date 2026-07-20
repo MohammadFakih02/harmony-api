@@ -1,5 +1,7 @@
 using System.IO.Compression;
+using System.Security.Claims;
 using System.Text;
+using System.Text.Json;
 using FluentValidation;
 using Harmony.API.Extensions;
 using Harmony.API.Filters;
@@ -12,12 +14,73 @@ using Harmony.Domain.Domain.Entities;
 using Harmony.Infrastructure.Extensions;
 using Harmony.Infrastructure.RabbitMQ;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.ResponseCompression;
+using Microsoft.Extensions.Hosting;
 using Microsoft.IdentityModel.Tokens;
+using Serilog;
+using Serilog.Formatting.Compact;
+
+// -----------------------------------------------------------------------
+// Bootstrap logger — active only until UseSerilog below hands control to the
+// fully-configured host logger. Exists so a crash during configuration
+// (before DI/config are up) still gets logged instead of silently vanishing.
+// -----------------------------------------------------------------------
+Log.Logger = new LoggerConfiguration().WriteTo.Console().CreateBootstrapLogger();
+
+try
+{
+    Log.Information("Starting Harmony API");
 
 var builder = WebApplication.CreateBuilder(args);
+
+// -----------------------------------------------------------------------
+// Serilog — replaces the default Microsoft.Extensions.Logging console
+// provider entirely (UseSerilog's default writeToProviders: false).
+//
+// Sink/format is chosen in code, not config: Test stays quiet (mirrors the
+// old HarmonyWebApplicationFactory Logging:LogLevel overrides — an
+// integration run fires hundreds of requests), Development gets a
+// human-readable line, everything else gets one-line JSON. JSON in
+// non-dev is deliberate: ECS/Fargate ships container stdout straight to
+// CloudWatch Logs (§20), so a JSON line becomes one directly-queryable log
+// event with no separate shipper to stand up.
+//
+// MinimumLevel/overrides ARE config-driven (the "Serilog" section below),
+// so a deployment can turn up verbosity via an env var with no rebuild —
+// same pattern as RateLimiting:Enabled / Cors:AllowedOrigins.
+// -----------------------------------------------------------------------
+builder.Host.UseSerilog(
+    (context, services, loggerConfig) =>
+    {
+        var env = context.HostingEnvironment;
+
+        loggerConfig
+            .ReadFrom.Configuration(context.Configuration)
+            .ReadFrom.Services(services)
+            .Enrich.FromLogContext()
+            .Enrich.WithProperty("Application", "Harmony.API")
+            .Enrich.WithProperty("Environment", env.EnvironmentName);
+
+        if (env.IsEnvironment("Test"))
+        {
+            loggerConfig.MinimumLevel.Warning();
+            loggerConfig.WriteTo.Console();
+        }
+        else if (env.IsDevelopment())
+        {
+            loggerConfig.WriteTo.Console(
+                outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] {SourceContext}{NewLine}{Message:lj}{NewLine}{Exception}"
+            );
+        }
+        else
+        {
+            loggerConfig.WriteTo.Console(new CompactJsonFormatter());
+        }
+    }
+);
 
 // -----------------------------------------------------------------------
 // Snowflake ID generator
@@ -179,7 +242,7 @@ if (rateLimitingEnabled)
 // Infrastructure (Postgres, Scylla, RabbitMQ, SignalR backplane, repos,
 // services, consumers)
 // -----------------------------------------------------------------------
-builder.Services.AddInfrastructureServices(builder.Configuration);
+builder.Services.AddInfrastructureServices(builder.Configuration, builder.Environment);
 
 // -----------------------------------------------------------------------
 // HubBroadcaster — registered here (API layer) because HubBroadcaster
@@ -225,6 +288,25 @@ await using (var startupChannel = await rabbitConnection.CreateChannelAsync())
 
 app.UseForwardedHeaders();
 
+// One structured line per request (method, path, status, elapsed ms). Placed right after
+// forwarded-headers so the client IP it can enrich with is already resolved, and before every
+// other branch so it wraps the whole pipeline, 404s and exceptions included. UserId is attached
+// via the same claim lookup ChatHub/PermissionAuthorizationFilter use — populated by the time this
+// runs regardless of pipeline order, since it fires after the request completes.
+app.UseSerilogRequestLogging(options =>
+{
+    options.EnrichDiagnosticContext = (diagnosticContext, httpContext) =>
+    {
+        var userId = (
+            httpContext.User.FindFirst(ClaimTypes.NameIdentifier) ?? httpContext.User.FindFirst("sub")
+        )?.Value;
+        if (userId is not null)
+        {
+            diagnosticContext.Set("UserId", userId);
+        }
+    };
+});
+
 // Compression wraps every downstream body writer, so it goes early — but NOT around two branches:
 //
 //   /api/auth — a login/register/refresh response embeds a freshly-minted JWT alongside text the
@@ -262,4 +344,50 @@ app.UseExceptionHandler();
 app.MapControllers();
 app.MapHub<ChatHub>("/hubs/chat");
 
+// -----------------------------------------------------------------------
+// Health — single comprehensive endpoint (Postgres/Redis/Scylla/RabbitMQ + DLQ depth, registered in
+// DependencyInjection.AddInfrastructureServices). Anonymous, unrated-limited, uncompressed (payload
+// carries no secret to protect from BREACH). Default HealthCheckOptions.ResultStatusCodes already
+// maps Healthy/Degraded -> 200 and Unhealthy -> 503, so a Degraded Redis or a non-empty DLQ shows up
+// in the payload for ops without pulling the task out of ALB rotation — only a genuinely down core
+// dependency (Postgres/Scylla/RabbitMQ) does that.
+// -----------------------------------------------------------------------
+app.MapHealthChecks(
+    "/health",
+    new HealthCheckOptions
+    {
+        ResponseWriter = async (httpContext, report) =>
+        {
+            httpContext.Response.ContentType = "application/json";
+            var payload = new
+            {
+                status = report.Status.ToString(),
+                totalDurationMs = report.TotalDuration.TotalMilliseconds,
+                checks = report.Entries.Select(e => new
+                {
+                    name = e.Key,
+                    status = e.Value.Status.ToString(),
+                    description = e.Value.Description,
+                    durationMs = e.Value.Duration.TotalMilliseconds,
+                    data = e.Value.Data.Count > 0 ? e.Value.Data : null,
+                }),
+            };
+            await httpContext.Response.WriteAsync(JsonSerializer.Serialize(payload));
+        },
+    }
+);
+
 app.Run();
+}
+catch (Exception ex) when (ex is not HostAbortedException)
+{
+    // HostAbortedException is thrown by `dotnet ef` design-time host builds (EF spins up the host
+    // just far enough to read DI-registered DbContext config, then aborts on purpose) — logging
+    // that as fatal would turn every `dotnet ef migrations add` into a scary false alarm.
+    Log.Fatal(ex, "Harmony API terminated unexpectedly");
+    throw;
+}
+finally
+{
+    Log.CloseAndFlush();
+}

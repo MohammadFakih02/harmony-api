@@ -13,6 +13,9 @@ public class FileAttachment
     public int? Width { get; set; }
     public int? Height { get; set; }
     public bool IsConfirmed { get; set; }
+    // Object key of the display-only downscaled derivative (chat images over the size threshold).
+    // The original at MinioKey is never touched — lightbox/download always serve it.
+    public string? ThumbnailKey { get; set; }
     public long CreatedAt { get; set; }
 
     // Navigation

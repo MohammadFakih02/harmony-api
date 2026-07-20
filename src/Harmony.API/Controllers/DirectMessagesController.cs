@@ -543,6 +543,23 @@ public class DirectMessagesController : ControllerBase
         return Ok(response);
     }
 
+    // POST /api/dm/{channelId}/files/batch — batch download URLs for a message page
+    // (participant-gated; unresolvable ids silently omitted)
+    [HttpPost("{channelId:long}/files/batch")]
+    public async Task<IActionResult> GetFileUrls(
+        long channelId,
+        [FromBody] BatchFileDownloadRequest request,
+        CancellationToken ct
+    )
+    {
+        var me = GetUserId();
+        if (!await _dms.IsParticipantAsync(channelId, me))
+            return Forbid();
+
+        var response = await _files.GetDownloadUrlsAsync(guildId: null, channelId, request.FileIds, ct);
+        return Ok(response);
+    }
+
     // POST /api/dm/{channelId}/read — mark the DM read
     [HttpPost("{channelId:long}/read")]
     public async Task<IActionResult> MarkRead(long channelId, [FromBody] MarkReadRequest request)

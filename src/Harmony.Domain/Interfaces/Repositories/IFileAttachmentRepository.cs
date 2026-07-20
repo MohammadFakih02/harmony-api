@@ -5,6 +5,10 @@ namespace Harmony.Domain.Interfaces.Repositories;
 public interface IFileAttachmentRepository
 {
     Task<FileAttachment?> GetByIdAsync(long id);
+
+    /// <summary>All rows matching the given ids — missing ids are silently absent.</summary>
+    Task<List<FileAttachment>> GetByIdsAsync(IReadOnlyCollection<long> ids);
+
     Task AddAsync(FileAttachment attachment);
 
     /// <summary>

@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using FluentAssertions;
 using Harmony.IntegrationTests.Infrastructure;
+using SixLabors.ImageSharp;
 using Xunit;
 
 namespace Harmony.IntegrationTests.Files;
@@ -85,6 +86,38 @@ public class GuildAssetTests : ApiTestBase, IClassFixture<HarmonyWebApplicationF
         );
         var serve = await anon.GetAsync($"/api/files/public/{key}");
         serve.StatusCode.Should().Be(HttpStatusCode.Redirect);
+    }
+
+    [Fact]
+    public async Task OversizedBanner_IsCappedTo1280OnTheServer()
+    {
+        var token = await RegisterAsync("gasset_cap", "gasset_cap@test.com");
+        Auth(token);
+        var guildId = await CreateGuildAsync("Cap Guild");
+
+        byte[] bigPng;
+        using (var img = new SixLabors.ImageSharp.Image<SixLabors.ImageSharp.PixelFormats.Rgba32>(3840, 2160))
+        using (var ms = new MemoryStream())
+        {
+            await img.SaveAsPngAsync(ms);
+            bigPng = ms.ToArray();
+        }
+
+        var key = await UploadGuildAssetAsync(guildId, "banner", bigPng);
+
+        using var anon = Factory.CreateClient(
+            new Microsoft.AspNetCore.Mvc.Testing.WebApplicationFactoryClientOptions
+            {
+                AllowAutoRedirect = false,
+            }
+        );
+        var serve = await anon.GetAsync($"/api/files/public/{key}");
+        serve.StatusCode.Should().Be(HttpStatusCode.Redirect);
+        using var http = new HttpClient();
+        var stored = await http.GetByteArrayAsync(serve.Headers.Location);
+        var info = SixLabors.ImageSharp.Image.Identify(stored);
+        info.Width.Should().BeLessThanOrEqualTo(1280);
+        info.Height.Should().BeLessThanOrEqualTo(1280);
     }
 
     [Fact]

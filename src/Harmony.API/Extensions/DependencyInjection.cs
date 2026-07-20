@@ -7,6 +7,7 @@ using Harmony.Application.Services;
 using Harmony.Domain.Interfaces;
 using Harmony.Domain.Interfaces.Repositories;
 using Harmony.Domain.Interfaces.Services;
+using Harmony.Infrastructure.HealthChecks;
 using Harmony.Infrastructure.Postgres;
 using Harmony.Infrastructure.Postgres.Repositories;
 using Harmony.Infrastructure.RabbitMQ;
@@ -20,6 +21,7 @@ using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Polly;
 using Polly.CircuitBreaker;
@@ -31,17 +33,20 @@ public static class DependencyInjection
 {
     public static IServiceCollection AddInfrastructureServices(
         this IServiceCollection services,
-        IConfiguration configuration
+        IConfiguration configuration,
+        IHostEnvironment hostEnvironment
     )
     {
-        var env =
-            configuration["ASPNETCORE_ENVIRONMENT"]
-            ?? Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT")
-            ?? "Production";
-
-        // The integration-test host sets ASPNETCORE_ENVIRONMENT=Test (UseEnvironment + explicit
-        // config key), so the environment string alone is authoritative — no assembly scan needed.
-        bool isTest = env.Equals("Test", StringComparison.OrdinalIgnoreCase);
+        // The host environment, NOT configuration["ASPNETCORE_ENVIRONMENT"]: this method runs
+        // during Program's top-level statements, and under WebApplicationFactory the test
+        // factory's ConfigureAppConfiguration sources are appended AFTER that point — so an
+        // eager config read here saw null → "Production" and registered every !isTest-gated
+        // background service inside the test host (the PushNotificationService dispatcher then
+        // drained PushOutbox rows mid-test — the §5.67 "unknown root cause" flake). Lazy config
+        // reads (connection strings etc.) were never affected. builder.Environment is set by
+        // UseEnvironment("Test") before any user code runs, so it is correct even this early.
+        var env = hostEnvironment.EnvironmentName;
+        bool isTest = hostEnvironment.IsEnvironment("Test");
 
         // Mirrors the flag Program.cs uses for the HTTP limiter — see the note there. Defaults ON:
         // an unset key must never silently disable a protection.
@@ -349,6 +354,19 @@ public static class DependencyInjection
                 }
             )
             .Build();
+
+        // -----------------------------------------------------------------------
+        // Health checks — /health is mapped in Program.cs. Postgres/Scylla/RabbitMQ are core
+        // dependencies (Unhealthy → 503 → ALB pulls the task); Redis and the DLQ-depth check report
+        // Degraded (still 200) since the app is designed to keep serving through both (§18/§19).
+        // -----------------------------------------------------------------------
+        services
+            .AddHealthChecks()
+            .AddCheck<PostgresHealthCheck>("postgres")
+            .AddCheck<RedisHealthCheck>("redis")
+            .AddCheck<ScyllaHealthCheck>("scylla")
+            .AddCheck<RabbitMqHealthCheck>("rabbitmq")
+            .AddCheck<DeadLetterQueueHealthCheck>("dead-letter-queue");
 
         // Scoped decorator — inner MessageRepository is scoped; pipeline is singleton.
         services.AddScoped<IMessageRepository>(sp =>

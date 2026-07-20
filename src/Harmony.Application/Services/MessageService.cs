@@ -520,6 +520,8 @@ public class MessageService : IMessageService
                     try
                     {
                         await _storage.DeleteObjectAsync(attachment.MinioKey, ct);
+                        if (attachment.ThumbnailKey is { } thumbKey)
+                            await _storage.DeleteObjectAsync(thumbKey, ct);
                     }
                     catch
                     {

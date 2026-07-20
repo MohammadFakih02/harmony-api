@@ -5,6 +5,11 @@ using Harmony.Application.Interfaces.Services;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using SixLabors.ImageSharp;
+using SixLabors.ImageSharp.Formats;
+using SixLabors.ImageSharp.Formats.Jpeg;
+using SixLabors.ImageSharp.Formats.Png;
+using SixLabors.ImageSharp.Formats.Webp;
+using SixLabors.ImageSharp.Processing;
 
 namespace Harmony.Infrastructure.Services;
 
@@ -168,4 +173,86 @@ public sealed class S3FileStorageService : IFileStorageService
             new DeleteObjectRequest { BucketName = _bucket, Key = objectKey },
             ct
         );
+
+    public async Task<StoredImageResult?> DownscaleImageAsync(
+        string sourceKey,
+        string targetKey,
+        int maxWidth,
+        int maxHeight,
+        string? encodeAsContentType = null,
+        CancellationToken ct = default
+    )
+    {
+        try
+        {
+            // Full-object buffering — same class of cost as TryReadImageDimensionsAsync, and asset
+            // uploads are capped at 10 MB / chat images rarely near the 50 MB cap.
+            using var response = await _client.GetObjectAsync(
+                new GetObjectRequest { BucketName = _bucket, Key = sourceKey },
+                ct
+            );
+            using var image = await Image.LoadAsync(response.ResponseStream, ct);
+
+            // Never flatten animation (GIF/animated WebP) to a single frame.
+            if (image.Frames.Count > 1)
+                return null;
+
+            var fits = image.Width <= maxWidth && image.Height <= maxHeight;
+            // In-place cap on an image that already fits: nothing to do, keep the original bytes.
+            if (fits && targetKey == sourceKey)
+                return null;
+
+            if (!fits)
+            {
+                image.Mutate(op =>
+                    op.Resize(new ResizeOptions
+                    {
+                        Mode = ResizeMode.Max, // fit within the box, aspect preserved
+                        Size = new Size(maxWidth, maxHeight),
+                    })
+                );
+            }
+
+            var contentType = encodeAsContentType
+                ?? image.Metadata.DecodedImageFormat?.DefaultMimeType
+                ?? "image/png";
+            ImageEncoder encoder = contentType.ToLowerInvariant() switch
+            {
+                "image/webp" => new WebpEncoder { Quality = 85 },
+                "image/jpeg" => new JpegEncoder { Quality = 85 },
+                _ => new PngEncoder(),
+            };
+
+            using var buffer = new MemoryStream();
+            await image.SaveAsync(buffer, encoder, ct);
+            // Capture before the Put — the SDK auto-closes InputStream, after which Length throws.
+            var sizeBytes = buffer.Length;
+            buffer.Position = 0;
+
+            await _client.PutObjectAsync(
+                new PutObjectRequest
+                {
+                    BucketName = _bucket,
+                    Key = targetKey,
+                    InputStream = buffer,
+                    ContentType = contentType,
+                },
+                ct
+            );
+
+            return new StoredImageResult(image.Width, image.Height, sizeBytes, contentType);
+        }
+        catch (Exception ex)
+        {
+            // Fail-open: a resize failure must never fail the confirm it serves — the caller
+            // falls back to the original object.
+            _logger.LogWarning(
+                ex,
+                "Image downscale failed for {SourceKey} -> {TargetKey}",
+                sourceKey,
+                targetKey
+            );
+            return null;
+        }
+    }
 }
