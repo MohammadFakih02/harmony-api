@@ -278,6 +278,88 @@ public class FileServiceTests
         file.IsConfirmed.Should().BeFalse();
     }
 
+    // ---- Chat thumbnails --------------------------------------------------
+
+    [Fact]
+    public async Task Confirm_LargeImage_GeneratesAWebpThumbnail_LeavingTheOriginalUntouched()
+    {
+        var (sut, files, _, storage) = BuildSut();
+        var file = PendingFile();
+        files.Setup(f => f.GetByIdAsync(FileId)).ReturnsAsync(file);
+        storage.Setup(s => s.StatObjectAsync(file.MinioKey, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new StoredObjectInfo(2048, "image/png"));
+        storage.Setup(s => s.TryReadImageDimensionsAsync(file.MinioKey, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((1600, 1200));
+        storage.Setup(s => s.DownscaleImageAsync(
+                file.MinioKey, $"{file.MinioKey}_thumb",
+                FileService.ThumbnailMaxWidth, FileService.ThumbnailMaxHeight,
+                "image/webp", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new StoredImageResult(800, 600, 40_000, "image/webp"));
+
+        await sut.ConfirmAsync(UserId, FileId);
+
+        file.ThumbnailKey.Should().Be($"{file.MinioKey}_thumb");
+        // The original row keeps the store-authoritative values — never the thumb's.
+        file.Width.Should().Be(1600);
+        file.SizeBytes.Should().Be(2048);
+    }
+
+    [Fact]
+    public async Task Confirm_SmallImage_SkipsTheThumbnail()
+    {
+        var (sut, files, _, storage) = BuildSut();
+        var file = PendingFile();
+        files.Setup(f => f.GetByIdAsync(FileId)).ReturnsAsync(file);
+        storage.Setup(s => s.StatObjectAsync(file.MinioKey, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new StoredObjectInfo(2048, "image/png"));
+        storage.Setup(s => s.TryReadImageDimensionsAsync(file.MinioKey, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((1024, 768)); // both axes at/under the threshold
+
+        await sut.ConfirmAsync(UserId, FileId);
+
+        file.ThumbnailKey.Should().BeNull();
+        storage.Verify(s => s.DownscaleImageAsync(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<int>(),
+            It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Confirm_Gif_IsNeverThumbnailed()
+    {
+        var (sut, files, _, storage) = BuildSut();
+        var file = PendingFile();
+        files.Setup(f => f.GetByIdAsync(FileId)).ReturnsAsync(file);
+        storage.Setup(s => s.StatObjectAsync(file.MinioKey, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new StoredObjectInfo(2048, "image/gif"));
+        storage.Setup(s => s.TryReadImageDimensionsAsync(file.MinioKey, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((1920, 1080));
+
+        await sut.ConfirmAsync(UserId, FileId);
+
+        file.ThumbnailKey.Should().BeNull();
+        storage.Verify(s => s.DownscaleImageAsync(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<int>(),
+            It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Confirm_ThumbnailFailure_StillConfirmsTheFile()
+    {
+        var (sut, files, _, storage) = BuildSut();
+        var file = PendingFile();
+        files.Setup(f => f.GetByIdAsync(FileId)).ReturnsAsync(file);
+        storage.Setup(s => s.StatObjectAsync(file.MinioKey, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new StoredObjectInfo(2048, "image/png"));
+        storage.Setup(s => s.TryReadImageDimensionsAsync(file.MinioKey, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((1600, 1200));
+        // Loose-mock default: DownscaleImageAsync returns null = fail-open no-op.
+
+        var result = await sut.ConfirmAsync(UserId, FileId);
+
+        result.IsConfirmed.Should().BeTrue();
+        file.ThumbnailKey.Should().BeNull();
+    }
+
     // ---- Download ---------------------------------------------------------
 
     private static FileAttachment ConfirmedFile()
@@ -297,6 +379,21 @@ public class FileServiceTests
 
         result.Url.Should().Be("http://minio/download");
         result.ExpiresAt.Should().BeGreaterThan(0);
+    }
+
+    [Fact]
+    public async Task GetDownloadUrl_MintsAThumbnailUrlOnlyWhenAKeyIsSet()
+    {
+        var (sut, files, _, _) = BuildSut();
+        var plain = ConfirmedFile();
+        files.Setup(f => f.GetByIdAsync(FileId)).ReturnsAsync(plain);
+        (await sut.GetDownloadUrlAsync(GuildId, ChannelId, FileId)).ThumbnailUrl.Should().BeNull();
+
+        var withThumb = ConfirmedFile();
+        withThumb.ThumbnailKey = $"{withThumb.MinioKey}_thumb";
+        files.Setup(f => f.GetByIdAsync(FileId)).ReturnsAsync(withThumb);
+        (await sut.GetDownloadUrlAsync(GuildId, ChannelId, FileId)).ThumbnailUrl
+            .Should().Be("http://minio/download");
     }
 
     [Fact]
@@ -328,5 +425,40 @@ public class FileServiceTests
         // Confirmed file, but requested via a channel it doesn't belong to.
         await sut.Invoking(s => s.GetDownloadUrlAsync(GuildId, ChannelId + 1, FileId))
             .Should().ThrowAsync<KeyNotFoundException>();
+    }
+
+    // ---- Batch download ---------------------------------------------------
+
+    [Fact]
+    public async Task GetDownloadUrls_ReturnsOnlyConfirmedFilesScopedToTheChannel()
+    {
+        var (sut, files, _, _) = BuildSut();
+        var confirmed = ConfirmedFile();
+        var pending = PendingFile();
+        pending.Id = FileId + 1;
+        var foreign = ConfirmedFile();
+        foreign.Id = FileId + 2;
+        foreign.ChannelId = ChannelId + 1;
+        files
+            .Setup(f => f.GetByIdsAsync(It.IsAny<IReadOnlyCollection<long>>()))
+            .ReturnsAsync([confirmed, pending, foreign]);
+
+        var result = await sut.GetDownloadUrlsAsync(
+            GuildId, ChannelId, [FileId, FileId + 1, FileId + 2, FileId + 3]);
+
+        // Pending, foreign-channel, and unknown ids are silently omitted — never a throw.
+        result.Should().ContainSingle().Which.Id.Should().Be(FileId);
+        result[0].Url.Should().Be("http://minio/download");
+    }
+
+    [Fact]
+    public async Task GetDownloadUrls_EmptyInput_ReturnsEmptyWithoutTouchingTheRepo()
+    {
+        var (sut, files, _, _) = BuildSut();
+
+        var result = await sut.GetDownloadUrlsAsync(GuildId, ChannelId, []);
+
+        result.Should().BeEmpty();
+        files.Verify(f => f.GetByIdsAsync(It.IsAny<IReadOnlyCollection<long>>()), Times.Never);
     }
 }

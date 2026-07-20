@@ -278,6 +278,18 @@ public sealed class PresignFileRequestValidator : AbstractValidator<PresignFileR
     }
 }
 
+public sealed class BatchFileDownloadRequestValidator : AbstractValidator<BatchFileDownloadRequest>
+{
+    public BatchFileDownloadRequestValidator()
+    {
+        // Sized for one message page (50 messages × a few attachments); a bigger batch is a
+        // misbehaving client, not a real page.
+        RuleFor(x => x.FileIds)
+            .NotEmpty().WithMessage("At least one file id is required.")
+            .Must(ids => ids.Count <= 100).WithMessage("At most 100 file ids per request.");
+    }
+}
+
 public sealed class CreateMuteRequestValidator : AbstractValidator<CreateMuteRequest>
 {
     public CreateMuteRequestValidator()

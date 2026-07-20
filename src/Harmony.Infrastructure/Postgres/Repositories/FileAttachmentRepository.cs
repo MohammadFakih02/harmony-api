@@ -16,6 +16,9 @@ public class FileAttachmentRepository : IFileAttachmentRepository
     public async Task<FileAttachment?> GetByIdAsync(long id) =>
         await _db.FileAttachments.FindAsync(id);
 
+    public async Task<List<FileAttachment>> GetByIdsAsync(IReadOnlyCollection<long> ids) =>
+        await _db.FileAttachments.AsNoTracking().Where(f => ids.Contains(f.Id)).ToListAsync();
+
     public async Task AddAsync(FileAttachment attachment) =>
         await _db.FileAttachments.AddAsync(attachment);
 

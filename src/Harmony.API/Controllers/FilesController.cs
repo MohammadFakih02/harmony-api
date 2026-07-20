@@ -66,5 +66,21 @@ public class FilesController : ControllerBase
         return Ok(response);
     }
 
+    // POST /api/guilds/{guildId}/channels/{channelId}/files/batch — mint download URLs for a whole
+    // message page in one round trip (unresolvable ids silently omitted). POST because the id list
+    // outgrows a query string; responses aren't HTTP-cacheable, but the client caches per-id.
+    [HttpPost("batch")]
+    [RequirePermission(Permission.ViewChannel)]
+    public async Task<IActionResult> GetUrls(
+        long guildId,
+        long channelId,
+        [FromBody] BatchFileDownloadRequest request,
+        CancellationToken ct
+    )
+    {
+        var response = await _files.GetDownloadUrlsAsync(guildId, channelId, request.FileIds, ct);
+        return Ok(response);
+    }
+
     private long GetUserId() => long.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
 }
