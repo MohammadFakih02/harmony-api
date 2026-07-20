@@ -49,6 +49,18 @@ public interface IFileService
     );
 
     /// <summary>
+    /// Batch form of <see cref="GetDownloadUrlAsync"/> for prewarming a message page's attachments
+    /// in one round trip. Ids that don't resolve to a confirmed file in this exact channel are
+    /// silently omitted (same no-leak posture as the single-file 404) — never throws for them.
+    /// </summary>
+    Task<List<FileDownloadResponse>> GetDownloadUrlsAsync(
+        long? guildId,
+        long channelId,
+        IReadOnlyCollection<long> fileIds,
+        CancellationToken ct = default
+    );
+
+    /// <summary>
     /// Presigns a profile-asset upload (<paramref name="kind"/> = "avatar" | "banner"). Image types
     /// only, tighter size cap than chat attachments, keyed under avatars/{userId}/… or
     /// banners/{userId}/…. Throws <see cref="ArgumentException"/> on a bad kind/type/size.

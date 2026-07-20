@@ -43,13 +43,10 @@ public class HarmonyWebApplicationFactory : WebApplicationFactory<Program>
                 config.AddInMemoryCollection(
                     new Dictionary<string, string?>
                     {
-                        // Silence Verbose SQL and Framework Logs
-                        ["Logging:LogLevel:Default"] = "Warning",
-                        ["Logging:LogLevel:Microsoft"] = "Warning",
-                        ["Logging:LogLevel:Microsoft.EntityFrameworkCore.Database.Command"] =
-                            "Warning",
-                        ["Logging:LogLevel:Harmony"] = "Warning",
-
+                        // Log verbosity for Test is set in code (Program.cs's UseSerilog callback
+                        // branches on IsEnvironment("Test") -> MinimumLevel.Warning()), not here —
+                        // Serilog ignores the Microsoft.Extensions.Logging "Logging:LogLevel" keys
+                        // these used to be.
                         ["ASPNETCORE_ENVIRONMENT"] = "Test", // Explicit environment variable mapping
                         ["ConnectionStrings:Postgres"] =
                             "Host=localhost;Port=5432;Database=harmony_test;Username=admin;Password=secret",

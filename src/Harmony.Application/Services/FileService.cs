@@ -61,6 +61,16 @@ public sealed class FileService : IFileService
     // Profile assets (avatar/banner) are images only and much smaller than chat attachments.
     public const long MaxUserAssetSizeBytes = 10L * 1024 * 1024; // 10 MB
 
+    // Server-side authoritative caps (NON-NEGOTIABLE #8 — the client-side cropper also downscales,
+    // but nothing stops a raw PUT of a 4K original). Assets are capped IN PLACE; chat images keep
+    // their original bytes untouched and get a separate display-only thumbnail derivative.
+    // GIFs are exempt everywhere: resizing means flattening animation, and the 10 MB cap bounds them.
+    public const int AvatarMaxDimension = 512; // avatars, guild icons, group-DM icons (square-ish)
+    public const int BannerMaxDimension = 1280; // user + guild banners (wide)
+    public const int ThumbnailMaxWidth = 800;
+    public const int ThumbnailMaxHeight = 600;
+    public const int ThumbnailThresholdPx = 1024; // images at/under this on both axes skip the thumb
+
     private static readonly HashSet<string> UserAssetContentTypes = new(StringComparer.OrdinalIgnoreCase)
     {
         "image/png",
@@ -208,6 +218,25 @@ public sealed class FileService : IFileService
 
             file.Width = d.Width;
             file.Height = d.Height;
+
+            // Display-only thumbnail for large stills — the ORIGINAL is never touched (users
+            // download/lightbox it at full quality). WebP: ships with ImageSharp, ~30% smaller
+            // than JPEG, alpha, universal browser support. Fail-open: null just means no thumb.
+            if (!file.ContentType.Equals("image/gif", StringComparison.OrdinalIgnoreCase)
+                && (d.Width > ThumbnailThresholdPx || d.Height > ThumbnailThresholdPx))
+            {
+                var thumbKey = $"{file.MinioKey}_thumb";
+                var thumb = await _storage.DownscaleImageAsync(
+                    file.MinioKey,
+                    thumbKey,
+                    ThumbnailMaxWidth,
+                    ThumbnailMaxHeight,
+                    "image/webp",
+                    ct
+                );
+                if (thumb is not null)
+                    file.ThumbnailKey = thumbKey;
+            }
         }
         else
         {
@@ -237,7 +266,42 @@ public sealed class FileService : IFileService
         if (file is null || !file.IsConfirmed || file.GuildId != guildId || file.ChannelId != channelId)
             throw new KeyNotFoundException("File not found.");
 
+        return await MintDownloadResponseAsync(file, ct);
+    }
+
+    public async Task<List<FileDownloadResponse>> GetDownloadUrlsAsync(
+        long? guildId,
+        long channelId,
+        IReadOnlyCollection<long> fileIds,
+        CancellationToken ct = default
+    )
+    {
+        if (fileIds.Count == 0)
+            return [];
+
+        // Same scoping rule as the single-file path, but omit instead of 404 — a page prewarm
+        // shouldn't fail wholesale because one message references a since-deleted file.
+        var files = await _files.GetByIdsAsync(fileIds);
+        var results = new List<FileDownloadResponse>(files.Count);
+        foreach (var file in files)
+        {
+            if (!file.IsConfirmed || file.GuildId != guildId || file.ChannelId != channelId)
+                continue;
+            // Presigning is a local HMAC computation (no storage round trip), so a loop is fine.
+            results.Add(await MintDownloadResponseAsync(file, ct));
+        }
+        return results;
+    }
+
+    private async Task<FileDownloadResponse> MintDownloadResponseAsync(
+        FileAttachment file,
+        CancellationToken ct
+    )
+    {
         var url = await _storage.GetPresignedGetUrlAsync(file.MinioKey, DownloadUrlExpiry, ct);
+        var thumbnailUrl = file.ThumbnailKey is { } thumbKey
+            ? await _storage.GetPresignedGetUrlAsync(thumbKey, DownloadUrlExpiry, ct)
+            : null;
         var expiresAt = DateTimeOffset.UtcNow.Add(DownloadUrlExpiry).ToUnixTimeMilliseconds();
         return new FileDownloadResponse(
             file.Id,
@@ -247,7 +311,8 @@ public sealed class FileService : IFileService
             file.Width,
             file.Height,
             url,
-            expiresAt
+            expiresAt,
+            thumbnailUrl
         );
     }
 
@@ -337,6 +402,13 @@ public sealed class FileService : IFileService
 
             file.Width = d.Width;
             file.Height = d.Height;
+
+            await CapAssetInPlaceAsync(
+                file,
+                kind == "avatar" ? AvatarMaxDimension : BannerMaxDimension,
+                ct
+            );
+
             file.IsConfirmed = true;
         }
 
@@ -536,6 +608,13 @@ public sealed class FileService : IFileService
 
             file.Width = d.Width;
             file.Height = d.Height;
+
+            await CapAssetInPlaceAsync(
+                file,
+                kind == "icon" ? AvatarMaxDimension : BannerMaxDimension,
+                ct
+            );
+
             file.IsConfirmed = true;
         }
 
@@ -705,6 +784,9 @@ public sealed class FileService : IFileService
 
             file.Width = d.Width;
             file.Height = d.Height;
+
+            await CapAssetInPlaceAsync(file, AvatarMaxDimension, ct);
+
             file.IsConfirmed = true;
         }
 
@@ -791,6 +873,40 @@ public sealed class FileService : IFileService
             throw new KeyNotFoundException("File not found.");
 
         return await _storage.GetPresignedGetUrlAsync(file.MinioKey, DownloadUrlExpiry, ct);
+    }
+
+    /// <summary>
+    /// Server-side authoritative cap for profile/guild/group-DM assets: downscales the stored
+    /// object IN PLACE so its longest side fits <paramref name="maxDimension"/>, then overwrites
+    /// the row's dimensions/size/content-type with the re-encoded result. GIFs are skipped
+    /// (animation; the 10 MB asset cap bounds them) and a null result — already-fits, animated,
+    /// or any failure — keeps the original untouched (fail-open).
+    /// </summary>
+    private async Task CapAssetInPlaceAsync(
+        FileAttachment file,
+        int maxDimension,
+        CancellationToken ct
+    )
+    {
+        if (file.ContentType.Equals("image/gif", StringComparison.OrdinalIgnoreCase))
+            return;
+
+        var result = await _storage.DownscaleImageAsync(
+            file.MinioKey,
+            file.MinioKey,
+            maxDimension,
+            maxDimension,
+            encodeAsContentType: null,
+            ct
+        );
+        if (result is null)
+            return;
+
+        // Don't re-stat: the downscale result IS the authoritative post-write state.
+        file.Width = result.Width;
+        file.Height = result.Height;
+        file.SizeBytes = result.SizeBytes;
+        file.ContentType = result.ContentType;
     }
 
     private static string AssetPrefix(string kind) =>

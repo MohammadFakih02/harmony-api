@@ -62,7 +62,30 @@ public interface IFileStorageService
     /// Used by the orphan-attachment sweep to drop objects whose DB row never confirmed.
     /// </summary>
     Task DeleteObjectAsync(string objectKey, CancellationToken ct = default);
+
+    /// <summary>
+    /// Downscales a stored image so its longest side fits <paramref name="maxWidth"/>×
+    /// <paramref name="maxHeight"/> (aspect preserved, never upscaled) and writes the result to
+    /// <paramref name="targetKey"/> — which may equal <paramref name="sourceKey"/> for an in-place
+    /// cap. <paramref name="encodeAsContentType"/> forces the output format (e.g. "image/webp" for
+    /// chat thumbnails); null keeps the source format. Returns null — meaning "nothing written,
+    /// keep using the original" — when the image already fits (in-place only), is animated
+    /// (multi-frame; never flattened), or on any decode/store failure (fail-open: a resize must
+    /// never fail the confirm it serves).
+    /// </summary>
+    Task<StoredImageResult?> DownscaleImageAsync(
+        string sourceKey,
+        string targetKey,
+        int maxWidth,
+        int maxHeight,
+        string? encodeAsContentType = null,
+        CancellationToken ct = default
+    );
 }
 
 /// <summary>The authoritative size and content-type read back from the object store.</summary>
 public record StoredObjectInfo(long Size, string ContentType);
+
+/// <summary>The dimensions, size, and content-type of an image written by
+/// <see cref="IFileStorageService.DownscaleImageAsync"/>.</summary>
+public record StoredImageResult(int Width, int Height, long SizeBytes, string ContentType);

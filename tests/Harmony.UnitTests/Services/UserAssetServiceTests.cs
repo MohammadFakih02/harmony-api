@@ -154,6 +154,88 @@ public class UserAssetServiceTests
     }
 
     [Fact]
+    public async Task Confirm_LargeAvatar_IsCappedInPlace_WithTheResultAsRowTruth()
+    {
+        var sut = BuildSut();
+        var row = PendingAvatarRow();
+        SetupValidUpload(sut, row);
+        sut.Storage
+            .Setup(s => s.TryReadImageDimensionsAsync(row.MinioKey, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((2000, 1500));
+        sut.Storage
+            .Setup(s => s.DownscaleImageAsync(
+                row.MinioKey, row.MinioKey,
+                FileService.AvatarMaxDimension, FileService.AvatarMaxDimension,
+                null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new StoredImageResult(512, 384, 30_000, "image/png"));
+
+        await sut.Service.ConfirmUserAssetAsync(UserId, "avatar", FileId);
+
+        row.Width.Should().Be(512);
+        row.Height.Should().Be(384);
+        row.SizeBytes.Should().Be(30_000);
+        row.IsConfirmed.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Confirm_Banner_UsesTheWiderCap()
+    {
+        var sut = BuildSut();
+        var row = PendingAvatarRow();
+        row.MinioKey = $"banners/{UserId}/{FileId}";
+        SetupValidUpload(sut, row);
+        sut.Storage
+            .Setup(s => s.StatObjectAsync(row.MinioKey, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new StoredObjectInfo(2048, "image/png"));
+        sut.Storage
+            .Setup(s => s.TryReadImageDimensionsAsync(row.MinioKey, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((3840, 2160));
+
+        await sut.Service.ConfirmUserAssetAsync(UserId, "banner", FileId);
+
+        sut.Storage.Verify(s => s.DownscaleImageAsync(
+            row.MinioKey, row.MinioKey,
+            FileService.BannerMaxDimension, FileService.BannerMaxDimension,
+            null, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task Confirm_Gif_IsNeverResized()
+    {
+        var sut = BuildSut();
+        var row = PendingAvatarRow();
+        SetupValidUpload(sut, row);
+        sut.Storage
+            .Setup(s => s.StatObjectAsync(row.MinioKey, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new StoredObjectInfo(2048, "image/gif"));
+
+        await sut.Service.ConfirmUserAssetAsync(UserId, "avatar", FileId);
+
+        row.IsConfirmed.Should().BeTrue();
+        sut.Storage.Verify(s => s.DownscaleImageAsync(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<int>(),
+            It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Confirm_DownscaleFailure_KeepsTheOriginalAndStillConfirms()
+    {
+        var sut = BuildSut();
+        var row = PendingAvatarRow();
+        SetupValidUpload(sut, row);
+        sut.Storage
+            .Setup(s => s.TryReadImageDimensionsAsync(row.MinioKey, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((2000, 1500));
+        // Loose-mock default: DownscaleImageAsync returns null = fail-open no-op.
+
+        await sut.Service.ConfirmUserAssetAsync(UserId, "avatar", FileId);
+
+        row.IsConfirmed.Should().BeTrue();
+        row.Width.Should().Be(2000); // original, untouched
+        row.SizeBytes.Should().Be(2048); // the stat value
+    }
+
+    [Fact]
     public async Task Confirm_Avatar_BroadcastsToGuildsAndSelf()
     {
         var sut = BuildSut();

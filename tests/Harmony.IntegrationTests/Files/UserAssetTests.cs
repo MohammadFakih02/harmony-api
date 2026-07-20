@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using FluentAssertions;
 using Harmony.IntegrationTests.Infrastructure;
+using SixLabors.ImageSharp;
 using Xunit;
 
 namespace Harmony.IntegrationTests.Files;
@@ -123,6 +124,85 @@ public class UserAssetTests : ApiTestBase, IClassFixture<HarmonyWebApplicationFa
             .BannerKey.Should().BeNull();
         (await Client.GetAsync($"/api/files/public/{key}"))
             .StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    [Fact]
+    public async Task OversizedAvatar_IsCappedTo512OnTheServer()
+    {
+        var token = await RegisterAsync("asset_cap1", "asset_cap1@test.com");
+        Auth(token);
+
+        byte[] bigPng;
+        using (var img = new SixLabors.ImageSharp.Image<SixLabors.ImageSharp.PixelFormats.Rgba32>(2000, 1500))
+        using (var ms = new MemoryStream())
+        {
+            await img.SaveAsPngAsync(ms);
+            bigPng = ms.ToArray();
+        }
+
+        var key = await UploadAssetAsync("avatar", bigPng);
+
+        // Fetch what actually serves and decode it — the stored object must fit 512×512.
+        using var anon = Factory.CreateClient(
+            new Microsoft.AspNetCore.Mvc.Testing.WebApplicationFactoryClientOptions
+            {
+                AllowAutoRedirect = false,
+            }
+        );
+        var serve = await anon.GetAsync($"/api/files/public/{key}");
+        serve.StatusCode.Should().Be(HttpStatusCode.Redirect);
+        using var http = new HttpClient();
+        var stored = await http.GetByteArrayAsync(serve.Headers.Location);
+        var info = SixLabors.ImageSharp.Image.Identify(stored);
+        info.Width.Should().BeLessThanOrEqualTo(512);
+        info.Height.Should().BeLessThanOrEqualTo(512);
+        stored.Length.Should().BeLessThan(bigPng.Length);
+    }
+
+    [Fact]
+    public async Task GifAvatar_IsStoredByteForByteUntouched()
+    {
+        var token = await RegisterAsync("asset_gif1", "asset_gif1@test.com");
+        Auth(token);
+
+        // A 600×600 GIF — over the cap, but GIFs are never resized (animation is never flattened).
+        byte[] gif;
+        using (var img = new SixLabors.ImageSharp.Image<SixLabors.ImageSharp.PixelFormats.Rgba32>(600, 600))
+        using (var ms = new MemoryStream())
+        {
+            await img.SaveAsGifAsync(ms);
+            gif = ms.ToArray();
+        }
+
+        var presignResp = await Client.PostAsJsonAsync(
+            "/api/users/me/avatar/presign",
+            new { filename = "pic.gif", contentType = "image/gif", sizeBytes = gif.Length }
+        );
+        presignResp.EnsureSuccessStatusCode();
+        var presign = await presignResp.Content.ReadFromJsonAsync<PresignResponse>();
+
+        using var http = new HttpClient();
+        var content = new ByteArrayContent(gif);
+        content.Headers.ContentType = new MediaTypeHeaderValue("image/gif");
+        (await http.PutAsync(presign!.UploadUrl, content)).EnsureSuccessStatusCode();
+
+        var confirmResp = await Client.PostAsync(
+            $"/api/users/me/avatar/{presign.FileId}/confirm",
+            null
+        );
+        confirmResp.EnsureSuccessStatusCode();
+        var key = (await confirmResp.Content.ReadFromJsonAsync<AssetResponse>())!.Key;
+
+        using var anon = Factory.CreateClient(
+            new Microsoft.AspNetCore.Mvc.Testing.WebApplicationFactoryClientOptions
+            {
+                AllowAutoRedirect = false,
+            }
+        );
+        var serve = await anon.GetAsync($"/api/files/public/{key}");
+        serve.StatusCode.Should().Be(HttpStatusCode.Redirect);
+        var stored = await http.GetByteArrayAsync(serve.Headers.Location);
+        stored.Should().BeEquivalentTo(gif);
     }
 
     [Fact]

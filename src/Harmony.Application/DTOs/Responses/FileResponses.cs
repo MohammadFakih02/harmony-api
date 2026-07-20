@@ -28,7 +28,10 @@ public record FileDownloadResponse(
     int? Width,
     int? Height,
     string Url,
-    long ExpiresAt
+    long ExpiresAt,
+    // Presigned URL of the display-only downscaled derivative; null when the original is small
+    // enough (or animated) — the client falls back to Url for inline rendering.
+    string? ThumbnailUrl = null
 );
 
 public record FileAttachmentResponse(
