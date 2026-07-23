@@ -8,6 +8,17 @@ using Microsoft.AspNetCore.RateLimiting;
 
 namespace Harmony.API.Controllers;
 
+/// <summary>
+/// Registration, login, token refresh, 2FA, OAuth, and the credential-change flows.
+/// </summary>
+/// <remarks>
+/// Authentication is split across two tokens. A short-lived (15-minute) JWT access token is returned
+/// in the response body and sent as a bearer header on subsequent calls. A long-lived (7-day) refresh
+/// token lives only in an <c>HttpOnly</c>, <c>SameSite=Strict</c> cookie the browser cannot read, and
+/// is exchanged for a fresh access token at <c>POST /api/auth/refresh</c>. This is why several
+/// endpoints here are <c>AllowAnonymous</c> yet still act on a specific user — they authenticate off
+/// the refresh cookie, not the (possibly expired) access token.
+/// </remarks>
 [ApiController]
 [Route("api/auth")]
 [EnableRateLimiting("api")]
@@ -22,9 +33,17 @@ public class AuthController : ControllerBase
         _environment = environment;
     }
 
+    /// <summary>
+    /// Creates a new account and signs it in immediately: returns an access token and sets the refresh
+    /// cookie. The new account starts with an unverified email.
+    /// </summary>
+    /// <response code="200">Registered. Body carries the access token and the user profile.</response>
+    /// <response code="400">Validation failed, or the username/email is already taken.</response>
     [HttpPost("register")]
     [AllowAnonymous]
     [EnableRateLimiting("login")]
+    [ProducesResponseType(typeof(AuthResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
     public async Task<IActionResult> Register([FromBody] RegisterRequest request)
     {
         var (response, rawRefreshToken) = await _authService.RegisterAsync(request);
@@ -32,9 +51,24 @@ public class AuthController : ControllerBase
         return Ok(response);
     }
 
+    /// <summary>
+    /// Signs in with an identifier (username or email) and password. If the account has 2FA enabled
+    /// and this browser isn't a remembered trusted device, no session is issued yet — the response
+    /// carries <c>twoFactorRequired: true</c> and an opaque challenge token, and the caller must
+    /// complete <c>POST /api/auth/2fa/verify</c>.
+    /// </summary>
+    /// <remarks>
+    /// The <c>trusted_device</c> cookie, if present, is what lets a 2FA-enabled account skip the
+    /// challenge. The refresh cookie is set only when the login fully succeeds — a 2FA challenge
+    /// leaves the caller unauthenticated until verify.
+    /// </remarks>
+    /// <response code="200">Either a full session (access token + refresh cookie) or a 2FA challenge.</response>
+    /// <response code="401">Unknown identifier or wrong password.</response>
     [HttpPost("login")]
     [AllowAnonymous]
     [EnableRateLimiting("login")]
+    [ProducesResponseType(typeof(LoginResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
     public async Task<IActionResult> Login([FromBody] LoginRequest request)
     {
         var (response, rawRefreshToken) = await _authService.LoginAsync(
@@ -48,12 +82,18 @@ public class AuthController : ControllerBase
         return Ok(response);
     }
 
-    // POST /api/auth/2fa/verify — anonymous: completes a login challenge with the emailed code.
-    // Sets the refresh cookie (now fully authenticated) and, if requested, a 30-day "trusted_device"
-    // cookie so future logins from this browser skip the challenge.
+    /// <summary>
+    /// Completes a 2FA login challenge with the emailed code. Sets the refresh cookie (the caller is
+    /// now fully authenticated) and, if the challenge asked to remember this device, a 30-day
+    /// <c>trusted_device</c> cookie so future logins from this browser skip the challenge.
+    /// </summary>
+    /// <response code="200">Verified. Access token in the body, refresh cookie set.</response>
+    /// <response code="401">Invalid, expired, or too-many-attempts code.</response>
     [HttpPost("2fa/verify")]
     [AllowAnonymous]
     [EnableRateLimiting("login")]
+    [ProducesResponseType(typeof(LoginResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
     public async Task<IActionResult> Verify2fa([FromBody] Verify2faRequest request)
     {
         var (response, rawRefreshToken, trustedDeviceToken) = await _authService.Verify2faAsync(request);
@@ -129,9 +169,23 @@ public class AuthController : ControllerBase
         return NoContent();
     }
 
+    /// <summary>
+    /// Exchanges the <c>refresh_token</c> cookie for a fresh access token, rotating the refresh
+    /// token in the process. This is the endpoint the client calls silently when its 15-minute
+    /// access token expires.
+    /// </summary>
+    /// <remarks>
+    /// Anonymous by design: it authenticates off the refresh cookie, not the (likely expired) bearer
+    /// token. A short grace window lets a just-rotated token still refresh once, so two near-
+    /// simultaneous refreshes don't log the user out — those requests preserve the existing cookie.
+    /// </remarks>
+    /// <response code="200">New access token issued.</response>
+    /// <response code="401">No refresh cookie, or the token is revoked/expired.</response>
     [HttpPost("refresh")]
     [AllowAnonymous]
     [EnableRateLimiting("login")]
+    [ProducesResponseType(typeof(AuthResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
     public async Task<IActionResult> Refresh()
     {
         var rawToken = Request.Cookies["refresh_token"];
@@ -150,13 +204,20 @@ public class AuthController : ControllerBase
         return Ok(response);
     }
 
-    // AllowAnonymous (like Refresh): logout is driven entirely by the refresh_token
-    // cookie, not the bearer token. If this required [Authorize], an expired 15-min
-    // access token would 401 before Logout ran — leaving the refresh token unrevoked
-    // and the cookie intact, so a later silent refresh (e.g. a push-notification click)
-    // would log the "logged-out" user back in with no credentials.
+    /// <summary>
+    /// Revokes the refresh token and clears its cookie.
+    /// </summary>
+    /// <remarks>
+    /// <c>AllowAnonymous</c> (like <c>refresh</c>) is deliberate and load-bearing: logout is driven
+    /// entirely by the refresh cookie, not the bearer token. If this required <c>[Authorize]</c>, an
+    /// expired 15-minute access token would 401 before logout ran — leaving the refresh token
+    /// unrevoked and the cookie intact, so a later silent refresh (e.g. a push-notification click)
+    /// would log the "logged-out" user back in with no credentials.
+    /// </remarks>
+    /// <response code="204">Logged out (also returned when there was no session to revoke).</response>
     [HttpPost("logout")]
     [AllowAnonymous]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
     public async Task<IActionResult> Logout()
     {
         var rawToken = Request.Cookies["refresh_token"];
@@ -198,25 +259,42 @@ public class AuthController : ControllerBase
         return confirmed ? NoContent() : BadRequest(new { error = "Invalid or expired link." });
     }
 
-    // POST /api/auth/forgot-password — anonymous, always 204. Never reveals whether the email
-    // belongs to an account: an unknown email, a cooldown, and a genuine SMTP failure are all
-    // indistinguishable from the caller's point of view (unlike verify-email/2fa resends, which
-    // ARE authenticated and so can safely surface a real send failure).
+    /// <summary>
+    /// Sends a password-reset link to the given email — if it belongs to an account.
+    /// </summary>
+    /// <remarks>
+    /// Always 204, and deliberately so: it never reveals whether the email belongs to an account. An
+    /// unknown email, an active cooldown, and a genuine SMTP failure are all indistinguishable to the
+    /// caller — that's what prevents this endpoint from being an account-enumeration oracle. (Unlike
+    /// the verify-email and 2FA resends, which ARE authenticated and so can safely surface a real
+    /// send failure.)
+    /// </remarks>
+    /// <response code="204">Always — regardless of whether an email was actually sent.</response>
     [HttpPost("forgot-password")]
     [AllowAnonymous]
     [EnableRateLimiting("login")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
     public async Task<IActionResult> ForgotPassword([FromBody] ForgotPasswordRequest request)
     {
         await _authService.ForgotPasswordAsync(request.Email);
         return NoContent();
     }
 
-    // POST /api/auth/reset-password — anonymous: revokes every refresh token + trusted device for
-    // the user on success, so every other logged-in session (and any "remembered" 2FA device) dies
-    // immediately.
+    /// <summary>
+    /// Sets a new password from a reset link's token.
+    /// </summary>
+    /// <remarks>
+    /// On success, revokes every refresh token and trusted device for the user, so every other
+    /// logged-in session — and any "remembered" 2FA device — dies immediately. A reset is assumed to
+    /// mean the account may be compromised.
+    /// </remarks>
+    /// <response code="204">Password reset.</response>
+    /// <response code="400">Invalid or expired link, or a password that fails the rules.</response>
     [HttpPost("reset-password")]
     [AllowAnonymous]
     [EnableRateLimiting("login")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
     public async Task<IActionResult> ResetPassword([FromBody] ResetPasswordRequest request)
     {
         var succeeded = await _authService.ResetPasswordAsync(
@@ -229,12 +307,22 @@ public class AuthController : ControllerBase
             : BadRequest(new { error = "Invalid or expired link." });
     }
 
-    // POST /api/auth/google — anonymous: signs in (auto-registering or auto-linking by verified
-    // email as needed) from a Google Identity Services ID token. Never a 2FA challenge — a
-    // federated Google sign-in bypasses local email-code 2FA.
+    /// <summary>
+    /// Signs in from a Google Identity Services ID token, auto-registering a new account or
+    /// auto-linking to an existing one that shares the (Google-verified) email.
+    /// </summary>
+    /// <remarks>
+    /// Never returns a 2FA challenge: a federated Google sign-in is its own trust anchor and bypasses
+    /// local email-code 2FA. The linking only happens when Google reports the email as verified, so a
+    /// federated login can't hijack a local account by claiming its address.
+    /// </remarks>
+    /// <response code="200">Signed in. Access token in the body, refresh cookie set.</response>
+    /// <response code="401">Invalid token, unverified Google email, or an inactive account.</response>
     [HttpPost("google")]
     [AllowAnonymous]
     [EnableRateLimiting("login")]
+    [ProducesResponseType(typeof(LoginResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
     public async Task<IActionResult> GoogleLogin([FromBody] GoogleLoginRequest request)
     {
         var (response, rawRefreshToken) = await _authService.GoogleLoginAsync(request.IdToken);
@@ -242,13 +330,32 @@ public class AuthController : ControllerBase
         return Ok(response);
     }
 
-    // POST /api/auth/change-password — verifies the current password, then (for a 2FA-enabled
-    // account, on the first call) emails a step-up code and returns requiresCode without changing
-    // anything. Once past that gate, changes the password, revokes every other session (refresh
-    // tokens + trusted devices), and re-issues fresh tokens so the caller stays signed in.
+    /// <summary>
+    /// Changes the caller's password after verifying the current one. For a 2FA-enabled account this
+    /// is a two-step, step-up-gated flow.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// If 2FA is on and no <c>code</c> is supplied, the response comes back with
+    /// <c>requiresCode: true</c> and an email is sent — nothing changes yet. The caller re-submits
+    /// with the code to actually change the password. This step-up gate closes the gap where a
+    /// 30-day trusted-device cookie plus a phished password could otherwise sail through a
+    /// password-only check.
+    /// </para>
+    /// <para>
+    /// On the real change, every other session (refresh tokens + trusted devices) is revoked and the
+    /// caller gets fresh tokens so they alone stay signed in.
+    /// </para>
+    /// </remarks>
+    /// <response code="200">Either <c>requiresCode: true</c> (step-up pending) or a completed change with new tokens.</response>
+    /// <response code="401">Wrong current password.</response>
+    /// <response code="400">A passwordless (Google-only) account — set a password first — or a bad step-up code.</response>
     [HttpPost("change-password")]
     [Authorize]
     [EnableRateLimiting("login")]
+    [ProducesResponseType(typeof(ChangePasswordResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
     public async Task<IActionResult> ChangePassword([FromBody] ChangePasswordRequest request)
     {
         var (response, rawRefreshToken) = await _authService.ChangePasswordAsync(
@@ -276,13 +383,26 @@ public class AuthController : ControllerBase
         return NoContent();
     }
 
-    // POST /api/auth/change-email/request — verifies the password, then (for a 2FA-enabled
-    // account, on the first call) emails a step-up code and returns requiresCode without sending
-    // the actual change-email link yet. Once past that gate, emails the confirmation link to the
-    // NEW address; the old email stays active until that link is followed.
+    /// <summary>
+    /// Starts an email change after verifying the password. For a 2FA-enabled account, step-up-gated
+    /// exactly like change-password.
+    /// </summary>
+    /// <remarks>
+    /// With 2FA on and no code yet, this emails a step-up code and returns <c>requiresCode: true</c>
+    /// without sending the change-email link. Once past that gate, it emails a confirmation link to
+    /// the NEW address; the current email stays active until that link is followed
+    /// (<c>change-email/confirm</c>), so a mistaken or malicious change can't silently lock the owner
+    /// out.
+    /// </remarks>
+    /// <response code="200"><c>requiresCode</c> — true when a step-up code is pending, false once the link was sent.</response>
+    /// <response code="401">Wrong password.</response>
+    /// <response code="400">Passwordless account, an email already in use, or a bad step-up code.</response>
     [HttpPost("change-email/request")]
     [Authorize]
     [EnableRateLimiting("login")]
+    [ProducesResponseType(typeof(ChangeEmailRequestResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
     public async Task<IActionResult> ChangeEmailRequest([FromBody] ChangeEmailRequest request)
     {
         var requiresCode = await _authService.ChangeEmailRequestAsync(

@@ -23,6 +23,11 @@ public class Guild
     /// email address. Default false — opt-in per guild.</summary>
     public bool RequireVerifiedEmail { get; set; }
 
+    /// <summary>Soft-delete tombstone (unix ms) — null = live. A deleted guild is excluded from every
+    /// normal read (rail, load, discovery) but recoverable from the owner's Trash until the 30-day
+    /// auto-purge (or a permanent delete) hard-removes it. §5.71 (#5).</summary>
+    public long? DeletedAt { get; set; }
+
     // Navigation
     public User Owner { get; set; } = null!;
     public ICollection<Channel> Channels { get; set; } = [];
@@ -51,6 +56,11 @@ public class Channel
     public int? Bitrate { get; set; }
     public int? UserLimit { get; set; }
     public long CreatedAt { get; set; }
+
+    /// <summary>Soft-delete tombstone (unix ms) — null = live. Only guild channels are ever soft-deleted
+    /// (DMs/categories are unaffected); a deleted channel is hidden from the sidebar but its messages
+    /// are preserved in Scylla until restore, a permanent delete, or the 30-day auto-purge. §5.71 (#5).</summary>
+    public long? DeletedAt { get; set; }
 
     // Navigation
     public Guild? Guild { get; set; }

@@ -1,0 +1,24 @@
+<Project>
+
+  <!--
+    Applies to every project under src/ (MSBuild walks upward from each project and stops at the
+    first Directory.Build.props it finds). Deliberately scoped to src/ so the test projects, which
+    have no consumers, don't emit XML documentation files.
+  -->
+  <PropertyGroup>
+    <!-- Emit the XML documentation file. Two consumers: IDE tooltips across project boundaries,
+         and Microsoft.AspNetCore.OpenApi, which reads these comments into the OpenAPI document so
+         controller/DTO summaries surface in the docs UI. -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+
+    <!-- CS1591 = "missing XML comment for publicly visible type or member". Enabling the doc file
+         turns it on for every undocumented public member — 5,684 warnings across this solution,
+         which would bury the warnings that actually matter. Suppressed on purpose: documentation
+         here is targeted at the non-obvious, not mandated everywhere.
+         CS1573 = "parameter has no matching param tag (but others do)" — same completeness nag at the
+         member level: documenting the one interesting parameter (e.g. a query-string emoji) without
+         also tagging the self-explanatory route ids is deliberate, not an omission to fix. -->
+    <NoWarn>$(NoWarn);CS1591;CS1573</NoWarn>
+  </PropertyGroup>
+
+</Project>

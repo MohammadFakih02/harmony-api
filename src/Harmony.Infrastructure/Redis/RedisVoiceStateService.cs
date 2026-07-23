@@ -482,11 +482,21 @@ public sealed class RedisVoiceStateService : IVoiceStateService
     /// </summary>
     private async Task LeaveRoomAsync(IDatabase db, long userId, long channelId, CancellationToken ct)
     {
+        // Read the guildId from the participant's stored state, then remove them. The delete is the
+        // arbiter: only the caller whose HashDelete actually removed the entry broadcasts the leave.
         var raw = await db.HashGetAsync(ChannelKey(channelId), userId.ToString());
         var guildId = raw.IsNullOrEmpty ? null : Deserialize(raw!)?.GuildId;
 
-        await db.HashDeleteAsync(ChannelKey(channelId), userId.ToString());
+        var removed = await db.HashDeleteAsync(ChannelKey(channelId), userId.ToString());
         await db.SetRemoveAsync(UsersSetKey, userId.ToString());
+
+        // A concurrent leave (an explicit LeaveVoice racing the OnDisconnected teardown) can call this
+        // twice. Without the guard the loser re-reads an already-emptied HASH → guildId null → the
+        // leave broadcasts to the channel group but NEVER the guild group, so every guild member who
+        // isn't in the voice channel keeps seeing the stale participant in their sidebar. Broadcasting
+        // only on the delete that won guarantees exactly one leave, carrying the real guildId.
+        if (!removed)
+            return;
 
         await SafeBroadcastAsync(() =>
             _broadcaster.BroadcastVoiceParticipantLeftAsync(

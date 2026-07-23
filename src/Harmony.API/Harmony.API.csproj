@@ -15,6 +15,11 @@
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.8" />
     <PackageReference Include="Microsoft.AspNetCore.Identity.EntityFrameworkCore" Version="10.0.7" />
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.7" />
+    <!-- Security pin: Microsoft.AspNetCore.OpenApi 10.0.7 transitively pulls Microsoft.OpenApi 2.4.1,
+         which is inside the vulnerable range of GHSA-v5pm-xwqc-g5wc (2.0.0-preview.11 .. 2.7.4 —
+         circular-schema-reference DoS). 2.7.5 is the first patched release; pinning the minimal
+         patched version keeps drift from what AspNetCore.OpenApi was built against to a minimum. -->
+    <PackageReference Include="Microsoft.OpenApi" Version="2.7.5" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.7">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>

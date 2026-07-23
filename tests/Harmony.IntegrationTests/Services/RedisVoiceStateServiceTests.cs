@@ -328,6 +328,34 @@ public class RedisVoiceStateServiceTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Leave_WhenRoomEntryAlreadyGone_DoesNotBroadcast_AStaleLeave()
+    {
+        // Reproduces the loser's view of a concurrent leave (an explicit LeaveVoice racing the
+        // OnDisconnected teardown): voice:user still points at the room, but the winner already
+        // removed the room-HASH entry. The loser must NOT emit a second leave — without the guard it
+        // would broadcast a guildId-less leave that never reaches the guild sidebar (#1), leaving the
+        // participant stuck on every other member's roster.
+        var channelId = TrackChannel();
+        var userId = TrackUser();
+
+        // No HASH entry — only the dangling pointer the winner hasn't cleared yet.
+        await _db.StringSetAsync($"voice:user:{userId}", channelId.ToString());
+
+        await _sut.LeaveAsync(userId);
+
+        _broadcaster.Verify(
+            b =>
+                b.BroadcastVoiceParticipantLeftAsync(
+                    It.IsAny<VoiceParticipantLeftPayload>(),
+                    It.IsAny<CancellationToken>()
+                ),
+            Times.Never
+        );
+        // The dangling pointer is still cleaned up so the user isn't wedged "in" a room.
+        (await _db.KeyExistsAsync($"voice:user:{userId}")).Should().BeFalse();
+    }
+
+    [Fact]
     public async Task Moderate_ServerFlags_AreSticky_AcrossRejoin_UntilCleared()
     {
         var channelId = TrackChannel();

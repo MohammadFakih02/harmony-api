@@ -16,9 +16,12 @@ public interface INotificationService
 {
     /// <summary>
     /// Creates (and pushes) a "mention" notification for each mentioned user who
-    /// isn't suppressed — self-mention, disabled MentionsEnabled preference,
-    /// blocked-with-the-sender, or muted (the sender as a user, the channel, or
-    /// the guild) all skip that recipient without an error.
+    /// isn't suppressed — self-mention, disabled MentionsEnabled preference, a
+    /// "nothing" notification level, an un-cleared suppress-@everyone for an
+    /// everyone-origin recipient, blocked-with-the-sender, or muted (the sender as
+    /// a user, or the specific channel) all skip that recipient without an error.
+    /// A GUILD mute deliberately does NOT suppress a direct @mention (#9): muting a
+    /// server silences its regular/all-level messages but still lets an @you through.
     /// </summary>
     Task CreateMentionNotificationsAsync(
         List<long> mentionedUserIds,
@@ -88,6 +91,30 @@ public interface INotificationService
         long channelId,
         long messageId,
         long createdAt,
+        CancellationToken ct = default
+    );
+
+    /// <summary>
+    /// Marks the user's channel-scoped notifications (mention / reply / message) read up to
+    /// <paramref name="uptoMessageId"/> and pushes the fresh bell badge — called when the channel is
+    /// marked read, so opening a channel clears its bell entries alongside its unread badge. Best-effort
+    /// and authoritative across devices; a no-op broadcast is skipped when nothing was unread.
+    /// </summary>
+    Task MarkChannelNotificationsReadAsync(
+        long userId,
+        long channelId,
+        long uptoMessageId,
+        CancellationToken ct = default
+    );
+
+    /// <summary>
+    /// Marks the user's unread <c>guild_invite</c> notifications for a guild read and pushes the fresh
+    /// badge — called when they join that guild, so an accepted invite disappears from the bell on
+    /// every device (not just the tab that clicked it).
+    /// </summary>
+    Task MarkGuildInviteNotificationsReadAsync(
+        long userId,
+        long guildId,
         CancellationToken ct = default
     );
 }

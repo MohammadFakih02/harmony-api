@@ -13,16 +13,18 @@ public class GuildRepository : IGuildRepository
         _db = db;
     }
 
+    // Normal reads exclude soft-deleted guilds (§5.71 #5) — a deleted guild 404s everywhere and drops
+    // off every member's rail; only Trash/restore reach it, via the *IncludingDeleted variants below.
     public async Task<Guild?> GetByIdAsync(long guildId) =>
         await _db
             .Guilds.Include(g => g.Channels)
             .Include(g => g.Roles)
-            .FirstOrDefaultAsync(g => g.Id == guildId);
+            .FirstOrDefaultAsync(g => g.Id == guildId && g.DeletedAt == null);
 
     public async Task<List<Guild>> GetByUserIdAsync(long userId) =>
         await _db
             .GuildMembers.AsNoTracking()
-            .Where(m => m.UserId == userId)
+            .Where(m => m.UserId == userId && m.Guild.DeletedAt == null)
             // Deterministic join order (snowflake id breaks same-ms ties) — the base order the
             // user's personal guild_order is applied over, and where unranked guilds land.
             .OrderBy(m => m.JoinedAt)
@@ -121,9 +123,29 @@ public class GuildRepository : IGuildRepository
             )
             .AnyAsync();
 
+    // Loads a guild regardless of soft-delete state — for the owner's restore / permanent-delete.
+    public async Task<Guild?> GetByIdIncludingDeletedAsync(long guildId) =>
+        await _db.Guilds.FirstOrDefaultAsync(g => g.Id == guildId);
+
+    // The owner's Trash: guilds they own that are soft-deleted, newest-deleted first.
+    public async Task<List<Guild>> GetDeletedByOwnerAsync(long ownerId) =>
+        await _db
+            .Guilds.AsNoTracking()
+            .Where(g => g.OwnerId == ownerId && g.DeletedAt != null)
+            .OrderByDescending(g => g.DeletedAt)
+            .ToListAsync();
+
+    // Auto-purge sweep: guilds trashed before the cutoff (unix ms), capped.
+    public async Task<List<Guild>> GetPurgeableAsync(long deletedBefore, int limit) =>
+        await _db
+            .Guilds.Where(g => g.DeletedAt != null && g.DeletedAt < deletedBefore)
+            .OrderBy(g => g.DeletedAt)
+            .Take(limit)
+            .ToListAsync();
+
     public async Task<List<Guild>> GetPublicGuildsAsync(string? query, int limit)
     {
-        var guilds = _db.Guilds.AsNoTracking().Where(g => g.IsPublic);
+        var guilds = _db.Guilds.AsNoTracking().Where(g => g.IsPublic && g.DeletedAt == null);
         if (!string.IsNullOrWhiteSpace(query))
         {
             var q = query.Trim();

@@ -6,6 +6,18 @@ public interface IGuildRepository
 {
     Task<Guild?> GetByIdAsync(long guildId);
     Task<List<Guild>> GetByUserIdAsync(long userId);
+
+    /// <summary>Loads a guild regardless of soft-delete state — for the owner's restore /
+    /// permanent-delete, which act on a trashed row that <see cref="GetByIdAsync"/> hides. (§5.71 #5)</summary>
+    Task<Guild?> GetByIdIncludingDeletedAsync(long guildId);
+
+    /// <summary>Guilds the user owns that are soft-deleted — their global Trash, newest-deleted first.</summary>
+    Task<List<Guild>> GetDeletedByOwnerAsync(long ownerId);
+
+    /// <summary>Guilds trashed before <paramref name="deletedBefore"/> (unix ms) — the 30-day
+    /// auto-purge sweep's work list, capped at <paramref name="limit"/>.</summary>
+    Task<List<Guild>> GetPurgeableAsync(long deletedBefore, int limit);
+
     Task<bool> IsMemberAsync(long guildId, long userId);
     Task<GuildMember?> GetMemberAsync(long guildId, long userId);
     Task<List<GuildMember>> GetMembersAsync(long guildId);

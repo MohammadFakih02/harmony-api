@@ -17,3 +17,8 @@ public record DirectMessageChannelResponse(
     long LastReadId,
     IReadOnlyList<DmParticipantResponse> Participants
 );
+
+// Whether the caller may currently send in a 1:1 DM (block / the peer's DM-privacy checklist), with
+// a human reason to show when they can't. Lets the composer disable the input up front instead of
+// letting a doomed send fail. Non-throwing mirror of MessageService.AuthorizeDmSendAsync.
+public record DmSendGateResponse(bool CanSend, string? Reason);

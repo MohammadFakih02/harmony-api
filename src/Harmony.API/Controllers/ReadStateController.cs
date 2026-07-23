@@ -17,16 +17,19 @@ public class ReadStatesController : ControllerBase
     private readonly IUnreadCountService _unread;
     private readonly IGuildRepository _guilds;
     private readonly IChannelRepository _channels;
+    private readonly INotificationService _notifications;
 
     public ReadStatesController(
         IUnreadCountService unread,
         IGuildRepository guilds,
-        IChannelRepository channels
+        IChannelRepository channels,
+        INotificationService notifications
     )
     {
         _unread = unread;
         _guilds = guilds;
         _channels = channels;
+        _notifications = notifications;
     }
 
     // POST /api/guilds/{guildId}/channels/{channelId}/read
@@ -48,6 +51,14 @@ public class ReadStatesController : ControllerBase
             return NotFound();
 
         await _unread.MarkReadAsync(userId, guildId, channelId, request.LastReadMessageId);
+        // Reading a channel also clears its bell entries (mentions/replies/all-level messages) up to
+        // the read point — the badge and the bell stay consistent, and it catches rows the client
+        // never loaded into the bell page (and other devices) via the fresh badge broadcast.
+        await _notifications.MarkChannelNotificationsReadAsync(
+            userId,
+            channelId,
+            request.LastReadMessageId
+        );
         return NoContent();
     }
 
