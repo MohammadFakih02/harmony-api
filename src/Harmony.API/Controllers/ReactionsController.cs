@@ -51,9 +51,23 @@ public class ReactionsController : ControllerBase
         return NoContent();
     }
 
+    /// <summary>
+    /// Removes the caller's reaction of a given emoji from a message. Idempotent — removing a
+    /// reaction that isn't there is a no-op, not an error.
+    /// </summary>
+    /// <remarks>
+    /// The emoji travels in the query string rather than the route: Unicode in a URL path segment
+    /// is fragile across proxies and clients. Only the caller's own reaction is removed; a user
+    /// cannot clear someone else's.
+    /// </remarks>
+    /// <param name="emoji">The emoji to remove (Unicode, or a <c>custom:{id}</c> token).</param>
+    /// <response code="204">The reaction was removed, or was not present.</response>
+    /// <response code="403">The caller lacks <c>AddReactions</c> on this channel.</response>
     // DELETE /api/guilds/{guildId}/channels/{channelId}/messages/{messageId}/reactions?emoji=
     [HttpDelete]
     [RequirePermission(Permission.AddReactions)]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
     public async Task<IActionResult> Remove(
         long guildId,
         long channelId,

@@ -266,6 +266,7 @@ public static class DependencyInjection
             services.AddHostedService<VoiceStateSweepService>();
             services.AddHostedService<InviteCleanupService>();
             services.AddHostedService<PushNotificationService>();
+            services.AddHostedService<TrashPurgeService>();
         }
 
         // -----------------------------------------------------------------------

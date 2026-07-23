@@ -32,6 +32,7 @@ public class InvitesController : ControllerBase
     private readonly IUserRepository _users;
     private readonly IPresenceService _presence;
     private readonly IHubBroadcaster _broadcaster;
+    private readonly INotificationService _notifications;
     private readonly ILogger<InvitesController> _logger;
 
     public InvitesController(
@@ -43,6 +44,7 @@ public class InvitesController : ControllerBase
         IUserRepository users,
         IPresenceService presence,
         IHubBroadcaster broadcaster,
+        INotificationService notifications,
         ILogger<InvitesController> logger
     )
     {
@@ -54,6 +56,7 @@ public class InvitesController : ControllerBase
         _users = users;
         _presence = presence;
         _broadcaster = broadcaster;
+        _notifications = notifications;
         _logger = logger;
     }
 
@@ -70,8 +73,19 @@ public class InvitesController : ControllerBase
         );
     }
 
-    // GET /api/invites/{code} — preview before joining.
+    /// <summary>
+    /// Previews an invite before joining — the guild's name, icon, member count, and current online
+    /// count — without joining. The online count is resolved server-side, so a non-member viewer
+    /// still sees it.
+    /// </summary>
+    /// <param name="code">The invite code (from a <c>/invite/{code}</c> link).</param>
+    /// <response code="200">The invite is valid; body is the guild preview.</response>
+    /// <response code="404">No such invite code.</response>
+    /// <response code="410">The invite has expired or been used up.</response>
     [HttpGet("{code}")]
+    [ProducesResponseType(typeof(InvitePreviewResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status410Gone)]
     public async Task<IActionResult> Preview(string code)
     {
         var invite = await _invites.GetByCodeAsync(code);
@@ -89,10 +103,20 @@ public class InvitesController : ControllerBase
         );
     }
 
-    // GET /api/invites/{code}/embed — soft preview for inline chat embeds. Always 200:
-    // dead codes in old messages are an expected state, and a 404/410 here would log a
-    // browser console error for every expired invite link in visible history.
+    /// <summary>
+    /// Soft preview for inline chat embeds: renders the little invite card when a message contains an
+    /// invite link. <b>Always 200</b> — the outcome is carried in a status field
+    /// (<c>ok</c> / <c>expired</c> / <c>invalid</c>), never in the HTTP status.
+    /// </summary>
+    /// <remarks>
+    /// The always-200 contract is deliberate. Dead codes in old messages are an expected, permanent
+    /// state, and a real 404/410 here would log a browser console error for every expired invite link
+    /// in visible history. The regular <c>Preview</c> endpoint, which drives the standalone landing
+    /// page, still returns honest status codes.
+    /// </remarks>
+    /// <response code="200">Always. Inspect the <c>status</c> field for the real outcome.</response>
     [HttpGet("{code}/embed")]
+    [ProducesResponseType(typeof(InviteEmbedResponse), StatusCodes.Status200OK)]
     public async Task<IActionResult> PreviewEmbed(string code)
     {
         var invite = await _invites.GetByCodeAsync(code);
@@ -113,8 +137,27 @@ public class InvitesController : ControllerBase
         );
     }
 
-    // POST /api/invites/{code}/join — redeem the invite and join the guild.
+    /// <summary>
+    /// Redeems an invite and joins the caller to the guild. One click — no confirmation step.
+    /// </summary>
+    /// <remarks>
+    /// Enforced in order: the invite must be alive, the caller must not already be a member (409, so
+    /// the client just navigates in), must not be banned (403 with the ban reason), and must have a
+    /// verified email if the guild requires one. On success the use count is bumped, the denormalized
+    /// member count is adjusted atomically (not read-modify-write — two simultaneous joins would lose
+    /// one), and a welcome message + a live <c>MemberJoined</c> broadcast fire best-effort.
+    /// </remarks>
+    /// <response code="200">Joined; body is the guild.</response>
+    /// <response code="403">Banned from the guild, or a verified email is required.</response>
+    /// <response code="404">No such invite, or its guild no longer exists.</response>
+    /// <response code="409">Already a member — the client navigates straight in.</response>
+    /// <response code="410">The invite has expired or been used up.</response>
     [HttpPost("{code}/join")]
+    [ProducesResponseType(typeof(GuildResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    [ProducesResponseType(StatusCodes.Status410Gone)]
     public async Task<IActionResult> Join(string code)
     {
         var userId = GetUserId();
@@ -188,6 +231,18 @@ public class InvitesController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Failed to broadcast GuildInvitesChanged for guild {GuildId}", guild.Id);
+        }
+
+        // Now that they're in, an outstanding guild_invite bell notification for this guild has served
+        // its purpose — clear it (any invite path: the inline card, the bell, or the landing page).
+        // Best-effort: the join is already committed, so a notification hiccup must never fail it.
+        try
+        {
+            await _notifications.MarkGuildInviteNotificationsReadAsync(userId, guild.Id);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to clear guild_invite notification for user {UserId} joining guild {GuildId}", userId, guild.Id);
         }
 
         // The atomic bump above bypassed the change tracker, so the loaded entity still holds the

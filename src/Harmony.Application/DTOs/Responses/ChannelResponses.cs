@@ -15,6 +15,16 @@ public record ChannelResponse(
     long CreatedAt
 );
 
+/// <summary>A soft-deleted channel as shown in a guild's Trash (§5.71 #5) — just enough to identify
+/// it and show how long it's been trashed (drives the "auto-deletes in N days" hint client-side).</summary>
+public record DeletedChannelResponse(
+    long Id,
+    long? GuildId,
+    string Name,
+    string Type,
+    long? DeletedAt
+);
+
 public record ChannelOverrideResponse(
     long Id,
     long ChannelId,

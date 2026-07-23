@@ -284,17 +284,11 @@ public class NotificationService : INotificationService
             )
                 continue;
 
-            // Guild-less (DM) channels have no guild mute to check — guildId is null there.
-            if (
-                guildId.HasValue
-                && await _userMute.IsMutedAsync(
-                    mentionedUserId,
-                    guildId.Value,
-                    MuteTargetType.Guild,
-                    now
-                )
-            )
-                continue;
+            // A GUILD mute deliberately does NOT suppress a direct @mention (#9): muting a server
+            // silences its regular + all-level messages (CreateMessageNotificationsAsync still honours
+            // the guild mute), but an @you — or an @everyone/@here the recipient hasn't turned off via
+            // the suppress-@everyone check above — still reaches the bell + push. Muting the actor as a
+            // user, or muting the specific channel, are narrower deliberate acts and still suppress.
 
             if (await _userBlock.AreBlockedAsync(actorId, mentionedUserId))
                 continue;
@@ -531,5 +525,30 @@ public class NotificationService : INotificationService
 
         await PushUnlessDndAsync(notification, ct);
         await BroadcastBadgeAsync(notification.UserId, ct);
+    }
+
+    /// <inheritdoc />
+    public async Task MarkChannelNotificationsReadAsync(
+        long userId,
+        long channelId,
+        long uptoMessageId,
+        CancellationToken ct = default
+    )
+    {
+        var flipped = await _notifications.MarkChannelReadAsync(userId, channelId, uptoMessageId);
+        if (flipped > 0)
+            await BroadcastBadgeAsync(userId, ct);
+    }
+
+    /// <inheritdoc />
+    public async Task MarkGuildInviteNotificationsReadAsync(
+        long userId,
+        long guildId,
+        CancellationToken ct = default
+    )
+    {
+        var flipped = await _notifications.MarkGuildInviteReadAsync(userId, guildId);
+        if (flipped > 0)
+            await BroadcastBadgeAsync(userId, ct);
     }
 }

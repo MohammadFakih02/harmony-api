@@ -123,6 +123,7 @@ public class GuildConfiguration : IEntityTypeConfiguration<Guild>
             .Property(g => g.SystemMessagesEnabled)
             .HasColumnName("system_messages_enabled")
             .HasDefaultValue(true);
+        builder.Property(g => g.DeletedAt).HasColumnName("deleted_at");
 
         builder
             .HasOne(g => g.Owner)
@@ -131,6 +132,8 @@ public class GuildConfiguration : IEntityTypeConfiguration<Guild>
             .OnDelete(DeleteBehavior.Restrict);
 
         builder.HasIndex(g => g.OwnerId);
+        // Backs the owner's Trash listing (deleted guilds) + the auto-purge sweep.
+        builder.HasIndex(g => g.DeletedAt);
     }
 }
 
@@ -153,6 +156,7 @@ public class ChannelConfiguration : IEntityTypeConfiguration<Channel>
         builder.Property(c => c.Bitrate).HasColumnName("bitrate");
         builder.Property(c => c.UserLimit).HasColumnName("user_limit");
         builder.Property(c => c.CreatedAt).HasColumnName("created_at");
+        builder.Property(c => c.DeletedAt).HasColumnName("deleted_at");
 
         builder
             .HasOne(c => c.Guild)
@@ -169,5 +173,7 @@ public class ChannelConfiguration : IEntityTypeConfiguration<Channel>
 
         builder.HasIndex(c => c.GuildId);
         builder.HasIndex(c => c.CategoryId);
+        // Backs the per-guild Trash listing (deleted channels) + the auto-purge sweep.
+        builder.HasIndex(c => c.DeletedAt);
     }
 }

@@ -13,6 +13,21 @@ public interface IChannelRepository
     Task DeleteAsync(Channel channel);
     Task SaveChangesAsync();
 
+    /// <summary>Loads a channel regardless of its soft-delete state — for restore / permanent-delete,
+    /// which operate on a trashed row that <see cref="GetByIdAsync"/> deliberately hides. (§5.71 #5)</summary>
+    Task<Channel?> GetByIdIncludingDeletedAsync(long channelId);
+
+    /// <summary>The guild's soft-deleted channels (its Trash), newest-deleted first.</summary>
+    Task<List<Channel>> GetDeletedByGuildIdAsync(long guildId);
+
+    /// <summary>Channels trashed before <paramref name="deletedBefore"/> (unix ms) whose owning guild
+    /// is not itself trashed — the 30-day auto-purge sweep's work list, capped at <paramref name="limit"/>.</summary>
+    Task<List<Channel>> GetPurgeableAsync(long deletedBefore, int limit);
+
+    /// <summary>Every text channel id of a guild, live OR soft-deleted — used when a whole guild is
+    /// purged so each channel's Scylla partition + search index can be cleaned before the cascade.</summary>
+    Task<List<long>> GetTextChannelIdsByGuildIncludingDeletedAsync(long guildId);
+
     /// <summary>
     /// Executes sequential channel position updates within an explicit SQL transaction [12].
     /// Satisfies Clean Architecture by accepting basic C# tuple types instead of Application DTOs [2].
