@@ -43,6 +43,27 @@ public class NotificationRepository : INotificationRepository
     public async Task DeleteAllForUserAsync(long userId) =>
         await _db.Notifications.Where(n => n.UserId == userId).ExecuteDeleteAsync();
 
+    public async Task<int> MarkChannelReadAsync(long userId, long channelId, long uptoMessageId) =>
+        await _db
+            .Notifications.Where(n =>
+                n.UserId == userId
+                && n.ChannelId == channelId
+                && n.MessageId != null
+                && n.MessageId <= uptoMessageId
+                && !n.IsRead
+            )
+            .ExecuteUpdateAsync(s => s.SetProperty(n => n.IsRead, true));
+
+    public async Task<int> MarkGuildInviteReadAsync(long userId, long guildId) =>
+        await _db
+            .Notifications.Where(n =>
+                n.UserId == userId
+                && n.GuildId == guildId
+                && n.Type == "guild_invite"
+                && !n.IsRead
+            )
+            .ExecuteUpdateAsync(s => s.SetProperty(n => n.IsRead, true));
+
     public async Task MarkAllReadAsync(long userId) =>
         await _db
             .Notifications.Where(n => n.UserId == userId && !n.IsRead)

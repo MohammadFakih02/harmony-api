@@ -16,6 +16,10 @@ public record GuildResponse(
     bool RequireVerifiedEmail
 );
 
+/// <summary>A soft-deleted guild as shown in the owner's global Trash (§5.71 #5) — identity + icon +
+/// when it was deleted (drives the "auto-deletes in N days" hint client-side).</summary>
+public record DeletedGuildResponse(long Id, string Name, string? IconKey, long? DeletedAt);
+
 public record GuildMemberResponse(
     long UserId,
     string Username,

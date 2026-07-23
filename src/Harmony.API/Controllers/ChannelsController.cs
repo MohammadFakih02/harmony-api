@@ -173,6 +173,10 @@ public class ChannelsController : ControllerBase
     }
 
     // DELETE /api/guilds/{guildId}/channels/{channelId}
+    // Soft delete (§5.71 #5): stamps DeletedAt so the channel vanishes from every read but its
+    // messages are preserved. Recoverable from the guild's Trash until restore, a permanent delete,
+    // or the 30-day auto-purge. The irreversible Scylla/search purge happens ONLY on a permanent
+    // delete (below) or the sweep — never here.
     [HttpDelete("{channelId:long}")]
     [RequirePermission(Permission.ManageChannels)]
     public async Task<IActionResult> Delete(long guildId, long channelId)
@@ -181,26 +185,72 @@ public class ChannelsController : ControllerBase
         if (channel is null || channel.GuildId != guildId)
             return NotFound();
 
-        // welcome_channel_id is a plain column, not an FK, so deleting the channel would leave the
-        // guild pointing at a dead id — and PostWelcomeMessageAsync only falls back to the first
-        // text channel when the pointer is *null*, so every future join's welcome notice would be
-        // published into nothing. Clear it in the same save as the delete.
+        // welcome_channel_id is a plain column, not an FK, so a deleted channel would leave the guild
+        // pointing at a hidden id — and PostWelcomeMessageAsync only falls back to the first text
+        // channel when the pointer is *null*. Clear it in the same save as the soft-delete. (Restore
+        // does not re-point it — the admin can re-set the welcome channel if they want it back.)
         var guild = await _guilds.GetByIdAsync(guildId);
         if (guild is not null && guild.WelcomeChannelId == channelId)
             guild.WelcomeChannelId = null;
 
+        channel.DeletedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        await _channels.SaveChangesAsync();
+
+        // REAL-TIME BROADCAST: tell clients to REMOVE this channel from the sidebar (distinct from
+        // ChannelUpdated — clients viewing it must navigate away). NO ChannelDeletedEvent: the Scylla
+        // partition + search index survive so a restore brings the messages back intact.
+        await _broadcaster.BroadcastChannelDeletedAsync(channelId, guildId);
+
+        return NoContent();
+    }
+
+    // GET /api/guilds/{guildId}/channels/trash — the guild's soft-deleted channels (its Trash).
+    [HttpGet("trash")]
+    [RequirePermission(Permission.ManageChannels)]
+    public async Task<IActionResult> Trash(long guildId)
+    {
+        var deleted = await _channels.GetDeletedByGuildIdAsync(guildId);
+        return Ok(deleted.Select(ToDeletedResponse));
+    }
+
+    // POST /api/guilds/{guildId}/channels/{channelId}/restore — clears the tombstone; the channel
+    // (and its preserved messages) reappears. Broadcast as an upsert so live sidebars re-add it.
+    [HttpPost("{channelId:long}/restore")]
+    [RequirePermission(Permission.ManageChannels)]
+    public async Task<IActionResult> Restore(long guildId, long channelId)
+    {
+        var channel = await _channels.GetByIdIncludingDeletedAsync(channelId);
+        if (channel is null || channel.GuildId != guildId || channel.DeletedAt is null)
+            return NotFound();
+
+        channel.DeletedAt = null;
+        await _channels.SaveChangesAsync();
+
+        var response = ToResponse(channel);
+        await _broadcaster.BroadcastChannelUpdatedAsync(response, guildId);
+        return Ok(response);
+    }
+
+    // DELETE /api/guilds/{guildId}/channels/{channelId}/permanent — hard delete a trashed channel
+    // NOW instead of waiting for the 30-day sweep. This is the ONLY channel path (besides the sweep)
+    // that runs the irreversible Scylla-partition + search-index purge.
+    [HttpDelete("{channelId:long}/permanent")]
+    [RequirePermission(Permission.ManageChannels)]
+    public async Task<IActionResult> PermanentDelete(long guildId, long channelId)
+    {
+        var channel = await _channels.GetByIdIncludingDeletedAsync(channelId);
+        // Only an already-trashed channel can be permanently deleted — never a live one (that must go
+        // through the soft-delete + Trash flow first, so it's always recoverable for a beat).
+        if (channel is null || channel.GuildId != guildId || channel.DeletedAt is null)
+            return NotFound();
+
         await _channels.DeleteAsync(channel);
         await _channels.SaveChangesAsync();
 
-        // 1. ASYNC DECOUPLED CLEANUP: Publish the deletion event to RabbitMQ.
-        //    Consumers purge ScyllaDB partitions and the Postgres search index.
+        // Async decoupled cleanup: consumers purge the ScyllaDB partition + the Postgres search index.
         await _publisher.PublishChannelDeletedAsync(
             new ChannelDeletedEvent(channelId, guildId, DateTimeOffset.UtcNow)
         );
-
-        // 2. REAL-TIME BROADCAST: Tell clients to REMOVE this channel from the sidebar.
-        //    Distinct from ChannelUpdated — clients must navigate away if viewing it.
-        await _broadcaster.BroadcastChannelDeletedAsync(channelId, guildId);
 
         return NoContent();
     }
@@ -380,4 +430,7 @@ public class ChannelsController : ControllerBase
             c.UserLimit,
             c.CreatedAt
         );
+
+    private static DeletedChannelResponse ToDeletedResponse(Channel c) =>
+        new(c.Id, c.GuildId, c.Name, c.Type, c.DeletedAt);
 }

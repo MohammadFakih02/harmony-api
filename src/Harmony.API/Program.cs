@@ -268,15 +268,30 @@ builder.Services.AddControllers(options =>
     options.Filters.Add<PermissionAuthorizationFilter>();
     options.Filters.Add<ValidationActionFilter>();
 });
-builder.Services.AddOpenApi();
+// The transformer declares the JWT bearer scheme so the docs UI can authorize; XML doc comments
+// are picked up automatically from the generated documentation files (see src/Directory.Build.props).
+builder.Services.AddOpenApi(options =>
+    options.AddDocumentTransformer<BearerSecuritySchemeTransformer>()
+);
 
 // =======================================================================
 var app = builder.Build();
 
 // =======================================================================
 
+// Development only — the deployed environment exposes neither the spec nor the UI, so the full
+// endpoint surface is never published. Swashbuckle is used purely as a UI shell over the document
+// Microsoft.AspNetCore.OpenApi generates; there is no AddSwaggerGen and no second spec generator.
 if (app.Environment.IsDevelopment())
+{
     app.MapOpenApi();
+    app.UseSwaggerUI(options =>
+    {
+        options.SwaggerEndpoint("/openapi/v1.json", "Harmony API v1");
+        options.RoutePrefix = "docs";
+        options.DocumentTitle = "Harmony API";
+    });
+}
 
 // Trigger RabbitMQ connection and topology declaration asynchronously without blocking
 var rabbitConnection = app.Services.GetRequiredService<RabbitMQConnection>();

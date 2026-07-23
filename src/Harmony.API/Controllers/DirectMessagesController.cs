@@ -43,6 +43,7 @@ public class DirectMessagesController : ControllerBase
     private readonly IFileService _files;
     private readonly IHubBroadcaster _broadcaster;
     private readonly ISearchService _search;
+    private readonly INotificationService _notifications;
     private readonly ILogger<DirectMessagesController> _logger;
 
     public DirectMessagesController(
@@ -58,6 +59,7 @@ public class DirectMessagesController : ControllerBase
         IFileService files,
         IHubBroadcaster broadcaster,
         ISearchService search,
+        INotificationService notifications,
         ILogger<DirectMessagesController> logger
     )
     {
@@ -73,6 +75,7 @@ public class DirectMessagesController : ControllerBase
         _files = files;
         _broadcaster = broadcaster;
         _search = search;
+        _notifications = notifications;
         _logger = logger;
     }
 
@@ -371,6 +374,44 @@ public class DirectMessagesController : ControllerBase
         return NoContent();
     }
 
+    // GET /api/dm/{channelId}/send-gate — can the caller send here right now? A non-throwing mirror
+    // of MessageService.AuthorizeDmSendAsync (block + the peer's DM-privacy checklist) so the composer
+    // can disable the input with a reason instead of letting a doomed send fail. Group DMs are always
+    // sendable once you're a participant; the server still enforces on the actual send regardless.
+    [HttpGet("{channelId:long}/send-gate")]
+    public async Task<IActionResult> SendGate(long channelId)
+    {
+        var me = GetUserId();
+        if (!await _dms.IsParticipantAsync(channelId, me))
+            return Forbid();
+
+        var channel = await _channels.GetByIdAsync(channelId);
+        if (channel is null)
+            return NotFound();
+
+        if (channel.Type != "dm")
+            return Ok(new DmSendGateResponse(CanSend: true, Reason: null));
+
+        var participantIds = await _dms.GetParticipantIdsAsync(channelId);
+        var peerId = participantIds.FirstOrDefault(id => id != me);
+        if (peerId == 0)
+            return Ok(new DmSendGateResponse(CanSend: true, Reason: null));
+
+        if (await _blocks.AreBlockedAsync(me, peerId))
+            return Ok(new DmSendGateResponse(CanSend: false, Reason: "You can't message this user."));
+
+        var peer = await _users.GetByIdAsync(peerId);
+        if (peer is not null && !await CanContactAsync(me, peerId, peer.DmPrivacy))
+            return Ok(
+                new DmSendGateResponse(
+                    CanSend: false,
+                    Reason: "You can only message this person if you're friends or share a server."
+                )
+            );
+
+        return Ok(new DmSendGateResponse(CanSend: true, Reason: null));
+    }
+
     // POST /api/dm/{channelId}/messages — send (authorization handled in the service)
     [HttpPost("{channelId:long}/messages")]
     public async Task<IActionResult> SendMessage(long channelId, [FromBody] SendMessageRequest request)
@@ -569,6 +610,12 @@ public class DirectMessagesController : ControllerBase
             return Forbid();
 
         await _unread.MarkReadAsync(me, guildId: null, channelId, request.LastReadMessageId);
+        // Clear this DM's bell entries (mentions/replies) up to the read point, same as guild channels.
+        await _notifications.MarkChannelNotificationsReadAsync(
+            me,
+            channelId,
+            request.LastReadMessageId
+        );
         return NoContent();
     }
 

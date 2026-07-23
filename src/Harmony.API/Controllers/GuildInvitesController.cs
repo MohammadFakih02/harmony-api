@@ -71,11 +71,23 @@ public class GuildInvitesController : ControllerBase
         _logger = logger;
     }
 
-    // POST /api/guilds/{guildId}/invites
-    // No [RequirePermission] — creating is authorized in-body as "CreateInvite OR ManageInvites",
-    // since ManageInvites is a superset of CreateInvite (a moderator who can revoke anyone's invite
-    // can obviously mint one). [RequirePermission] can only AND bits, so the OR lives here.
+    /// <summary>
+    /// Mints a new invite for the guild, optionally landing on a specific channel, with optional
+    /// max-uses and expiry.
+    /// </summary>
+    /// <remarks>
+    /// Authorized as <c>CreateInvite OR ManageInvites</c> — in code, not via the usual route
+    /// attribute. <c>ManageInvites</c> is a superset (a moderator who can revoke anyone's invite can
+    /// obviously mint one), and the declarative <c>[RequirePermission]</c> filter can only AND bits,
+    /// never OR them, so the check lives in the method body.
+    /// </remarks>
+    /// <response code="200">Created; body is the invite.</response>
+    /// <response code="400">A named landing channel doesn't belong to this guild.</response>
+    /// <response code="403">The caller has neither CreateInvite nor ManageInvites.</response>
     [HttpPost]
+    [ProducesResponseType(typeof(InviteResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
     public async Task<IActionResult> Create(long guildId, [FromBody] CreateInviteRequest request)
     {
         var userId = GetUserId();
@@ -106,12 +118,24 @@ public class GuildInvitesController : ControllerBase
         return Ok(ToResponse(invite, creators));
     }
 
-    // POST /api/guilds/{guildId}/invites/invite-friend
-    // Invite-a-friend, done entirely server-side (NON-NEGOTIABLE #8: never trust a client "I invited
-    // X" claim). Mints a guild-level invite, DMs its link to the friend, and files the guild_invite
-    // notification — atomically from the client's view. Authorized like Create (CreateInvite OR
-    // ManageInvites); the recipient must be an accepted friend of the caller.
+    /// <summary>
+    /// Invites a friend to the guild in one call: mints an invite, DMs its link to the friend, and
+    /// files a <c>guild_invite</c> notification.
+    /// </summary>
+    /// <remarks>
+    /// Done entirely server-side on purpose (NON-NEGOTIABLE #8: never trust a client's "I invited X"
+    /// claim — the server mints, sends, and notifies so the whole thing is one authorable action).
+    /// The link is posted as a full <c>…/invite/{code}</c> URL so the recipient's client renders the
+    /// inline invite embed. Authorized like <c>Create</c> (CreateInvite OR ManageInvites); the target
+    /// must be an accepted friend of the caller.
+    /// </remarks>
+    /// <response code="200">Invited; body is the minted invite.</response>
+    /// <response code="400">Inviting yourself, or the target isn't an accepted friend.</response>
+    /// <response code="403">The caller has neither CreateInvite nor ManageInvites.</response>
     [HttpPost("invite-friend")]
+    [ProducesResponseType(typeof(InviteResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
     public async Task<IActionResult> InviteFriend(
         long guildId,
         [FromBody] InviteFriendRequest request
@@ -172,12 +196,20 @@ public class GuildInvitesController : ControllerBase
         return Ok(ToResponse(invite, creators));
     }
 
-    // GET /api/guilds/{guildId}/invites
-    // No [RequirePermission] — listing is authorized in-body: ManageInvites sees all of the guild's
-    // invites, while a CreateInvite-only member sees only their own (mirrors the Create/Delete
-    // OR-pattern above). This lets a plain member view — not just blindly revoke — the invites they
-    // minted, which the modal needs to render.
+    /// <summary>
+    /// Lists the guild's invites — scoped to what the caller may see.
+    /// </summary>
+    /// <remarks>
+    /// <c>ManageInvites</c> sees every invite in the guild; a <c>CreateInvite</c>-only member sees
+    /// only the ones they personally minted. This mirrors the create/revoke OR-pattern and lets a
+    /// plain member view — not just blindly revoke — their own invites, which the invite modal needs
+    /// to render.
+    /// </remarks>
+    /// <response code="200">The invites the caller is allowed to see.</response>
+    /// <response code="403">The caller has neither CreateInvite nor ManageInvites.</response>
     [HttpGet]
+    [ProducesResponseType(typeof(IEnumerable<InviteResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
     public async Task<IActionResult> List(long guildId)
     {
         var userId = GetUserId();
@@ -191,11 +223,24 @@ public class GuildInvitesController : ControllerBase
         return Ok(invites.Select(i => ToResponse(i, creators)));
     }
 
-    // DELETE /api/guilds/{guildId}/invites/{code}
-    // No [RequirePermission] — revoke is authorized in-body as "you created it OR you hold
-    // ManageInvites", so a CreateInvite-only member can revoke their own invite (mirrors
-    // own-message delete). ManageInvites lets a moderator revoke anyone's.
+    /// <summary>
+    /// Revokes an invite by code.
+    /// </summary>
+    /// <remarks>
+    /// Authorized as <c>you created it OR you hold ManageInvites</c> (mirrors own-message delete): a
+    /// <c>CreateInvite</c>-only member can revoke the invites they minted, and <c>ManageInvites</c>
+    /// lets a moderator revoke anyone's. The delete is scoped to this guild — a code is globally
+    /// unique but the route isn't, so an invite belonging to another guild returns 404 here rather
+    /// than being revocable through the wrong route. The logged audit entry masks the code (holding
+    /// it is enough to join, and ViewAuditLog is a separate permission from invite rights).
+    /// </remarks>
+    /// <response code="204">Revoked.</response>
+    /// <response code="403">Not the creator and lacking ManageInvites.</response>
+    /// <response code="404">No such code in this guild.</response>
     [HttpDelete("{code}")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<IActionResult> Delete(long guildId, string code)
     {
         var invite = await _invites.GetByCodeAsync(code);

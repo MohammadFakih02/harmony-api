@@ -4,6 +4,7 @@ using Harmony.Application.DTOs.Requests;
 using Harmony.Application.DTOs.Responses;
 using Harmony.Domain.Domain.Entities;
 using Harmony.Domain.Domain.Enums;
+using Harmony.Domain.Interfaces; // For IMessagePublisher
 using Harmony.Domain.Interfaces.Repositories;
 using Harmony.Application.Interfaces.Services;
 using Harmony.Application.Services;
@@ -24,13 +25,15 @@ public class GuildsController : ControllerBase
     private readonly IChannelRepository _channels;
     private readonly ISnowflakeIdGenerator _snowflake;
     private readonly IPermissionService _permissions;
+    private readonly IMessagePublisher _publisher;
 
     public GuildsController(
         IGuildRepository guilds,
         IRoleRepository roles,
         IChannelRepository channels,
         ISnowflakeIdGenerator snowflake,
-        IPermissionService permissions
+        IPermissionService permissions,
+        IMessagePublisher publisher
     )
     {
         _guilds = guilds;
@@ -38,6 +41,7 @@ public class GuildsController : ControllerBase
         _channels = channels;
         _snowflake = snowflake;
         _permissions = permissions;
+        _publisher = publisher;
     }
 
     // POST /api/guilds
@@ -167,6 +171,9 @@ public class GuildsController : ControllerBase
     }
 
     // DELETE /api/guilds/{id}
+    // Soft delete (§5.71 #5): the guild drops off every member's rail and 404s everywhere, but the
+    // owner can restore it from their Trash until the 30-day auto-purge (or a permanent delete). Its
+    // channels/messages are left intact — restore brings the whole server back.
     [HttpDelete("{id:long}")]
     public async Task<IActionResult> Delete(long id)
     {
@@ -176,8 +183,64 @@ public class GuildsController : ControllerBase
         if (guild.OwnerId != GetUserId())
             return Forbid();
 
+        guild.DeletedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        await _guilds.SaveChangesAsync();
+
+        return NoContent();
+    }
+
+    // GET /api/guilds/trash — guilds the caller owns that they've soft-deleted (their global Trash).
+    [HttpGet("trash")]
+    public async Task<IActionResult> Trash()
+    {
+        var deleted = await _guilds.GetDeletedByOwnerAsync(GetUserId());
+        return Ok(
+            deleted.Select(g => new DeletedGuildResponse(g.Id, g.Name, g.IconKey, g.DeletedAt))
+        );
+    }
+
+    // POST /api/guilds/{id}/restore — owner-only; clears the tombstone so the guild (and everything
+    // under it) comes back for every member on their next load.
+    [HttpPost("{id:long}/restore")]
+    public async Task<IActionResult> Restore(long id)
+    {
+        var guild = await _guilds.GetByIdIncludingDeletedAsync(id);
+        if (guild is null || guild.DeletedAt is null)
+            return NotFound();
+        if (guild.OwnerId != GetUserId())
+            return Forbid();
+
+        guild.DeletedAt = null;
+        await _guilds.SaveChangesAsync();
+        return Ok(ToResponse(guild));
+    }
+
+    // DELETE /api/guilds/{id}/permanent — owner-only; hard delete a trashed guild NOW instead of
+    // waiting for the sweep. Purges each text channel's Scylla partition + search index (the EF
+    // cascade only covers Postgres), then removes the guild (cascading its channels/members/roles).
+    [HttpDelete("{id:long}/permanent")]
+    public async Task<IActionResult> PermanentDelete(long id)
+    {
+        var guild = await _guilds.GetByIdIncludingDeletedAsync(id);
+        // Only an already-trashed guild can be permanently deleted — a live one must be soft-deleted
+        // first, so there's always a recoverable window.
+        if (guild is null || guild.DeletedAt is null)
+            return NotFound();
+        if (guild.OwnerId != GetUserId())
+            return Forbid();
+
+        var channelIds = await _channels.GetTextChannelIdsByGuildIncludingDeletedAsync(id);
+
         await _guilds.DeleteAsync(guild);
         await _guilds.SaveChangesAsync();
+
+        // Fan out the per-channel purge after the Postgres cascade lands. Best-effort per channel —
+        // the guild is already gone; a failed publish just leaves an orphaned Scylla partition the
+        // sweep never revisits, which is harmless (unreachable data), not a correctness break.
+        foreach (var channelId in channelIds)
+            await _publisher.PublishChannelDeletedAsync(
+                new ChannelDeletedEvent(channelId, id, DateTimeOffset.UtcNow)
+            );
 
         return NoContent();
     }

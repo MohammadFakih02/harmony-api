@@ -375,8 +375,11 @@ public class NotificationServiceTests
     }
 
     [Fact]
-    public async Task CreateMentionNotificationsAsync_WhenMutedTheGuild_DoesNotCreate()
+    public async Task CreateMentionNotificationsAsync_WhenMutedTheGuild_StillCreates()
     {
+        // #9: muting a server silences its regular/all-level messages but a direct @mention must
+        // still reach the recipient — so a guild mute does NOT suppress a mention, and the producer
+        // doesn't even consult the guild-mute flag.
         var (sut, notifications, _, mutes, _, _, _, _, _) = BuildSut();
         var mentionedUserIds = new List<long> { MentionedUserId };
         mutes
@@ -394,7 +397,11 @@ public class NotificationServiceTests
             CreatedAt
         );
 
-        notifications.Verify(n => n.AddAsync(It.IsAny<Notification>()), Times.Never);
+        notifications.Verify(n => n.AddAsync(It.IsAny<Notification>()), Times.Once);
+        mutes.Verify(
+            m => m.IsMutedAsync(It.IsAny<long>(), GuildId, MuteTargetType.Guild, It.IsAny<long>()),
+            Times.Never
+        );
     }
 
     [Fact]

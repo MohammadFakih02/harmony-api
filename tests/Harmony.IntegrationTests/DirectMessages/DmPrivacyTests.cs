@@ -49,6 +49,9 @@ public class DmPrivacyTests : ApiTestBase, IClassFixture<HarmonyWebApplicationFa
     private Task<HttpResponseMessage> SendDmAsync(long channelId, string content) =>
         Client.PostAsJsonAsync($"/api/dm/{channelId}/messages", new { content });
 
+    private Task<HttpResponseMessage> SendGateAsync(long channelId) =>
+        Client.GetAsync($"/api/dm/{channelId}/send-gate");
+
     private async Task<long> CreateGuildAsync(string name)
     {
         var resp = await Client.PostAsJsonAsync("/api/guilds", new { name });
@@ -250,6 +253,63 @@ public class DmPrivacyTests : ApiTestBase, IClassFixture<HarmonyWebApplicationFa
     }
 
     [Fact]
+    public async Task SendGate_ReturnsCanSend_ForAnEveryoneDm()
+    {
+        var a = await RegisterAsync("dmp_a11", "dmp_a11@test.com");
+        var b = await RegisterAsync("dmp_b11", "dmp_b11@test.com");
+
+        Authorize(a.token);
+        var open = await OpenDmAsync(b.userId);
+        open.EnsureSuccessStatusCode();
+        var channelId = (await open.Content.ReadFromJsonAsync<DmChannelDto>())!.ChannelId;
+
+        var gate = await (await SendGateAsync(channelId)).Content.ReadFromJsonAsync<DmSendGateDto>();
+        gate!.CanSend.Should().BeTrue();
+        gate.Reason.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task SendGate_ReturnsBlocked_WithReason_ForANonFriend_AfterLockdown()
+    {
+        // Mirrors FriendsOnly_BlocksSending_InAnExistingDm: the composer must be able to disable up
+        // front (canSend=false + reason) rather than let the send fail.
+        var a = await RegisterAsync("dmp_a12", "dmp_a12@test.com");
+        var b = await RegisterAsync("dmp_b12", "dmp_b12@test.com");
+
+        Authorize(a.token);
+        var open = await OpenDmAsync(b.userId);
+        open.EnsureSuccessStatusCode();
+        var channelId = (await open.Content.ReadFromJsonAsync<DmChannelDto>())!.ChannelId;
+
+        Authorize(b.token);
+        (await SetDmPrivacyAsync("friends")).EnsureSuccessStatusCode();
+
+        Authorize(a.token);
+        var gate = await (await SendGateAsync(channelId)).Content.ReadFromJsonAsync<DmSendGateDto>();
+        gate!.CanSend.Should().BeFalse();
+        gate.Reason.Should().NotBeNullOrWhiteSpace();
+    }
+
+    [Fact]
+    public async Task SendGate_ReturnsCanSend_BetweenFriends()
+    {
+        var a = await RegisterAsync("dmp_a13", "dmp_a13@test.com");
+        var b = await RegisterAsync("dmp_b13", "dmp_b13@test.com");
+        await BefriendAsync((a.token, a.userId, a.username), (b.token, b.userId, b.username));
+
+        Authorize(b.token);
+        (await SetDmPrivacyAsync("friends")).EnsureSuccessStatusCode();
+
+        Authorize(a.token);
+        var open = await OpenDmAsync(b.userId);
+        open.EnsureSuccessStatusCode();
+        var channelId = (await open.Content.ReadFromJsonAsync<DmChannelDto>())!.ChannelId;
+
+        var gate = await (await SendGateAsync(channelId)).Content.ReadFromJsonAsync<DmSendGateDto>();
+        gate!.CanSend.Should().BeTrue();
+    }
+
+    [Fact]
     public async Task UpdateDmPrivacy_Persists_AndValidatesValue()
     {
         var a = await RegisterAsync("dmp_a5", "dmp_a5@test.com");
@@ -274,6 +334,8 @@ public class DmPrivacyTests : ApiTestBase, IClassFixture<HarmonyWebApplicationFa
     private record MeDto(string DmPrivacy);
 
     private record DmChannelDto(long ChannelId);
+
+    private record DmSendGateDto(bool CanSend, string? Reason);
 
     private record GuildDto(long Id);
 }
