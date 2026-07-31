@@ -1,4 +1,3 @@
-using System.Security.Claims;
 using Harmony.Application.DTOs.Requests;
 using Harmony.Application.DTOs.Responses;
 using Harmony.Domain.Interfaces.Services;
@@ -22,7 +21,7 @@ namespace Harmony.API.Controllers;
 [ApiController]
 [Route("api/auth")]
 [EnableRateLimiting("api")]
-public class AuthController : ControllerBase
+public class AuthController : HarmonyControllerBase
 {
     private readonly IAuthService _authService;
     private readonly IWebHostEnvironment _environment;
@@ -440,7 +439,6 @@ public class AuthController : ControllerBase
         return NoContent();
     }
 
-    private long GetUserId() => long.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
 
     private void SetRefreshCookie(string rawToken)
     {

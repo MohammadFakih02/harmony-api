@@ -278,8 +278,8 @@ public class CredentialChangeTests : ApiTestBase, IClassFixture<HarmonyWebApplic
             new { password, newEmail = takenEmail }
         );
 
-        // InvalidOperationException("Email already in use.") — the GlobalExceptionHandler maps
-        // any "already"-worded InvalidOperationException to 409 (same mapping RegisterAsync uses).
+        // ConflictException("Email already in use.") — the GlobalExceptionHandler maps it to 409
+        // (same mapping RegisterAsync uses for a duplicate email/username).
         response.StatusCode.Should().Be(HttpStatusCode.Conflict);
     }
 

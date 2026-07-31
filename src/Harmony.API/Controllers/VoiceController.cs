@@ -1,4 +1,3 @@
-using System.Security.Claims;
 using Harmony.Application.DTOs.Responses;
 using Harmony.Application.Interfaces.Services;
 using Harmony.Domain.Domain.Entities;
@@ -21,7 +20,7 @@ namespace Harmony.API.Controllers;
 [Route("api/channels/{channelId:long}/voice")]
 [Authorize]
 [EnableRateLimiting("api")]
-public class VoiceController : ControllerBase
+public class VoiceController : HarmonyControllerBase
 {
     private readonly IChannelRepository _channels;
     private readonly IPermissionService _permissions;
@@ -138,5 +137,4 @@ public class VoiceController : ControllerBase
         return sources;
     }
 
-    private long GetUserId() => long.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
 }

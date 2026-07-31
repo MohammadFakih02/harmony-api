@@ -1,4 +1,3 @@
-using System.Security.Claims;
 using Harmony.Application.DTOs.Responses;
 using Harmony.Application.Hubs;
 using Harmony.Application.Interfaces.Services;
@@ -22,7 +21,7 @@ namespace Harmony.API.Controllers;
 [Route("api/invites")]
 [Authorize]
 [EnableRateLimiting("api")]
-public class InvitesController : ControllerBase
+public class InvitesController : HarmonyControllerBase
 {
     private readonly IGuildInviteRepository _invites;
     private readonly IGuildRepository _guilds;
@@ -355,7 +354,6 @@ public class InvitesController : ControllerBase
     // Helpers
     // -------------------------------------------------------------------------
 
-    private long GetUserId() => long.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
 
     private static bool IsAlive(GuildInvite invite)
     {

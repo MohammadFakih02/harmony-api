@@ -1,4 +1,3 @@
-using System.Security.Claims;
 using Harmony.API.Filters;
 using Harmony.Application.DTOs.Requests;
 using Harmony.Application.DTOs.Responses;
@@ -24,7 +23,7 @@ namespace Harmony.API.Controllers;
 [Route("api/guilds/{guildId:long}/invites")]
 [Authorize]
 [EnableRateLimiting("api")]
-public class GuildInvitesController : ControllerBase
+public class GuildInvitesController : HarmonyControllerBase
 {
     private readonly IGuildInviteRepository _invites;
     private readonly IChannelRepository _channels;
@@ -277,7 +276,6 @@ public class GuildInvitesController : ControllerBase
     // Helpers
     // -------------------------------------------------------------------------
 
-    private long GetUserId() => long.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
 
     /// <summary>
     /// Mints, persists, audits, and broadcasts a guild invite. Shared by <see cref="Create"/> and

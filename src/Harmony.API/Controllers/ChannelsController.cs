@@ -1,6 +1,5 @@
 using System.Collections.Generic;
 using System.Linq;
-using System.Security.Claims;
 using System.Threading.Tasks;
 using Harmony.Application.DTOs.Requests;
 using Harmony.Application.DTOs.Responses;
@@ -21,7 +20,7 @@ namespace Harmony.API.Controllers;
 [Route("api/guilds/{guildId:long}/channels")]
 [Authorize]
 [EnableRateLimiting("api")]
-public class ChannelsController : ControllerBase
+public class ChannelsController : HarmonyControllerBase
 {
     private readonly IChannelRepository _channels;
     private readonly IGuildRepository _guilds;
@@ -413,7 +412,6 @@ public class ChannelsController : ControllerBase
     // Helpers
     // -------------------------------------------------------------------------
 
-    private long GetUserId() => long.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
 
     private static ChannelResponse ToResponse(Channel c) =>
         new(

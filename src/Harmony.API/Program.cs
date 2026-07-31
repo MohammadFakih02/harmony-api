@@ -12,7 +12,9 @@ using Harmony.Application.Services;
 using Harmony.Application.Validation;
 using Harmony.Domain.Domain.Entities;
 using Harmony.Infrastructure.Extensions;
+using Harmony.Infrastructure.Postgres;
 using Harmony.Infrastructure.RabbitMQ;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.HttpOverrides;
@@ -278,6 +280,17 @@ builder.Services.AddOpenApi(options =>
 var app = builder.Build();
 
 // =======================================================================
+
+// Apply pending EF Core migrations at startup ONLY when explicitly opted in — the container stack
+// sets RunMigrationsOnStartup=true so a fresh `docker compose up` provisions the Postgres schema
+// with no manual `dotnet ef database update`. Off by default (unset / false), so local development
+// and the test host keep their existing workflow and this block is a no-op for them. Scylla,
+// object-storage bucket, and RabbitMQ topology already self-provision on first use.
+if (app.Configuration.GetValue<bool>("RunMigrationsOnStartup"))
+{
+    using var migrationScope = app.Services.CreateScope();
+    migrationScope.ServiceProvider.GetRequiredService<HarmonyDbContext>().Database.Migrate();
+}
 
 // Development only — the deployed environment exposes neither the spec nor the UI, so the full
 // endpoint surface is never published. Swashbuckle is used purely as a UI shell over the document

@@ -117,9 +117,9 @@ public interface IAuthService
     /// (RequiresCode) without sending the actual change-email confirmation link. Otherwise (2FA
     /// disabled, or a valid code was supplied) sends the confirmation link to the NEW address (the
     /// old email stays active until confirmed) and returns false. Cooldown-gated at each step.
-    /// Throws AuthenticationException for wrong credentials, InvalidOperationException for a
-    /// passwordless account, an already-in-use email, or an invalid/expired/too-many-attempts
-    /// step-up code.</summary>
+    /// Throws AuthenticationException for wrong credentials, ConflictException for an already-in-use
+    /// email, and InvalidOperationException for a passwordless account or an invalid/expired/
+    /// too-many-attempts step-up code.</summary>
     Task<bool> ChangeEmailRequestAsync(
         long userId,
         string password,
@@ -139,8 +139,8 @@ public interface IAuthService
 
     /// <summary>Verifies the password, renames the user, and best-effort broadcasts the new
     /// username live to guilds/friends/own-tabs. Throws AuthenticationException for wrong
-    /// credentials, InvalidOperationException for a passwordless account or a name already
-    /// taken by another user.</summary>
+    /// credentials, ConflictException for a name already taken by another user, and
+    /// InvalidOperationException for a passwordless account.</summary>
     Task ChangeUsernameAsync(
         long userId,
         string password,

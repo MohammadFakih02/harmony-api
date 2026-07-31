@@ -1,4 +1,3 @@
-using System.Security.Claims;
 using Harmony.Application.DTOs.Requests;
 using Harmony.Application.DTOs.Responses;
 using Harmony.Application.Hubs;
@@ -24,7 +23,7 @@ namespace Harmony.API.Controllers;
 [Route("api/dm")]
 [Authorize]
 [EnableRateLimiting("api")]
-public class DirectMessagesController : ControllerBase
+public class DirectMessagesController : HarmonyControllerBase
 {
     private const string GroupDmType = "group_dm";
 
@@ -428,16 +427,28 @@ public class DirectMessagesController : ControllerBase
         return Ok(response);
     }
 
-    // GET /api/dm/{channelId}/search — channel-scoped full-text search (participant-gated in the service)
+    // GET /api/dm/{channelId}/search?q=&from=&after=&hasLink=&before= — channel-scoped full-text
+    // search (participant-gated in the service). from/after/hasLink mirror the guild operators; there
+    // is no `in:` here since a DM search is already scoped to the one channel.
     [HttpGet("{channelId:long}/search")]
     public async Task<IActionResult> Search(
         long channelId,
         [FromQuery] string? q,
+        [FromQuery] long? from,
+        [FromQuery] long? after,
+        [FromQuery] bool hasLink,
         [FromQuery] long? before,
         CancellationToken ct
     )
     {
-        var results = await _search.SearchDmChannelAsync(GetUserId(), channelId, q ?? string.Empty, before, ct);
+        var results = await _search.SearchDmChannelAsync(
+            GetUserId(),
+            channelId,
+            q ?? string.Empty,
+            new SearchFilters(AuthorId: from, After: after, HasLink: hasLink),
+            before,
+            ct
+        );
         return Ok(results);
     }
 
@@ -702,5 +713,4 @@ public class DirectMessagesController : ControllerBase
             new List<DmParticipantResponse> { new(peer.Id, peer.UserName!, peer.AvatarKey) }
         );
 
-    private long GetUserId() => long.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
 }

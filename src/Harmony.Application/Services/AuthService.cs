@@ -2,6 +2,7 @@ using System.Net;
 using System.Security.Authentication;
 using Harmony.Application.DTOs.Requests;
 using Harmony.Application.DTOs.Responses;
+using Harmony.Application.Exceptions;
 using Harmony.Application.Hubs;
 using Harmony.Application.Interfaces.Services;
 using Harmony.Application.Services;
@@ -75,10 +76,10 @@ public class AuthService : IAuthService
             throw new ArgumentException("Invalid email format.");
 
         if (await _identityService.FindByEmailAsync(request.Email) is not null)
-            throw new InvalidOperationException("Email already in use.");
+            throw new ConflictException("Email already in use.");
 
         if (await _identityService.FindByNameAsync(request.Username) is not null)
-            throw new InvalidOperationException("Username already taken.");
+            throw new ConflictException("Username already taken.");
 
         var user = new User
         {
@@ -541,7 +542,7 @@ public class AuthService : IAuthService
 
         var existing = await _identityService.FindByEmailAsync(newEmail);
         if (existing is not null && existing.Id != userId)
-            throw new InvalidOperationException("Email already in use.");
+            throw new ConflictException("Email already in use.");
 
         if (user.TwoFactorEnabled)
         {
@@ -601,7 +602,7 @@ public class AuthService : IAuthService
 
         var existing = await _identityService.FindByNameAsync(newUsername);
         if (existing is not null && existing.Id != userId)
-            throw new InvalidOperationException("Username already taken.");
+            throw new ConflictException("Username already taken.");
 
         var (succeeded, errors) = await _identityService.SetUserNameAsync(user, newUsername);
         if (!succeeded)

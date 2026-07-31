@@ -1,4 +1,3 @@
-using System.Security.Claims;
 using Harmony.API.Filters;
 using Harmony.Application.DTOs.Requests;
 using Harmony.Application.Interfaces.Services;
@@ -32,7 +31,7 @@ namespace Harmony.API.Controllers;
 [Route("api/guilds/{guildId:long}/channels/{channelId:long}/files")]
 [Authorize]
 [EnableRateLimiting("api")]
-public class FilesController : ControllerBase
+public class FilesController : HarmonyControllerBase
 {
     private readonly IFileService _files;
 
@@ -128,5 +127,4 @@ public class FilesController : ControllerBase
         return Ok(response);
     }
 
-    private long GetUserId() => long.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
 }

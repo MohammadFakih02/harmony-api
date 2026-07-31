@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Identity;
 
 namespace Harmony.Application.Services;
 
+/// <inheritdoc cref="IIdentityService"/>
 public class IdentityService : IIdentityService
 {
     private readonly UserManager<User> _userManager;

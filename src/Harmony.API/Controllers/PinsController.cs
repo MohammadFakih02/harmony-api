@@ -1,4 +1,3 @@
-using System.Security.Claims;
 using Harmony.API.Filters;
 using Harmony.Domain.Domain.Enums;
 using Harmony.Domain.Interfaces.Services;
@@ -19,7 +18,7 @@ namespace Harmony.API.Controllers;
 [Route("api/guilds/{guildId:long}/channels/{channelId:long}/pins")]
 [Authorize]
 [EnableRateLimiting("api")]
-public class PinsController : ControllerBase
+public class PinsController : HarmonyControllerBase
 {
     private readonly IMessageService _messages;
 
@@ -65,5 +64,4 @@ public class PinsController : ControllerBase
         return NoContent();
     }
 
-    private long GetUserId() => long.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
 }

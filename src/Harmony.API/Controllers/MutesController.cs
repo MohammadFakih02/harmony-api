@@ -1,4 +1,3 @@
-using System.Security.Claims;
 using Harmony.Application.DTOs.Requests;
 using Harmony.Application.DTOs.Responses;
 using Harmony.Application.Hubs;
@@ -21,7 +20,7 @@ namespace Harmony.API.Controllers;
 [Route("api/mutes")]
 [Authorize]
 [EnableRateLimiting("api")]
-public class MutesController : ControllerBase
+public class MutesController : HarmonyControllerBase
 {
     private readonly IUserMuteRepository _mutes;
     private readonly IHubBroadcaster _broadcaster;
@@ -102,5 +101,4 @@ public class MutesController : ControllerBase
         return NoContent();
     }
 
-    private long GetUserId() => long.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
 }
