@@ -9,6 +9,7 @@ using Microsoft.IdentityModel.Tokens;
 
 namespace Harmony.Application.Services;
 
+/// <inheritdoc cref="IJwtService"/>
 public class JwtService : IJwtService
 {
     private readonly IConfiguration _configuration;

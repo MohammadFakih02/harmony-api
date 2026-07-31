@@ -1,0 +1,20 @@
+# Keep the build context small + reproducible — never ship local build output,
+# secrets, or tooling state into the image.
+**/bin/
+**/obj/
+**/*.user
+tests/
+tools/
+load-tests/
+docs/
+.git/
+.github/
+.vscode/
+docker/
+*.md
+repomix-output.xml
+
+# Local dev secrets (gitignored anyway) — the container gets its config from
+# docker-compose environment, never from an appsettings.Development.json.
+**/appsettings.Development.json
+**/.env

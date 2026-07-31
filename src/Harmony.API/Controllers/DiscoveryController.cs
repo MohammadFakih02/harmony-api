@@ -1,4 +1,3 @@
-using System.Security.Claims;
 using Harmony.Application.DTOs.Responses;
 using Harmony.Application.Interfaces.Services;
 using Harmony.Domain.Domain.Entities;
@@ -19,7 +18,7 @@ namespace Harmony.API.Controllers;
 [Route("api/guilds")]
 [Authorize]
 [EnableRateLimiting("api")]
-public class DiscoveryController : ControllerBase
+public class DiscoveryController : HarmonyControllerBase
 {
     private const int MaxResults = 50;
 
@@ -123,7 +122,6 @@ public class DiscoveryController : ControllerBase
         return Ok(ToResponse(guild) with { MemberCount = guild.MemberCount + 1 });
     }
 
-    private long GetUserId() => long.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
 
     private static GuildResponse ToResponse(Guild g) =>
         new(g.Id, g.Name, g.Description, g.OwnerId, g.IconKey, g.BannerKey, g.IsPublic, g.MemberCount, g.CreatedAt,

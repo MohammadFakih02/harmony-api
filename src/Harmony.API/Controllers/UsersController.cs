@@ -1,5 +1,4 @@
 using System.Globalization;
-using System.Security.Claims;
 using Harmony.Application.DTOs.Requests;
 using Harmony.Application.DTOs.Responses;
 using Harmony.Application.Hubs;
@@ -16,7 +15,7 @@ namespace Harmony.API.Controllers;
 [Route("api/users")]
 [Authorize]
 [EnableRateLimiting("api")]
-public class UsersController : ControllerBase
+public class UsersController : HarmonyControllerBase
 {
     private readonly IUserRepository _users;
     private readonly IGuildRepository _guilds;
@@ -446,7 +445,6 @@ public class UsersController : ControllerBase
     // Helpers
     // -------------------------------------------------------------------------
 
-    private long GetUserId() => long.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
 
     /// <summary>
     /// Sorts guilds by the user's saved rail order; guilds not in the list (new joins) keep

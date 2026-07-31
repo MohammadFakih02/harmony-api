@@ -1,5 +1,4 @@
 using System.Globalization;
-using System.Security.Claims;
 using Harmony.Application.DTOs.Responses;
 using Harmony.Application.Interfaces.Services;
 using Harmony.Domain.Interfaces.Repositories;
@@ -20,7 +19,7 @@ namespace Harmony.API.Controllers;
 [ApiController]
 [Authorize]
 [EnableRateLimiting("api")]
-public class BootstrapController : ControllerBase
+public class BootstrapController : HarmonyControllerBase
 {
     private readonly IUserRepository _users;
     private readonly IGuildRepository _guilds;
@@ -156,5 +155,4 @@ public class BootstrapController : ControllerBase
         );
     }
 
-    private long GetUserId() => long.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
 }

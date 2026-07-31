@@ -1,4 +1,3 @@
-using System.Security.Claims;
 using Harmony.API.Filters;
 using Harmony.Application.DTOs.Requests;
 using Harmony.Application.Interfaces.Services;
@@ -19,7 +18,7 @@ namespace Harmony.API.Controllers;
 [Route("api/guilds/{guildId:long}/roles")]
 [Authorize]
 [EnableRateLimiting("api")]
-public class RolesController : ControllerBase
+public class RolesController : HarmonyControllerBase
 {
     private readonly IRoleService _roles;
     private readonly IGuildRepository _guilds;
@@ -97,5 +96,4 @@ public class RolesController : ControllerBase
         return NoContent();
     }
 
-    private long GetUserId() => long.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
 }

@@ -1,4 +1,3 @@
-using System.Security.Claims;
 using Harmony.API.Filters;
 using Harmony.Application.DTOs.Requests;
 using Harmony.Domain.Domain.Enums;
@@ -20,7 +19,7 @@ namespace Harmony.API.Controllers;
 [Route("api/guilds/{guildId:long}/channels/{channelId:long}/messages/{messageId:long}/reactions")]
 [Authorize]
 [EnableRateLimiting("api")]
-public class ReactionsController : ControllerBase
+public class ReactionsController : HarmonyControllerBase
 {
     private readonly IMessageService _messages;
 
@@ -80,5 +79,4 @@ public class ReactionsController : ControllerBase
         return NoContent();
     }
 
-    private long GetUserId() => long.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
 }

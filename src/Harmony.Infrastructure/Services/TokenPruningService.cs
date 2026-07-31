@@ -9,6 +9,11 @@ using Microsoft.Extensions.Logging;
 
 namespace Harmony.Infrastructure.Services;
 
+/// <summary>
+/// Daily background sweep that deletes expired refresh tokens (and revoked ones older than 30 days) plus
+/// expired trusted-device records, keeping the auth tables from growing unbounded. Failures are logged and
+/// retried on the next cycle.
+/// </summary>
 public class TokenPruningService : BackgroundService
 {
     private readonly IServiceScopeFactory _scopeFactory;

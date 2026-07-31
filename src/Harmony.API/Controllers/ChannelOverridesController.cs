@@ -1,4 +1,3 @@
-using System.Security.Claims;
 using Harmony.API.Filters;
 using Harmony.Application.DTOs.Requests;
 using Harmony.Application.DTOs.Responses;
@@ -25,7 +24,7 @@ namespace Harmony.API.Controllers;
 [Route("api/guilds/{guildId:long}/channels/{channelId:long}/overrides")]
 [Authorize]
 [EnableRateLimiting("api")]
-public class ChannelOverridesController : ControllerBase
+public class ChannelOverridesController : HarmonyControllerBase
 {
     private readonly IChannelPermissionOverrideRepository _overrides;
     private readonly IChannelRepository _channels;
@@ -190,7 +189,6 @@ public class ChannelOverridesController : ControllerBase
         }
     }
 
-    private long GetUserId() => long.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
 
     private static ChannelOverrideResponse ToResponse(ChannelPermissionOverride o) =>
         new(o.Id, o.ChannelId, o.TargetId, o.TargetType, o.AllowBits, o.DenyBits);

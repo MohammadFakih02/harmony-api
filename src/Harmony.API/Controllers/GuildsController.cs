@@ -1,4 +1,3 @@
-using System.Security.Claims;
 using Harmony.API.Filters;
 using Harmony.Application.DTOs.Requests;
 using Harmony.Application.DTOs.Responses;
@@ -18,7 +17,7 @@ namespace Harmony.API.Controllers;
 [Route("api/guilds")]
 [Authorize]
 [EnableRateLimiting("api")]
-public class GuildsController : ControllerBase
+public class GuildsController : HarmonyControllerBase
 {
     private readonly IGuildRepository _guilds;
     private readonly IRoleRepository _roles;
@@ -311,9 +310,6 @@ public class GuildsController : ControllerBase
     // -------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------
-
-    private long GetUserId() =>
-        long.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
 
     private static GuildResponse ToResponse(Guild g) =>
         new(g.Id, g.Name, g.Description, g.OwnerId, g.IconKey, g.BannerKey,
