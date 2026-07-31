@@ -1,4 +1,3 @@
-using System.Security.Claims;
 using Harmony.Application.DTOs.Requests;
 using Harmony.Application.DTOs.Responses;
 using Harmony.Application.Hubs;
@@ -24,7 +23,7 @@ namespace Harmony.API.Controllers;
 [Route("api/friends")]
 [Authorize]
 [EnableRateLimiting("api")]
-public class FriendsController : ControllerBase
+public class FriendsController : HarmonyControllerBase
 {
     private const string StatusPending = "pending";
     private const string StatusAccepted = "accepted";
@@ -278,5 +277,4 @@ public class FriendsController : ControllerBase
     private static FriendUserPayload ToPayload(User u) =>
         new(u.Id, u.UserName!, u.AvatarKey, u.BannerKey);
 
-    private long GetUserId() => long.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
 }

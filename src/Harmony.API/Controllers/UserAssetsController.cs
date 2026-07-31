@@ -1,4 +1,3 @@
-using System.Security.Claims;
 using Harmony.Application.DTOs.Requests;
 using Harmony.Application.Interfaces.Services;
 using Microsoft.AspNetCore.Authorization;
@@ -17,7 +16,7 @@ namespace Harmony.API.Controllers;
 [Route("api/users/me/{kind:regex(^(avatar|banner)$)}")]
 [Authorize]
 [EnableRateLimiting("api")]
-public class UserAssetsController : ControllerBase
+public class UserAssetsController : HarmonyControllerBase
 {
     private readonly IFileService _files;
 
@@ -54,5 +53,4 @@ public class UserAssetsController : ControllerBase
         return NoContent();
     }
 
-    private long GetUserId() => long.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
 }

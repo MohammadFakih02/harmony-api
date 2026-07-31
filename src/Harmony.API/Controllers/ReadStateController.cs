@@ -1,4 +1,3 @@
-using System.Security.Claims;
 using Harmony.Application.DTOs.Requests;
 using Harmony.Application.DTOs.Responses;
 using Harmony.Application.Interfaces.Services;
@@ -12,7 +11,7 @@ namespace Harmony.API.Controllers;
 [ApiController]
 [Authorize]
 [EnableRateLimiting("api")]
-public class ReadStatesController : ControllerBase
+public class ReadStatesController : HarmonyControllerBase
 {
     private readonly IUnreadCountService _unread;
     private readonly IGuildRepository _guilds;
@@ -82,5 +81,4 @@ public class ReadStatesController : ControllerBase
         );
     }
 
-    private long GetUserId() => long.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
 }

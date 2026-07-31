@@ -1,4 +1,3 @@
-using System.Security.Claims;
 using Harmony.API.Filters;
 using Harmony.Application.DTOs.Requests;
 using Harmony.Application.Interfaces.Services;
@@ -19,7 +18,7 @@ namespace Harmony.API.Controllers;
 [Route("api/guilds/{guildId:long}/members")]
 [Authorize]
 [EnableRateLimiting("api")]
-public class GuildMembersController : ControllerBase
+public class GuildMembersController : HarmonyControllerBase
 {
     private readonly IGuildMemberService _members;
 
@@ -112,5 +111,4 @@ public class GuildMembersController : ControllerBase
         return NoContent();
     }
 
-    private long GetUserId() => long.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
 }

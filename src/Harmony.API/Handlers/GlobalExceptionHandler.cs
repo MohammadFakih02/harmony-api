@@ -53,6 +53,7 @@ public class GlobalExceptionHandler : IExceptionHandler
             || exception is UnauthorizedAccessException
             || exception is ArgumentException
             || exception is ValidationException
+            || exception is ConflictException
             || exception is InvalidOperationException
         )
         {
@@ -98,10 +99,7 @@ public class GlobalExceptionHandler : IExceptionHandler
                 "Service Unavailable (Circuit Open)"
             ),
 
-            InvalidOperationException ex when ex.Message.Contains("already") => (
-                StatusCodes.Status409Conflict,
-                "Conflict"
-            ),
+            ConflictException => (StatusCodes.Status409Conflict, "Conflict"),
             InvalidOperationException => (StatusCodes.Status400BadRequest, "Bad Request"),
             _ => (StatusCodes.Status500InternalServerError, "Server Error"),
         };

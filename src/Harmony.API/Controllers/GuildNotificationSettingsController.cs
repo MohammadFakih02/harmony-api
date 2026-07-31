@@ -1,4 +1,3 @@
-using System.Security.Claims;
 using Harmony.Application.DTOs.Requests;
 using Harmony.Application.DTOs.Responses;
 using Harmony.Application.Interfaces.Services;
@@ -20,7 +19,7 @@ namespace Harmony.API.Controllers;
 [Route("api/guilds/{guildId:long}")]
 [Authorize]
 [EnableRateLimiting("api")]
-public class GuildNotificationSettingsController : ControllerBase
+public class GuildNotificationSettingsController : HarmonyControllerBase
 {
     private readonly IGuildRepository _guilds;
     private readonly IChannelRepository _channels;
@@ -181,5 +180,4 @@ public class GuildNotificationSettingsController : ControllerBase
         return NoContent();
     }
 
-    private long GetUserId() => long.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
 }

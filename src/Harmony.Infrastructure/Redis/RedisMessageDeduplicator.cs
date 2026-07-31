@@ -19,7 +19,7 @@ namespace Harmony.Infrastructure.Redis;
 /// the command throws), the guard fails OPEN — the message is processed normally.
 /// This is intentional: losing deduplication briefly is far preferable to
 /// dropping messages. The ScyllaDB-level idempotency checks in
-/// <see cref="MessageConsumerHandler"/> act as the second line of defence.
+/// <see cref="Harmony.Infrastructure.RabbitMQ.MessageConsumerHandler"/> act as the second line of defence.
 /// </summary>
 public sealed class RedisMessageDeduplicator : IMessageDeduplicator
 {

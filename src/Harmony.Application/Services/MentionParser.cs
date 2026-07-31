@@ -10,7 +10,7 @@ namespace Harmony.Application.Services;
 /// set (rather than a fixed charset regex) lets multi-word nicknames and role names — which contain
 /// spaces — resolve, while the terminator rule keeps the old semantics intact: `@aliceandbob` does not
 /// partial-match `alice`, `@alice.com` (an email tail) matches nothing, and `@alice,` still matches
-/// `alice`. `@everyone`/`@here` are recognized as literal tokens only when <paramref name="guildContext"/>
+/// `alice`. `@everyone`/`@here` are recognized as literal tokens only when the <c>guildContext</c> flag
 /// is true (a DM has no guild to address). User matches beat role matches on an exact-length tie.
 /// </summary>
 public static class MentionParser

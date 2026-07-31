@@ -1,4 +1,3 @@
-using System.Security.Claims;
 using Harmony.API.Filters;
 using Harmony.Application.DTOs.Requests;
 using Harmony.Application.Interfaces.Services;
@@ -18,7 +17,7 @@ namespace Harmony.API.Controllers;
 [Route("api/guilds/{guildId:long}/{kind:regex(^(icon|banner)$)}")]
 [Authorize]
 [EnableRateLimiting("api")]
-public class GuildAssetsController : ControllerBase
+public class GuildAssetsController : HarmonyControllerBase
 {
     private readonly IFileService _files;
 
@@ -59,5 +58,4 @@ public class GuildAssetsController : ControllerBase
         return NoContent();
     }
 
-    private long GetUserId() => long.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
 }

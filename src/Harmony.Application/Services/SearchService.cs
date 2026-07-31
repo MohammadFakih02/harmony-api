@@ -48,19 +48,31 @@ public class SearchService : ISearchService
         long userId,
         long guildId,
         string query,
-        long? channelId,
+        SearchFilters filters,
         long? before,
         CancellationToken ct = default
     )
     {
         query = query?.Trim() ?? string.Empty;
-        if (query.Length == 0)
+        // Empty free text is a valid search when at least one operator filter is present
+        // ("from:alice", "has:link") — the filters do the narrowing. Only a truly empty request short-circuits.
+        if (query.Length == 0 && !HasAnyFilter(filters))
             return new SearchResultsResponse([], HasMore: false);
 
         if (!await _guilds.IsMemberAsync(guildId, userId))
             throw new UnauthorizedAccessException("You are not a member of this guild.");
 
-        var raw = await _search.SearchAsync(guildId, query, channelId, before, FetchLimit, ct);
+        var raw = await _search.SearchAsync(
+            guildId,
+            query,
+            filters.ChannelId,
+            filters.AuthorId,
+            filters.After,
+            filters.HasLink,
+            before,
+            FetchLimit,
+            ct
+        );
 
         // Keep hits in channels the caller can view. Cache the per-channel decision within the request
         // (many hits share a channel); IPermissionService also caches in Redis across requests.
@@ -126,12 +138,13 @@ public class SearchService : ISearchService
         long userId,
         long channelId,
         string query,
+        SearchFilters filters,
         long? before,
         CancellationToken ct = default
     )
     {
         query = query?.Trim() ?? string.Empty;
-        if (query.Length == 0)
+        if (query.Length == 0 && !HasAnyFilter(filters))
             return new SearchResultsResponse([], HasMore: false);
 
         // Participation IS the authorization — a guild channel has no dm_participants row, so this
@@ -141,7 +154,16 @@ public class SearchService : ISearchService
 
         // Single channel, no per-row visibility filtering — fetch exactly one page + 1 to know if
         // there's more.
-        var raw = await _search.SearchChannelAsync(channelId, query, before, PageSize + 1, ct);
+        var raw = await _search.SearchChannelAsync(
+            channelId,
+            query,
+            filters.AuthorId,
+            filters.After,
+            filters.HasLink,
+            before,
+            PageSize + 1,
+            ct
+        );
         var hasMore = raw.Count > PageSize;
         var page = hasMore ? raw.GetRange(0, PageSize) : raw;
 
@@ -168,4 +190,8 @@ public class SearchService : ISearchService
 
         return new SearchResultsResponse(results, hasMore);
     }
+
+    // An operators-only request (no free text) is still a real search if any filter narrows it.
+    private static bool HasAnyFilter(SearchFilters f) =>
+        f.ChannelId is not null || f.AuthorId is not null || f.After is not null || f.HasLink;
 }
