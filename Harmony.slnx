@@ -1,0 +1,12 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Harmony.API/Harmony.API.csproj" />
+    <Project Path="src/Harmony.Application/Harmony.Application.csproj" />
+    <Project Path="src/Harmony.Domain/Harmony.Domain.csproj" />
+    <Project Path="src/Harmony.Infrastructure/Harmony.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Harmony.IntegrationTests/Harmony.IntegrationTests.csproj" />
+    <Project Path="tests/Harmony.UnitTests/Harmony.UnitTests.csproj" />
+  </Folder>
+</Solution>

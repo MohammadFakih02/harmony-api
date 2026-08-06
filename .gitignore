@@ -427,3 +427,33 @@ FodyWeavers.xsd
 *.msix
 *.msm
 *.msp
+
+
+# Local secrets
+src/harmony.API/appsettings.Development.json
+
+# Docker local overrides and secrets
+docker/docker-compose.override.yml
+docker/.env
+
+# Published output
+publish/
+
+# Local secrets
+src/Harmony.API/appsettings.Development.json
+
+# Docker secrets
+docker/.env
+docker/docker-compose.override.yml
+
+# Published output
+publish/
+
+*.lscache
+
+repomix-output.xml
+
+HISTORY.md
+
+# Load-test fixture: real JWTs for throwaway seeded accounts (dev-only artifact).
+load-tests/users.json
