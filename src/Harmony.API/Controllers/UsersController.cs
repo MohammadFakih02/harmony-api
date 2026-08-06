@@ -23,6 +23,7 @@ public class UsersController : HarmonyControllerBase
     private readonly IUserBlockRepository _blocks;
     private readonly IFriendRepository _friends;
     private readonly IUserNicknameRepository _nicknames;
+    private readonly IDirectMessageRepository _dms;
     private readonly IHubBroadcaster _broadcaster;
 
     public UsersController(
@@ -32,6 +33,7 @@ public class UsersController : HarmonyControllerBase
         IUserBlockRepository blocks,
         IFriendRepository friends,
         IUserNicknameRepository nicknames,
+        IDirectMessageRepository dms,
         IHubBroadcaster broadcaster
     )
     {
@@ -41,6 +43,7 @@ public class UsersController : HarmonyControllerBase
         _blocks = blocks;
         _friends = friends;
         _nicknames = nicknames;
+        _dms = dms;
         _broadcaster = broadcaster;
     }
 
@@ -179,7 +182,40 @@ public class UsersController : HarmonyControllerBase
         user.DmPrivacy = DmPrivacy.Normalize(request.Audiences ?? []);
         await _users.SaveChangesAsync();
 
+        // My privacy gates who may message me in EXISTING 1:1 DMs too (the send-gate re-checks it),
+        // so nudge each 1:1 peer to re-evaluate their composer live instead of only on refresh.
+        await NotifyDmPeersGateChangedAsync(user.Id);
+
         return Ok(ToProfileResponse(user));
+    }
+
+    /// <summary>
+    /// Best-effort: broadcast <c>DmChannelUpdated</c> for each of the user's 1:1 DM channels so both
+    /// participants re-fetch the send-gate after a DM-privacy change. Bounded by the user's DM count
+    /// and gated to 1:1s (group DMs aren't privacy-gated). Never throws.
+    /// </summary>
+    private async Task NotifyDmPeersGateChangedAsync(long me)
+    {
+        try
+        {
+            var oneToOne = (await _dms.GetVisibleForUserAsync(me))
+                .Where(d => d.Type == "dm")
+                .Select(d => d.ChannelId)
+                .ToList();
+            if (oneToOne.Count == 0)
+                return;
+
+            var byChannel = await _dms.GetParticipantsForChannelsAsync(oneToOne);
+            foreach (var (channelId, participants) in byChannel)
+                await _broadcaster.BroadcastDmChannelUpdatedAsync(
+                    participants,
+                    new DmChannelUpdatedPayload(channelId)
+                );
+        }
+        catch
+        {
+            // swallow — the privacy change already saved; peers re-check on next refresh.
+        }
     }
 
     // PATCH /api/users/me/guild-order — the caller's personal guild-rail order.
@@ -322,6 +358,11 @@ public class UsersController : HarmonyControllerBase
             await _broadcaster.BroadcastFriendRemovedAsync(me, new FriendRemovedPayload(id));
         }
 
+        // If a 1:1 DM exists with the blocked user, nudge both sides to re-check their DM send-gate
+        // so the composer locks live (the newly-blocked user's client can't send anymore) instead
+        // of only after a refresh.
+        await NotifyDmGateChangedAsync(me, id);
+
         return NoContent();
     }
 
@@ -337,7 +378,33 @@ public class UsersController : HarmonyControllerBase
             await _blocks.SaveChangesAsync();
         }
 
+        // Unblocking re-opens the DM — nudge both sides to re-check the send-gate so the composer
+        // unlocks live rather than staying disabled until a refresh.
+        await NotifyDmGateChangedAsync(me, id);
+
         return NoContent();
+    }
+
+    /// <summary>
+    /// Best-effort: if the two users share a 1:1 DM channel, broadcast <c>DmChannelUpdated</c> to
+    /// both so their open composers re-fetch the send-gate (block/privacy changes take effect live).
+    /// Never throws — a signalling hiccup must not fail the block/unblock itself.
+    /// </summary>
+    private async Task NotifyDmGateChangedAsync(long me, long other)
+    {
+        try
+        {
+            var channelId = await _dms.GetSharedChannelIdAsync(me, other);
+            if (channelId is { } id)
+                await _broadcaster.BroadcastDmChannelUpdatedAsync(
+                    new[] { me, other },
+                    new DmChannelUpdatedPayload(id)
+                );
+        }
+        catch
+        {
+            // swallow — the block/unblock already succeeded; the peer re-checks on next refresh.
+        }
     }
 
     // GET /api/users/me/blocks
