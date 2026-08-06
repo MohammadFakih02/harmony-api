@@ -1,0 +1,1163 @@
+using Harmony.Application.DTOs.Requests;
+using Harmony.Application.DTOs.Responses;
+using Harmony.Application.Hubs;
+using Harmony.Application.Interfaces.Services;
+using Harmony.Application.Services;
+using Harmony.Domain.Domain.Entities;
+using Harmony.Domain.Domain.Enums;
+using Harmony.Domain.Interfaces;
+using Harmony.Domain.Interfaces.Repositories;
+using Harmony.Domain.Interfaces.Services;
+using Polly.CircuitBreaker;
+
+namespace Harmony.Application.Services;
+
+public class MessageService : IMessageService
+{
+    private readonly IChannelRepository _channelRepository;
+    private readonly IGuildRepository _guildRepository;
+    private readonly IMessagePublisher _publisher;
+    private readonly ISnowflakeIdGenerator _snowflake;
+    private readonly IMessageRepository _messageRepository;
+    private readonly IUserRepository _userRepository;
+    private readonly IPermissionService _permissions;
+    private readonly IFileAttachmentRepository _attachments;
+    private readonly IDirectMessageRepository _dms;
+    private readonly IUserBlockRepository _blocks;
+    private readonly IFriendRepository _friends;
+    private readonly IPresenceService _presence;
+    private readonly IAuditLogService _auditLog;
+    private readonly IHubBroadcaster _broadcaster;
+    private readonly IRoleRepository _roles;
+    private readonly ISlowmodeGate _slowmode;
+    private readonly IMessageReactionRepository _reactions;
+    private readonly IFileStorageService _storage;
+
+    /// <summary>Max attachments per message (Discord parity).</summary>
+    public const int MaxAttachments = 10;
+
+    /// <summary>Max pinned messages per channel (Discord parity).</summary>
+    public const int MaxPinsPerChannel = 50;
+
+    public MessageService(
+        IChannelRepository channelRepository,
+        IGuildRepository guildRepository,
+        IMessagePublisher publisher,
+        ISnowflakeIdGenerator snowflake,
+        IMessageRepository messageRepository,
+        IUserRepository userRepository,
+        IPermissionService permissions,
+        IFileAttachmentRepository attachments,
+        IDirectMessageRepository dms,
+        IUserBlockRepository blocks,
+        IFriendRepository friends,
+        IPresenceService presence,
+        IAuditLogService auditLog,
+        IHubBroadcaster broadcaster,
+        IRoleRepository roles,
+        ISlowmodeGate slowmode,
+        IMessageReactionRepository reactions,
+        IFileStorageService storage
+    )
+    {
+        _channelRepository = channelRepository;
+        _guildRepository = guildRepository;
+        _publisher = publisher;
+        _snowflake = snowflake;
+        _messageRepository = messageRepository;
+        _userRepository = userRepository;
+        _permissions = permissions;
+        _attachments = attachments;
+        _dms = dms;
+        _blocks = blocks;
+        _friends = friends;
+        _presence = presence;
+        _auditLog = auditLog;
+        _broadcaster = broadcaster;
+        _roles = roles;
+        _slowmode = slowmode;
+        _reactions = reactions;
+        _storage = storage;
+    }
+
+    /// <summary>
+    /// Server-side `@mention` detection (NON-NEGOTIABLE #8 — never trust client-provided ids).
+    /// Resolves candidates scoped to the channel's actual participants: guild members (by username
+    /// AND server nickname) plus the guild's roles, or — in a DM — just the peer's username. Then
+    /// expands broadcast/role mentions: `@everyone`/`@here` if the actor holds `MentionEveryone`, and
+    /// a `@role` into that role's members if the role `IsMentionable` OR the actor holds
+    /// `MentionEveryone`. If the actor lacks the permission the literal text is simply not expanded;
+    /// mentions are a notification side effect and must never block the send.
+    /// </summary>
+    /// <summary>
+    /// The resolved recipients of a message's mentions: <see cref="All"/> is every notified user id;
+    /// <see cref="EveryoneOnly"/> is the subset reached ONLY through @everyone/@here (i.e. not a direct
+    /// @user and not via a @role) — the notification layer uses it to honour a suppress-@everyone opt-out
+    /// without dropping direct mentions.
+    /// </summary>
+    private sealed record ResolvedMentions(List<long> All, HashSet<long> EveryoneOnly);
+
+    private async Task<ResolvedMentions> ResolveMentionsAsync(
+        string content,
+        long? guildId,
+        long channelId,
+        long actorId,
+        CancellationToken ct
+    )
+    {
+        // Everything below is setup for MentionParser, and the parser ignores every character that
+        // isn't '@'. So a message with no '@' cannot produce a mention, an @everyone, an @here or a
+        // @role — yet resolving one still costs four round-trips on the send hot path: every member
+        // id, every member's User row, every GuildMember row again (for nicknames), and every role.
+        // The overwhelming majority of messages contain no '@' at all.
+        if (!content.Contains('@'))
+            return new ResolvedMentions([], []);
+
+        var guildContext = guildId.HasValue;
+        var candidateIds = guildContext
+            ? await _guildRepository.GetMemberIdsAsync(guildId!.Value)
+            : await _dms.GetParticipantIdsAsync(channelId);
+
+        var users = await _userRepository.GetByIdsAsync(candidateIds);
+        // name -> userId: usernames first, then (guild only) server nicknames on top — so a member
+        // is mentionable by either. Last write wins on a collision (a harmless edge).
+        var usersByNameLower = new Dictionary<string, long>();
+        foreach (var u in users.Values)
+            if (u.UserName is not null)
+                usersByNameLower[u.UserName.ToLowerInvariant()] = u.Id;
+
+        List<Role> roles = [];
+        Dictionary<string, long>? rolesByNameLower = null;
+        if (guildContext)
+        {
+            var members = await _guildRepository.GetMembersAsync(guildId!.Value);
+            foreach (var m in members)
+                if (!string.IsNullOrWhiteSpace(m.Nickname))
+                    usersByNameLower[m.Nickname.ToLowerInvariant()] = m.UserId;
+
+            roles = await _roles.GetByGuildAsync(guildId.Value);
+            rolesByNameLower = new Dictionary<string, long>();
+            foreach (var r in roles)
+                // The default (@everyone) role is addressed via the literal @everyone token, not by name.
+                if (!r.IsDefault)
+                    rolesByNameLower[r.Name.ToLowerInvariant()] = r.Id;
+        }
+
+        var parsed = MentionParser.Parse(content, usersByNameLower, guildContext, rolesByNameLower);
+        var mentionIds = parsed.UserIds;
+
+        if (!guildContext)
+            return new ResolvedMentions(mentionIds.ToList(), new HashSet<long>());
+
+        // Direct @user mentions snapshotted before any broadcast/role expansion — these are never
+        // suppressible, so they're subtracted from the everyone-origin set at the end.
+        var direct = new HashSet<long>(parsed.UserIds);
+        var everyoneAdded = new HashSet<long>();
+        var roleAdded = new HashSet<long>();
+
+        // MentionEveryone is the shared gate for @everyone/@here AND non-mentionable roles — resolve
+        // it once, only if some broadcast/role expansion is actually needed.
+        var needsPermission =
+            parsed.Everyone || parsed.Here || parsed.RoleIds.Count > 0;
+        var canMentionEveryone =
+            needsPermission
+            && await _permissions.HasAsync(
+                actorId,
+                guildId!.Value,
+                Permission.MentionEveryone,
+                channelId,
+                ct
+            );
+
+        if (parsed.Everyone && canMentionEveryone)
+        {
+            foreach (var id in candidateIds)
+            {
+                mentionIds.Add(id);
+                everyoneAdded.Add(id);
+            }
+        }
+        else if (parsed.Here && canMentionEveryone)
+        {
+            var statuses = await _presence.GetStatusesAsync(candidateIds, ct);
+            foreach (var id in candidateIds)
+                if (statuses.TryGetValue(id, out var status) && status != "offline")
+                {
+                    mentionIds.Add(id);
+                    everyoneAdded.Add(id);
+                }
+        }
+
+        if (parsed.RoleIds.Count > 0)
+        {
+            var rolesById = roles.ToDictionary(r => r.Id);
+            foreach (var roleId in parsed.RoleIds)
+            {
+                if (!rolesById.TryGetValue(roleId, out var role))
+                    continue;
+                if (!role.IsMentionable && !canMentionEveryone)
+                    continue;
+                foreach (var memberId in await _roles.GetMemberIdsWithRoleAsync(guildId!.Value, roleId))
+                {
+                    mentionIds.Add(memberId);
+                    roleAdded.Add(memberId);
+                }
+            }
+        }
+
+        // Everyone-origin = reached by @everyone/@here but neither directly @mentioned nor role-mentioned.
+        everyoneAdded.ExceptWith(direct);
+        everyoneAdded.ExceptWith(roleAdded);
+
+        return new ResolvedMentions(mentionIds.ToList(), everyoneAdded);
+    }
+
+    public async Task<SendMessageResponse> SendMessageAsync(
+        long userId,
+        long? guildId,
+        long channelId,
+        SendMessageRequest request,
+        CancellationToken ct = default,
+        MessageForwardSnapshot? forward = null
+    )
+    {
+        // Slowmode context, captured in the guild branch and consumed just before publish (after
+        // every validation) so an invalid send never burns the sender's cooldown slot.
+        var slowmodeSeconds = 0;
+        var slowmodeExempt = true;
+
+        if (guildId is { } gid)
+        {
+            // Verify channel exists and belongs to guild natively via repository
+            var channel = await _channelRepository.GetByIdAndGuildIdAsync(channelId, gid);
+            if (channel is null)
+                throw new KeyNotFoundException("Channel not found.");
+
+            // Authorize: the caller must be able to view AND send in this channel. Resolved bits
+            // apply the channel's overrides; non-members resolve to 0, so this subsumes the old
+            // membership check. (ViewChannel | SendMessage are both in the @everyone default set.)
+            const long sendMask = (long)(Permission.ViewChannel | Permission.SendMessage);
+            var bits = await _permissions.ResolveAsync(userId, gid, channelId, ct);
+            if ((bits & sendMask) != sendMask)
+                throw new UnauthorizedAccessException(
+                    "You do not have permission to send messages in this channel."
+                );
+
+            // A reply additionally requires the SendReply bit (in the @everyone default set, so
+            // this only bites when a role/override explicitly removes it).
+            if (request.ReplyToId is not null && (bits & (long)Permission.SendReply) == 0)
+                throw new UnauthorizedAccessException(
+                    "You do not have permission to reply in this channel."
+                );
+
+            // Timeout gate (deliberately excluded from the cached resolver, §27): a member whose
+            // CommunicationDisabledUntil is in the future cannot send, even with the permission.
+            var member = await _guildRepository.GetMemberAsync(gid, userId);
+            if (member?.CommunicationDisabledUntil is { } until
+                && until > DateTimeOffset.UtcNow.ToUnixTimeMilliseconds())
+                throw new UnauthorizedAccessException("You are timed out and cannot send messages.");
+
+            // Slowmode applies to plain members only — moderators (ManageMessages or ManageChannels,
+            // and therefore owner/Administrator via the resolver) are exempt, Discord-style.
+            slowmodeSeconds = channel.SlowmodeSeconds;
+            slowmodeExempt =
+                (bits & (long)(Permission.ManageMessages | Permission.ManageChannels)) != 0;
+        }
+        else
+        {
+            // DM: no guild permissions — the caller must be a participant of the DM channel and
+            // must not be blocked by (or blocking) the peer. Throws 404/403 as appropriate.
+            await AuthorizeDmSendAsync(userId, channelId);
+        }
+
+        // Validate attachments: each must exist, be confirmed, be owned by the sender, and belong to
+        // THIS channel (never trust client-provided ids — NON-NEGOTIABLE #8). Capped per message.
+        var attachmentIds = request.AttachmentIds ?? [];
+        if (attachmentIds.Count > MaxAttachments)
+            throw new ArgumentException($"A message may have at most {MaxAttachments} attachments.");
+
+        foreach (var attachmentId in attachmentIds)
+        {
+            var attachment = await _attachments.GetByIdAsync(attachmentId);
+            if (attachment is null || !attachment.IsConfirmed)
+                throw new ArgumentException("Attachment not found or not confirmed.");
+            if (attachment.UploaderId != userId)
+                throw new UnauthorizedAccessException("You can only attach files you uploaded.");
+            // ChannelId uniquely identifies the container (guild channel or DM), so it is the
+            // authoritative scope check for both guild messages and DMs.
+            if (attachment.ChannelId != channelId)
+                throw new ArgumentException("Attachment does not belong to this channel.");
+        }
+
+        // Content is required UNLESS the message carries at least one attachment (image-only
+        // message) OR is a forward (the attributed snapshot is itself the content).
+        var content = request.Content ?? string.Empty;
+        if (content.Length > 2000)
+            throw new ArgumentException("Message content must be 2000 characters or fewer.");
+        if (string.IsNullOrWhiteSpace(content) && attachmentIds.Count == 0 && forward is null)
+            throw new ArgumentException("Message must have content or at least one attachment.");
+
+        // Slowmode — consumed last so only a send that would otherwise succeed claims the slot.
+        if (slowmodeSeconds > 0 && !slowmodeExempt
+            && !await _slowmode.TryConsumeAsync(channelId, userId, slowmodeSeconds, ct))
+            throw new UnauthorizedAccessException(
+                $"Slowmode is enabled — you can send a message every {slowmodeSeconds}s in this channel."
+            );
+
+        var messageId = _snowflake.NextId();
+        var sentAt = DateTimeOffset.UtcNow;
+        var resolved = await ResolveMentionsAsync(content, guildId, channelId, userId, ct);
+        var mentionIds = resolved.All;
+
+        // Idempotency token: opaque, never trusted, only echoed back for the sender's reconcile.
+        // Cap the length so a hostile client can't bloat the event/broadcast payload.
+        var nonce = request.Nonce is { Length: > 0 and <= 64 } n ? n : null;
+
+        await _publisher.PublishMessageSentAsync(
+            new MessageSentEvent(
+                MessageId: messageId,
+                ChannelId: channelId,
+                GuildId: guildId,
+                UserId: userId,
+                Content: content,
+                // User sends are always "text"; system notices go through PublishSystemMessageAsync.
+                MessageType: "text",
+                AttachmentIds: attachmentIds,
+                MentionIds: mentionIds,
+                ReplyToId: request.ReplyToId,
+                SentAt: sentAt,
+                EveryoneMentionIds: resolved.EveryoneOnly.ToList(),
+                Forward: forward,
+                Nonce: nonce
+            ),
+            ct
+        );
+
+        // A new message resurfaces a DM that either participant had hidden (§19).
+        if (guildId is null)
+            await _dms.UnhideAllAsync(channelId);
+
+        return new SendMessageResponse(
+            MessageId: messageId,
+            ChannelId: channelId,
+            GuildId: guildId,
+            UserId: userId,
+            Content: content,
+            MessageType: "text",
+            ReplyToId: request.ReplyToId,
+            MentionIds: mentionIds,
+            AttachmentIds: attachmentIds,
+            SentAt: sentAt.ToUnixTimeMilliseconds()
+        );
+    }
+
+    /// <inheritdoc />
+    public async Task<SendMessageResponse> ForwardMessageAsync(
+        long userId,
+        long? guildId,
+        long channelId,
+        ForwardMessageRequest request,
+        CancellationToken ct = default
+    )
+    {
+        // Read the original. A forward of a missing/deleted message is meaningless.
+        var source = await _messageRepository.GetByIdAsync(request.SourceMessageId, ct);
+        if (source is null || source.IsDeleted)
+            throw new KeyNotFoundException("The message being forwarded no longer exists.");
+        if (source.ChannelId != request.SourceChannelId)
+            throw new ArgumentException("Source channel does not match the forwarded message.");
+
+        // Authorize that the forwarder can actually SEE the source (never leak a message across a
+        // permission or DM boundary — NON-NEGOTIABLE #8). Guild channel → ViewChannel; DM → participant.
+        var sourceChannel = await _channelRepository.GetByIdAsync(source.ChannelId);
+        if (sourceChannel is null)
+            throw new KeyNotFoundException("The message being forwarded no longer exists.");
+        if (sourceChannel.GuildId is { } sourceGuildId)
+        {
+            if (!await _permissions.HasAsync(
+                    userId, sourceGuildId, Permission.ViewChannel, source.ChannelId, ct))
+                throw new UnauthorizedAccessException("You cannot forward a message you cannot see.");
+        }
+        else if (!await _dms.IsParticipantAsync(source.ChannelId, userId))
+            throw new UnauthorizedAccessException("You cannot forward a message you cannot see.");
+
+        // Build the server-authoritative snapshot: the original author (resolved server-side),
+        // their content, and when it was sent. The client supplied none of this.
+        var author = await _userRepository.GetByIdAsync(source.UserId);
+        var snapshot = new MessageForwardSnapshot(
+            AuthorId: source.UserId,
+            AuthorName: author?.UserName ?? "Unknown",
+            Content: source.Content,
+            SentAt: ((DateTimeOffset)source.CreatedAt).ToUnixTimeMilliseconds()
+        );
+
+        // Send into the target through the normal path (full target authz + attachment ownership).
+        // The optional note becomes the message content; the snapshot rides alongside.
+        var sendRequest = new SendMessageRequest(
+            Content: request.Note ?? string.Empty,
+            ReplyToId: null,
+            AttachmentIds: request.AttachmentIds
+        );
+        return await SendMessageAsync(userId, guildId, channelId, sendRequest, ct, snapshot);
+    }
+
+    /// <inheritdoc />
+    public async Task<long> PublishSystemMessageAsync(
+        long? guildId,
+        long channelId,
+        long authorUserId,
+        string messageType,
+        string content,
+        CancellationToken ct = default
+    )
+    {
+        var messageId = _snowflake.NextId();
+
+        await _publisher.PublishMessageSentAsync(
+            new MessageSentEvent(
+                MessageId: messageId,
+                ChannelId: channelId,
+                GuildId: guildId,
+                UserId: authorUserId,
+                Content: content,
+                MessageType: messageType,
+                AttachmentIds: [],
+                MentionIds: [],
+                ReplyToId: null,
+                SentAt: DateTimeOffset.UtcNow
+            ),
+            ct
+        );
+
+        return messageId;
+    }
+
+    public async Task DeleteMessageAsync(
+        long userId,
+        long? guildId,
+        long channelId,
+        long messageId,
+        CancellationToken ct = default
+    )
+    {
+        if (guildId is { } gid)
+        {
+            var channel = await _channelRepository.GetByIdAndGuildIdAsync(channelId, gid);
+            if (channel is null)
+                throw new KeyNotFoundException("Channel not found.");
+        }
+        else
+        {
+            await GetDmChannelOrThrowAsync(channelId);
+        }
+
+        var message = await _messageRepository.GetByIdAsync(messageId, ct);
+        if (message is null)
+            throw new KeyNotFoundException("Message not found.");
+
+        // CRITICAL SECURITY FIX: Prevent cross-channel message deletion
+        if (message.ChannelId != channelId)
+            throw new UnauthorizedAccessException(
+                "Message does not belong to the specified channel."
+            );
+
+        // You may always delete your own message. In a guild, deleting another's requires
+        // ManageMessages (owners/administrators resolve to all bits). A DM has no moderators,
+        // so only the author may delete — and only a participant could own a message anyway.
+        var isModeratorDelete = false;
+        if (message.UserId != userId)
+        {
+            if (guildId is { } mgid
+                && await _permissions.HasAsync(userId, mgid, Permission.ManageMessages, channelId, ct))
+            {
+                // moderator delete — allowed
+                isModeratorDelete = true;
+            }
+            else
+            {
+                throw new UnauthorizedAccessException(
+                    "You do not have permission to delete this message."
+                );
+            }
+        }
+
+        // 1. Synchronously update ScyllaDB
+        await _messageRepository.DeleteAsync(messageId, channelId, ct);
+
+        // 1b. A deleted message can no longer be pinned — drop any pin row so the pins panel and
+        //     the 50-cap stay honest. Idempotent (a tombstone if it wasn't pinned) and best-effort:
+        //     a leftover pin row is harmless (bounded by the cap, purged on channel delete), and the
+        //     client already drops the pin locally off the MessageDeleted broadcast.
+        try
+        {
+            await _messageRepository.UnpinAsync(channelId, messageId, ct);
+        }
+        catch
+        {
+            // ignore — pin cleanup must never fail an otherwise-successful delete
+        }
+
+        // 1c. Reclaim the message's attachments — the rows AND the stored objects. Nothing else can
+        //     reference them: a send validates every attachment as uploader-owned and scoped to this
+        //     exact channel, and a forward re-uploads its own copies under fresh keys, so no other
+        //     message shares these objects. Without this, deleting a message left the bytes in the
+        //     bucket forever — the OrphanFileSweep only collects *unconfirmed* rows, and these are
+        //     confirmed. Best-effort, like the pin cleanup above: the message is already gone, so a
+        //     storage hiccup must not turn a successful delete into a 500.
+        if (message.AttachmentIds.Count > 0)
+        {
+            try
+            {
+                var attachments = new List<FileAttachment>();
+                foreach (var attachmentId in message.AttachmentIds)
+                {
+                    if (await _attachments.GetByIdAsync(attachmentId) is { } attachment)
+                        attachments.Add(attachment);
+                }
+
+                foreach (var attachment in attachments)
+                {
+                    try
+                    {
+                        await _storage.DeleteObjectAsync(attachment.MinioKey, ct);
+                        if (attachment.ThumbnailKey is { } thumbKey)
+                            await _storage.DeleteObjectAsync(thumbKey, ct);
+                    }
+                    catch
+                    {
+                        // Drop the row regardless: a leftover object is reclaimable by a bucket
+                        // lifecycle rule, a leftover row would never be retried by anything.
+                    }
+                }
+
+                if (attachments.Count > 0)
+                {
+                    _attachments.RemoveRange(attachments);
+                    await _attachments.SaveChangesAsync();
+                }
+            }
+            catch
+            {
+                // ignore — attachment cleanup must never fail an otherwise-successful delete
+            }
+        }
+
+        // 2. Publish event to background queues (search index update)
+        await _publisher.PublishMessageDeletedAsync(
+            new MessageDeletedEvent(
+                MessageId: messageId,
+                ChannelId: channelId,
+                GuildId: guildId,
+                DeletedByUserId: userId,
+                DeletedAt: DateTimeOffset.UtcNow
+            ),
+            ct
+        );
+
+        // 3. Audit only a *moderator* deleting someone else's message (flow #12). Own-message
+        //    deletes and DMs (no guild, no moderators) write nothing. Best-effort by contract.
+        if (isModeratorDelete && guildId is { } agid)
+        {
+            await _auditLog.LogAsync(
+                agid,
+                userId,
+                AuditLogAction.MessageDelete,
+                targetId: messageId,
+                changes: new { channelId, authorId = message.UserId },
+                ct: ct
+            );
+        }
+    }
+
+    public async Task EditMessageAsync(
+        long userId,
+        long? guildId,
+        long channelId,
+        long messageId,
+        EditMessageRequest request,
+        CancellationToken ct = default
+    )
+    {
+        // Edit is own-message-only for both guild and DM (ownership implies participation),
+        // so no guild/DM authorization branch is needed beyond the author check below.
+        if (string.IsNullOrWhiteSpace(request.Content) || request.Content.Length > 2000)
+            throw new ArgumentException("Message content must be between 1 and 2000 characters.");
+
+        var message = await _messageRepository.GetByIdAsync(messageId, ct);
+        if (message is null)
+            throw new KeyNotFoundException("Message not found.");
+
+        // CRITICAL SECURITY FIX: Prevent cross-channel message editing
+        if (message.ChannelId != channelId)
+            throw new UnauthorizedAccessException(
+                "Message does not belong to the specified channel."
+            );
+
+        if (message.UserId != userId)
+            throw new UnauthorizedAccessException("You can only edit your own messages.");
+
+        // An edit re-posts content, so it must clear the same posting gate as a send — otherwise a
+        // timed-out member, or one whose SendMessage bit was revoked by a channel override, could
+        // bypass the block by rewriting an old message. Mirrors SendMessageAsync (minus slowmode:
+        // an edit doesn't claim a cooldown slot). Own-message ownership already implies participation.
+        if (guildId is { } gid)
+        {
+            const long sendMask = (long)(Permission.ViewChannel | Permission.SendMessage);
+            var bits = await _permissions.ResolveAsync(userId, gid, channelId, ct);
+            if ((bits & sendMask) != sendMask)
+                throw new UnauthorizedAccessException(
+                    "You do not have permission to edit messages in this channel."
+                );
+
+            var member = await _guildRepository.GetMemberAsync(gid, userId);
+            if (member?.CommunicationDisabledUntil is { } until
+                && until > DateTimeOffset.UtcNow.ToUnixTimeMilliseconds())
+                throw new UnauthorizedAccessException("You are timed out and cannot edit messages.");
+        }
+        else
+        {
+            // DM: same participant + not-blocked gate as sending (blocking hides the peer AND
+            // blocks new content, edits included).
+            await AuthorizeDmSendAsync(userId, channelId);
+        }
+
+        // Capture the pre-edit mention set BEFORE overwriting Scylla — the consumer diffs
+        // against this to notify only newly-added mentions. (It can't read the old set
+        // itself: by the time it runs, the synchronous EditAsync below has replaced it.)
+        var oldMentionIds = message.MentionIds.ToList();
+
+        // Mentions are re-detected on every edit; the consumer notifies users newly added.
+        var resolved = await ResolveMentionsAsync(request.Content, guildId, channelId, userId, ct);
+        var mentionIds = resolved.All;
+
+        // 1. Synchronously update ScyllaDB
+        await _messageRepository.EditAsync(messageId, channelId, request.Content, mentionIds, ct);
+
+        // Only @everyone-origin recipients that are NEWLY added by this edit can be suppressed —
+        // matches the consumer's newly-mentioned diff, so an already-pinged user isn't reconsidered.
+        var newEveryone = resolved.EveryoneOnly.Except(oldMentionIds).ToList();
+
+        // 2. Publish event to background queues (search index update)
+        await _publisher.PublishMessageEditedAsync(
+            new MessageEditedEvent(
+                MessageId: messageId,
+                ChannelId: channelId,
+                GuildId: guildId,
+                EditedByUserId: userId,
+                NewContent: request.Content,
+                MentionIds: mentionIds,
+                OldMentionIds: oldMentionIds,
+                EditedAt: DateTimeOffset.UtcNow,
+                EveryoneMentionIds: newEveryone
+            ),
+            ct
+        );
+    }
+
+    public async Task<ChannelMessagesResponse> GetChannelMessagesAsync(
+        long userId,
+        long? guildId,
+        long channelId,
+        int limit = 50,
+        long? beforeMessageId = null,
+        long? aroundMessageId = null,
+        long? afterMessageId = null,
+        CancellationToken ct = default
+    )
+    {
+        if (guildId is { } gid)
+        {
+            var channel = await _channelRepository.GetByIdAndGuildIdAsync(channelId, gid);
+            if (channel is null)
+                throw new KeyNotFoundException("Channel not found.");
+
+            // Authorize: viewing channel history requires ViewChannel + ReadHistory (both in the
+            // @everyone default). Channel overrides apply; non-members resolve to 0.
+            const long readMask = (long)(Permission.ViewChannel | Permission.ReadHistory);
+            var bits = await _permissions.ResolveAsync(userId, gid, channelId, ct);
+            if ((bits & readMask) != readMask)
+                throw new UnauthorizedAccessException(
+                    "You do not have permission to view this channel."
+                );
+        }
+        else
+        {
+            // DM: must be a participant. (Reading history is allowed even if blocked — blocking
+            // hides the peer client-side; it doesn't revoke access to your own conversation.)
+            await GetDmChannelOrThrowAsync(channelId);
+            if (!await _dms.IsParticipantAsync(channelId, userId))
+                throw new UnauthorizedAccessException("You are not a participant of this conversation.");
+        }
+
+        limit = Math.Clamp(limit, 1, 100);
+
+        // Remaining slowmode cooldown for the caller — only on a latest/open load (no cursor), so the
+        // client can restore the countdown timer on channel open (it's lost on leave/rejoin otherwise).
+        // Guild channels only; the client gates its own display on whether slowmode applies to it.
+        var slowmodeRemaining =
+            guildId is not null
+            && beforeMessageId is null
+            && aroundMessageId is null
+            && afterMessageId is null
+                ? await _slowmode.GetRemainingSecondsAsync(channelId, userId, ct)
+                : 0;
+
+        try
+        {
+            // Cursor precedence (mutually exclusive from the client): a jump target (around) loads a
+            // window centred on that message; after = scroll-down "load newer"; else the before page.
+            IEnumerable<Message> messages;
+            if (aroundMessageId is { } around)
+                messages = await _messageRepository.GetMessagesAroundAsync(channelId, around, limit, ct);
+            else if (afterMessageId is { } after)
+                messages = await _messageRepository.GetMessagesAfterAsync(channelId, after, limit, ct);
+            else
+                messages = await _messageRepository.GetChannelMessagesAsync(
+                    channelId,
+                    limit,
+                    beforeMessageId,
+                    ct
+                );
+
+            var messageList = messages as IReadOnlyList<Message> ?? messages.ToList();
+            var userIds = messageList.Select(m => m.UserId).Distinct();
+            var users = await _userRepository.GetByIdsAsync(userIds);
+            var reactions = await _reactions.GetSummariesAsync(
+                messageList.Select(m => m.MessageId),
+                userId,
+                ct
+            );
+
+            return new ChannelMessagesResponse(
+                messageList.Select(m => MapMessage(m, guildId, users, reactions)),
+                Degraded: false,
+                SlowmodeRemainingSeconds: slowmodeRemaining
+            );
+        }
+        catch (BrokenCircuitException)
+        {
+            return new ChannelMessagesResponse([], Degraded: true, SlowmodeRemainingSeconds: slowmodeRemaining);
+        }
+    }
+
+    /// <summary>
+    /// Projects a Scylla <see cref="Message"/> into the wire <see cref="MessageResponse"/>, resolving
+    /// the sender's identity from a pre-fetched batch (no N+1). <paramref name="guildId"/> is the
+    /// request scope (null for DMs) — a message row doesn't carry its guild. Shared by the channel
+    /// history read and the pins list so both render identically.
+    /// </summary>
+    private static MessageResponse MapMessage(
+        Message m,
+        long? guildId,
+        Dictionary<long, User> users,
+        Dictionary<long, List<ReactionSummary>> reactions
+    )
+    {
+        users.TryGetValue(m.UserId, out var user);
+        var msgReactions =
+            !m.IsDeleted && reactions.TryGetValue(m.MessageId, out var rs)
+                ? rs.Select(r => new ReactionSummaryResponse(r.Emoji, r.Count, r.MeReacted)).ToList()
+                : (IReadOnlyList<ReactionSummaryResponse>)[];
+        return new MessageResponse(
+            MessageId: m.MessageId,
+            ChannelId: m.ChannelId,
+            GuildId: guildId,
+            UserId: m.UserId,
+            Username: user?.UserName ?? "Unknown",
+            AvatarKey: user?.AvatarKey,
+            Content: m.IsDeleted ? string.Empty : m.Content,
+            MessageType: m.MessageType,
+            IsDeleted: m.IsDeleted,
+            IsEdited: m.IsEdited,
+            ReplyToId: m.ReplyToId,
+            MentionIds: m.IsDeleted ? [] : m.MentionIds,
+            AttachmentIds: m.IsDeleted ? [] : m.AttachmentIds,
+            SentAt: ((DateTimeOffset)m.CreatedAt).ToUnixTimeMilliseconds(),
+            EditedAt: m.EditedAt.HasValue
+                ? ((DateTimeOffset)m.EditedAt.Value).ToUnixTimeMilliseconds()
+                : null,
+            Reactions: msgReactions,
+            Forward: m.IsDeleted || m.Forward is null
+                ? null
+                : new ForwardSnapshotResponse(
+                    m.Forward.AuthorId, m.Forward.AuthorName, m.Forward.Content, m.Forward.SentAt)
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // Pins
+    // -------------------------------------------------------------------------
+
+    public async Task PinMessageAsync(
+        long userId,
+        long? guildId,
+        long channelId,
+        long messageId,
+        CancellationToken ct = default
+    )
+    {
+        await AuthorizePinActionAsync(userId, guildId, channelId, ct);
+
+        var message = await _messageRepository.GetByIdAsync(messageId, ct);
+        if (message is null)
+            throw new KeyNotFoundException("Message not found.");
+        if (message.ChannelId != channelId)
+            throw new UnauthorizedAccessException(
+                "Message does not belong to the specified channel."
+            );
+        if (message.IsDeleted)
+            throw new ArgumentException("You cannot pin a deleted message.");
+
+        var pinned = (await _messageRepository.GetPinnedAsync(channelId, ct)).ToList();
+        // Idempotent: the pin's clustering key IS the message id, so re-pinning is a harmless
+        // upsert — short-circuit so it neither errors on the cap nor duplicates the side effects.
+        if (pinned.Any(p => p.MessageId == messageId))
+            return;
+        if (pinned.Count >= MaxPinsPerChannel)
+            throw new ArgumentException(
+                $"This channel has reached the maximum of {MaxPinsPerChannel} pins."
+            );
+
+        await _messageRepository.PinAsync(channelId, messageId, userId, ct);
+
+        // Guild only: post a "pinned a message" system notice (author = the pinner) and audit.
+        // DMs have neither system-message infra nor an audit log.
+        if (guildId is { } gid)
+        {
+            await PublishSystemMessageAsync(gid, channelId, userId, "pin", string.Empty, ct);
+            await _auditLog.LogAsync(
+                gid,
+                userId,
+                AuditLogAction.MessagePin,
+                targetId: messageId,
+                changes: new { channelId },
+                ct: ct
+            );
+        }
+
+        await _broadcaster.BroadcastMessagePinnedAsync(new MessagePinPayload(messageId, channelId), ct);
+    }
+
+    public async Task UnpinMessageAsync(
+        long userId,
+        long? guildId,
+        long channelId,
+        long messageId,
+        CancellationToken ct = default
+    )
+    {
+        await AuthorizePinActionAsync(userId, guildId, channelId, ct);
+
+        // pinned_at == messageId (the pin's clustering key), so unpin keys on the message id.
+        // Idempotent — a DELETE on an absent clustering key is a harmless tombstone.
+        await _messageRepository.UnpinAsync(channelId, messageId, ct);
+
+        if (guildId is { } gid)
+        {
+            await _auditLog.LogAsync(
+                gid,
+                userId,
+                AuditLogAction.MessageUnpin,
+                targetId: messageId,
+                changes: new { channelId },
+                ct: ct
+            );
+        }
+
+        await _broadcaster.BroadcastMessageUnpinnedAsync(new MessagePinPayload(messageId, channelId), ct);
+    }
+
+    public async Task<IReadOnlyList<PinnedMessageResponse>> GetPinsAsync(
+        long userId,
+        long? guildId,
+        long channelId,
+        CancellationToken ct = default
+    )
+    {
+        // Read authorization mirrors GetChannelMessagesAsync: guild → ViewChannel + ReadHistory
+        // (overrides apply); DM → participant.
+        if (guildId is { } gid)
+        {
+            var channel = await _channelRepository.GetByIdAndGuildIdAsync(channelId, gid);
+            if (channel is null)
+                throw new KeyNotFoundException("Channel not found.");
+
+            const long readMask = (long)(Permission.ViewChannel | Permission.ReadHistory);
+            var bits = await _permissions.ResolveAsync(userId, gid, channelId, ct);
+            if ((bits & readMask) != readMask)
+                throw new UnauthorizedAccessException(
+                    "You do not have permission to view this channel."
+                );
+        }
+        else
+        {
+            await GetDmChannelOrThrowAsync(channelId);
+            if (!await _dms.IsParticipantAsync(channelId, userId))
+                throw new UnauthorizedAccessException(
+                    "You are not a participant of this conversation."
+                );
+        }
+
+        var pins = (await _messageRepository.GetPinnedAsync(channelId, ct)).ToList();
+        if (pins.Count == 0)
+            return [];
+
+        // Resolve each pinned message from messages_by_id; skip any since hard-gone or soft-deleted.
+        var results = new List<(PinnedMessage Pin, Message Message)>(pins.Count);
+        foreach (var pin in pins)
+        {
+            var message = await _messageRepository.GetByIdAsync(pin.MessageId, ct);
+            if (message is null || message.IsDeleted)
+                continue;
+            results.Add((pin, message));
+        }
+
+        var users = await _userRepository.GetByIdsAsync(results.Select(r => r.Message.UserId).Distinct());
+        var reactions = await _reactions.GetSummariesAsync(
+            results.Select(r => r.Message.MessageId),
+            userId,
+            ct
+        );
+
+        // GetPinnedAsync already returns pinned_at DESC (most-recently-pinned first) — preserve it.
+        return results
+            .Select(r => new PinnedMessageResponse(
+                Message: MapMessage(r.Message, guildId, users, reactions),
+                PinnedBy: r.Pin.PinnedBy,
+                PinnedAt: r.Pin.PinnedAt
+            ))
+            .ToList();
+    }
+
+    /// <summary>
+    /// Authorizes a pin/unpin: guild → <see cref="Permission.PinMessages"/> (channel-scoped, so
+    /// overrides apply; owners/administrators resolve to all bits); DM/group → the caller must be a
+    /// participant (no moderators in a DM). Throws 404/403 as appropriate.
+    /// </summary>
+    private async Task AuthorizePinActionAsync(
+        long userId,
+        long? guildId,
+        long channelId,
+        CancellationToken ct
+    )
+    {
+        if (guildId is { } gid)
+        {
+            var channel = await _channelRepository.GetByIdAndGuildIdAsync(channelId, gid);
+            if (channel is null)
+                throw new KeyNotFoundException("Channel not found.");
+            if (!await _permissions.HasAsync(userId, gid, Permission.PinMessages, channelId, ct))
+                throw new UnauthorizedAccessException(
+                    "You do not have permission to pin messages in this channel."
+                );
+        }
+        else
+        {
+            await GetDmChannelOrThrowAsync(channelId);
+            if (!await _dms.IsParticipantAsync(channelId, userId))
+                throw new UnauthorizedAccessException(
+                    "You are not a participant of this conversation."
+                );
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Reactions
+    // -------------------------------------------------------------------------
+
+    /// <summary>Max stored length of a reaction token (a Unicode grapheme now; <c>custom:{id}</c> later).</summary>
+    private const int MaxEmojiLength = 64;
+
+    public async Task AddReactionAsync(
+        long userId,
+        long? guildId,
+        long channelId,
+        long messageId,
+        string emoji,
+        CancellationToken ct = default
+    )
+    {
+        emoji = ValidateEmoji(emoji);
+        await AuthorizeReactionActionAsync(userId, guildId, channelId, ct);
+        await EnsureReactableMessageAsync(channelId, messageId, ct);
+
+        await _reactions.AddAsync(
+            messageId,
+            channelId,
+            emoji,
+            userId,
+            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            ct
+        );
+
+        await _broadcaster.BroadcastReactionAddedAsync(
+            new ReactionPayload(messageId, channelId, guildId, emoji, userId),
+            ct
+        );
+    }
+
+    public async Task RemoveReactionAsync(
+        long userId,
+        long? guildId,
+        long channelId,
+        long messageId,
+        string emoji,
+        CancellationToken ct = default
+    )
+    {
+        emoji = ValidateEmoji(emoji);
+        await AuthorizeReactionActionAsync(userId, guildId, channelId, ct);
+
+        await _reactions.RemoveAsync(messageId, emoji, userId, ct);
+
+        await _broadcaster.BroadcastReactionRemovedAsync(
+            new ReactionPayload(messageId, channelId, guildId, emoji, userId),
+            ct
+        );
+    }
+
+    /// <summary>
+    /// Validates a reaction token. v1 accepts a single Unicode emoji grapheme: non-empty, no
+    /// whitespace, ≤ 64 chars, and NOT the reserved <c>custom:</c> prefix (custom guild emoji land in
+    /// slice 3). Returns the token unchanged so callers persist exactly what was validated.
+    /// </summary>
+    private static string ValidateEmoji(string emoji)
+    {
+        if (string.IsNullOrWhiteSpace(emoji))
+            throw new ArgumentException("A reaction emoji is required.");
+        if (emoji.Length > MaxEmojiLength)
+            throw new ArgumentException("That reaction emoji is not valid.");
+        if (emoji.Any(char.IsWhiteSpace))
+            throw new ArgumentException("That reaction emoji is not valid.");
+        // "custom:{id}" is reserved for custom guild emoji (slice 3); reject it until then.
+        if (emoji.StartsWith("custom:", StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException("Custom emoji reactions are not supported yet.");
+        return emoji;
+    }
+
+    /// <summary>Asserts the target message exists, is in this channel, and is not deleted.</summary>
+    private async Task EnsureReactableMessageAsync(
+        long channelId,
+        long messageId,
+        CancellationToken ct
+    )
+    {
+        var message = await _messageRepository.GetByIdAsync(messageId, ct);
+        if (message is null)
+            throw new KeyNotFoundException("Message not found.");
+        if (message.ChannelId != channelId)
+            throw new UnauthorizedAccessException(
+                "Message does not belong to the specified channel."
+            );
+        if (message.IsDeleted)
+            throw new ArgumentException("You cannot react to a deleted message.");
+    }
+
+    /// <summary>
+    /// Authorizes an add/remove reaction: guild → the channel must resolve
+    /// <see cref="Permission.ViewChannel"/> + <see cref="Permission.AddReactions"/> (overrides apply;
+    /// owners/administrators resolve to all bits); DM/group → the caller must be a participant. Throws
+    /// 404/403 as appropriate. Removing your own reaction goes through the same gate — losing
+    /// AddReactions shouldn't strand a reaction you already placed in practice, but it keeps the
+    /// authorization symmetric with the pin model.
+    /// </summary>
+    private async Task AuthorizeReactionActionAsync(
+        long userId,
+        long? guildId,
+        long channelId,
+        CancellationToken ct
+    )
+    {
+        if (guildId is { } gid)
+        {
+            var channel = await _channelRepository.GetByIdAndGuildIdAsync(channelId, gid);
+            if (channel is null)
+                throw new KeyNotFoundException("Channel not found.");
+
+            const long mask = (long)(Permission.ViewChannel | Permission.AddReactions);
+            var bits = await _permissions.ResolveAsync(userId, gid, channelId, ct);
+            if ((bits & mask) != mask)
+                throw new UnauthorizedAccessException(
+                    "You do not have permission to react in this channel."
+                );
+        }
+        else
+        {
+            await GetDmChannelOrThrowAsync(channelId);
+            if (!await _dms.IsParticipantAsync(channelId, userId))
+                throw new UnauthorizedAccessException(
+                    "You are not a participant of this conversation."
+                );
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // DM authorization helpers
+    // -------------------------------------------------------------------------
+
+    /// <summary>
+    /// Asserts the channel exists and is a DM or group DM (no owning guild). Throws 404 otherwise,
+    /// so a guild channel id can never be driven down the guild-less DM path. Returns the channel
+    /// so callers can branch on the DM type without a second lookup.
+    /// </summary>
+    private async Task<Channel> GetDmChannelOrThrowAsync(long channelId)
+    {
+        var channel = await _channelRepository.GetByIdAsync(channelId);
+        if (
+            channel is null
+            || channel.GuildId is not null
+            || (channel.Type != "dm" && channel.Type != "group_dm")
+        )
+            throw new KeyNotFoundException("Channel not found.");
+        return channel;
+    }
+
+    /// <summary>
+    /// Authorizes a DM send: the channel must be a DM, and the caller a participant. For a 1:1
+    /// DM a pairwise block hard-stops the send in either direction; a group DM is soft — a block
+    /// only hides content client-side, so two members who blocked each other can coexist in a group.
+    /// </summary>
+    private async Task AuthorizeDmSendAsync(long userId, long channelId)
+    {
+        var channel = await GetDmChannelOrThrowAsync(channelId);
+
+        var participantIds = await _dms.GetParticipantIdsAsync(channelId);
+        if (!participantIds.Contains(userId))
+            throw new UnauthorizedAccessException("You are not a participant of this conversation.");
+
+        if (channel.Type == "dm")
+        {
+            // Blocking suppresses 1:1 DMs in either direction.
+            foreach (var peerId in participantIds)
+            {
+                if (peerId == userId)
+                    continue;
+
+                if (await _blocks.AreBlockedAsync(userId, peerId))
+                    throw new UnauthorizedAccessException("You cannot send messages to this user.");
+
+                // The peer's DM-privacy checklist only gates NEW contact. Enforced HERE (on every
+                // send), not just at channel creation — so unfriending/leaving a shared guild closes
+                // an existing DM, and a stranger can't keep messaging through a channel that already
+                // exists.
+                var peer = await _userRepository.GetByIdAsync(peerId);
+                if (peer is not null && !DmPrivacy.Parse(peer.DmPrivacy).Contains(DmPrivacy.Everyone))
+                {
+                    var isFriend = await AreFriendsAsync(userId, peerId);
+                    var sharesGuild = await _guildRepository.ShareAnyGuildAsync(userId, peerId);
+                    if (!DmPrivacy.CanReceiveFrom(peer.DmPrivacy, isFriend, sharesGuild))
+                        throw new UnauthorizedAccessException(
+                            "This user only accepts direct messages from friends or server members."
+                        );
+                }
+            }
+        }
+    }
+
+    /// <summary>True if an accepted friendship (either direction) exists between the two users.</summary>
+    private async Task<bool> AreFriendsAsync(long a, long b)
+    {
+        var friendship = await _friends.GetBetweenAsync(a, b);
+        return friendship is { Status: "accepted" };
+    }
+}
