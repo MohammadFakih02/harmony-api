@@ -640,15 +640,28 @@ public class ScyllaMessageConsumer : BackgroundService
         await handler.HandleMessageSentAsync(evt);
 
         // 3. Broadcast authoritative message to channel subscribers
-        // Fetch sender's display info for the client (best-effort; falls back to "Unknown")
+        // Fetch sender's display info for the client (best-effort; falls back to "Unknown").
+        // Read-through the shared Redis cache first — this runs on every message, so avoiding the
+        // per-message Postgres round-trip (and rented DbContext) is the point. A miss (or Redis
+        // down) falls back to the repository and repopulates. The cache is invalidated on username
+        // /avatar change, and a short TTL backstops any missed invalidation.
         string senderUsername = "Unknown";
         string? senderAvatarKey = null;
         try
         {
-            var userRepo = services.GetRequiredService<IUserRepository>();
-            var sender = await userRepo.GetByIdAsync(evt.UserId);
-            senderUsername = sender?.UserName ?? "Unknown";
-            senderAvatarKey = sender?.AvatarKey;
+            var cache = services.GetRequiredService<IUserDisplayCache>();
+            var display = await cache.GetAsync(evt.UserId);
+            if (display is null)
+            {
+                var userRepo = services.GetRequiredService<IUserRepository>();
+                var sender = await userRepo.GetByIdAsync(evt.UserId);
+                display = new UserDisplay(sender?.UserName ?? "Unknown", sender?.AvatarKey);
+                // Don't cache a not-yet-existing user's "Unknown" placeholder — only a real row.
+                if (sender is not null)
+                    await cache.SetAsync(evt.UserId, display.Value);
+            }
+            senderUsername = display.Value.Username;
+            senderAvatarKey = display.Value.AvatarKey;
         }
         catch (Exception ex)
         {

@@ -57,7 +57,7 @@ public class UserAssetServiceTests
 
         var service = new FileService(
             files.Object, channels.Object, users.Object, guilds.Object, friends.Object,
-            storage.Object, snowflake.Object, broadcaster.Object);
+            storage.Object, snowflake.Object, broadcaster.Object, Mock.Of<IUserDisplayCache>());
         return new Sut(service, files, users, storage, guilds, broadcaster, user);
     }
 

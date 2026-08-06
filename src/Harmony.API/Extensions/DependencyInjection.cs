@@ -169,6 +169,10 @@ public static class DependencyInjection
         // -----------------------------------------------------------------------
         services.AddSingleton<IMessageDeduplicator, RedisMessageDeduplicator>();
 
+        // Sender display cache — shared read-through cache for the username/avatar the message
+        // consumer stamps on every broadcast, so the hot path skips a per-message Postgres lookup.
+        services.AddSingleton<IUserDisplayCache, RedisUserDisplayCache>();
+
         // Slowmode cooldowns — same Redis connection, same fail-open posture
         services.AddSingleton<ISlowmodeGate, RedisSlowmodeGate>();
 
