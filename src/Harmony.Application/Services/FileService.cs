@@ -87,6 +87,7 @@ public sealed partial class FileService : IFileService
     private readonly IFileStorageService _storage;
     private readonly ISnowflakeIdGenerator _snowflake;
     private readonly IHubBroadcaster _broadcaster;
+    private readonly IUserDisplayCache _userDisplayCache;
 
     public FileService(
         IFileAttachmentRepository files,
@@ -96,7 +97,8 @@ public sealed partial class FileService : IFileService
         IFriendRepository friends,
         IFileStorageService storage,
         ISnowflakeIdGenerator snowflake,
-        IHubBroadcaster broadcaster
+        IHubBroadcaster broadcaster,
+        IUserDisplayCache userDisplayCache
     )
     {
         _files = files;
@@ -107,6 +109,7 @@ public sealed partial class FileService : IFileService
         _storage = storage;
         _snowflake = snowflake;
         _broadcaster = broadcaster;
+        _userDisplayCache = userDisplayCache;
     }
 
     public async Task<PresignFileResponse> PresignAsync(

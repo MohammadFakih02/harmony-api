@@ -30,6 +30,7 @@ public class AuthService : IAuthService
     private readonly IGuildRepository _guilds;
     private readonly IFriendRepository _friends;
     private readonly IHubBroadcaster _broadcaster;
+    private readonly IUserDisplayCache _userDisplayCache;
     private readonly ILogger<AuthService> _logger;
 
     public AuthService(
@@ -47,6 +48,7 @@ public class AuthService : IAuthService
         IGuildRepository guilds,
         IFriendRepository friends,
         IHubBroadcaster broadcaster,
+        IUserDisplayCache userDisplayCache,
         ILogger<AuthService> logger
     )
     {
@@ -64,6 +66,7 @@ public class AuthService : IAuthService
         _guilds = guilds;
         _friends = friends;
         _broadcaster = broadcaster;
+        _userDisplayCache = userDisplayCache;
         _logger = logger;
     }
 
@@ -759,6 +762,9 @@ public class AuthService : IAuthService
         CancellationToken ct
     )
     {
+        // Evict the sender-display cache so the message consumer re-reads the new username.
+        await _userDisplayCache.InvalidateAsync(userId, ct);
+
         try
         {
             var payload = new ProfileUpdatedPayload(userId, currentAvatarKey, Username: username);

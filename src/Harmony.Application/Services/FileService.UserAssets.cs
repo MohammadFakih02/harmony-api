@@ -135,6 +135,9 @@ public sealed partial class FileService
     /// </summary>
     private async Task BroadcastAvatarUpdatedAsync(long userId, string? avatarKey, CancellationToken ct)
     {
+        // Evict the sender-display cache so the message consumer re-reads the new avatar key.
+        await _userDisplayCache.InvalidateAsync(userId, ct);
+
         try
         {
             var payload = new ProfileUpdatedPayload(userId, avatarKey, Username: null);

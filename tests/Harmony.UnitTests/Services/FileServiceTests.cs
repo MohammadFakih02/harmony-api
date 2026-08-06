@@ -57,7 +57,7 @@ public class FileServiceTests
 
         var sut = new FileService(
             files.Object, channels.Object, users.Object, guilds.Object, friends.Object,
-            storage.Object, snowflake.Object, Mock.Of<IHubBroadcaster>());
+            storage.Object, snowflake.Object, Mock.Of<IHubBroadcaster>(), Mock.Of<IUserDisplayCache>());
         return (sut, files, channels, storage);
     }
 
