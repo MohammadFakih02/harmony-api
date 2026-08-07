@@ -4,11 +4,13 @@ using Amazon.S3.Util;
 using Harmony.Application.Interfaces.Services;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using Blurhash.ImageSharp;
 using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.Formats;
 using SixLabors.ImageSharp.Formats.Jpeg;
 using SixLabors.ImageSharp.Formats.Png;
 using SixLabors.ImageSharp.Formats.Webp;
+using SixLabors.ImageSharp.PixelFormats;
 using SixLabors.ImageSharp.Processing;
 
 namespace Harmony.Infrastructure.Services;
@@ -255,4 +257,148 @@ public sealed class S3FileStorageService : IFileStorageService
             return null;
         }
     }
+
+    // WebP quality for the responsive srcset variants (small display copies — a touch lower than the
+    // in-place original re-encode below, which stays high because it's what the lightbox serves).
+    private const int VariantWebpQuality = 82;
+    private const int OriginalJpegQuality = 92;
+    private const int OriginalWebpQuality = 90;
+    // BlurHash is O(pixels × components); compute it from a small clone, not the full-res image.
+    private const int BlurHashSampleMax = 64;
+
+    public async Task<ProcessedImage?> ProcessChatImageAsync(
+        string sourceKey,
+        IReadOnlyList<int> variantWidths,
+        CancellationToken ct = default
+    )
+    {
+        Image<Rgba32> image;
+        try
+        {
+            using var response = await _client.GetObjectAsync(
+                new GetObjectRequest { BucketName = _bucket, Key = sourceKey },
+                ct
+            );
+            image = await Image.LoadAsync<Rgba32>(response.ResponseStream, ct);
+        }
+        catch (Exception ex)
+        {
+            // Not a decodable image — the caller treats null as a magic-byte mismatch (400).
+            _logger.LogWarning(ex, "Could not decode chat image {SourceKey}", sourceKey);
+            return null;
+        }
+
+        using (image)
+        {
+            var width = image.Width;
+            var height = image.Height;
+            var sourceFormat = image.Metadata.DecodedImageFormat;
+            var animated = image.Frames.Count > 1;
+
+            // BlurHash placeholder — fail-open (a null hash just means no blur, the reserved box stays).
+            string? blurHash = null;
+            try
+            {
+                using var sample = image.Clone(c =>
+                    c.Resize(new ResizeOptions
+                    {
+                        Mode = ResizeMode.Max,
+                        Size = new Size(BlurHashSampleMax, BlurHashSampleMax),
+                    })
+                );
+                blurHash = Blurhasher.Encode(sample, 4, 3);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "BlurHash encode failed for {SourceKey}", sourceKey);
+            }
+
+            var generated = new List<int>();
+
+            // Variants + EXIF strip only make sense for a single still — never flatten animation.
+            if (!animated)
+            {
+                foreach (var w in variantWidths)
+                {
+                    if (w >= width)
+                        continue; // never upscale
+                    try
+                    {
+                        var targetH = Math.Max(1, (int)Math.Round(height * (double)w / width));
+                        using var variant = image.Clone(c => c.Resize(w, targetH));
+                        StripMetadata(variant);
+                        using var buffer = new MemoryStream();
+                        await variant.SaveAsync(buffer, new WebpEncoder { Quality = VariantWebpQuality }, ct);
+                        buffer.Position = 0;
+                        await _client.PutObjectAsync(
+                            new PutObjectRequest
+                            {
+                                BucketName = _bucket,
+                                Key = $"{sourceKey}_w{w}",
+                                InputStream = buffer,
+                                ContentType = "image/webp",
+                            },
+                            ct
+                        );
+                        generated.Add(w);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "WebP variant w{Width} failed for {SourceKey}", w, sourceKey);
+                    }
+                }
+
+                // EXIF/metadata strip on the original (privacy — GPS etc.). Re-saved in place with
+                // pixels preserved; skipped when there's nothing to strip or the format is unknown.
+                try
+                {
+                    if (sourceFormat is not null && HasStrippableMetadata(image))
+                    {
+                        StripMetadata(image);
+                        using var buffer = new MemoryStream();
+                        await image.SaveAsync(buffer, EncoderForFormat(sourceFormat), ct);
+                        buffer.Position = 0;
+                        await _client.PutObjectAsync(
+                            new PutObjectRequest
+                            {
+                                BucketName = _bucket,
+                                Key = sourceKey,
+                                InputStream = buffer,
+                                ContentType = sourceFormat.DefaultMimeType,
+                            },
+                            ct
+                        );
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "EXIF strip failed for {SourceKey}", sourceKey);
+                }
+            }
+
+            return new ProcessedImage(width, height, blurHash, generated);
+        }
+    }
+
+    private static void StripMetadata(Image image)
+    {
+        image.Metadata.ExifProfile = null;
+        image.Metadata.IptcProfile = null;
+        image.Metadata.XmpProfile = null;
+        // ICC left intact on purpose — dropping the colour profile can visibly shift colours.
+    }
+
+    private static bool HasStrippableMetadata(Image image) =>
+        image.Metadata.ExifProfile is not null
+        || image.Metadata.IptcProfile is not null
+        || image.Metadata.XmpProfile is not null;
+
+    private static ImageEncoder EncoderForFormat(IImageFormat format) =>
+        format switch
+        {
+            JpegFormat => new JpegEncoder { Quality = OriginalJpegQuality },
+            PngFormat => new PngEncoder(),
+            WebpFormat => new WebpEncoder { Quality = OriginalWebpQuality },
+            _ => new PngEncoder(),
+        };
 }

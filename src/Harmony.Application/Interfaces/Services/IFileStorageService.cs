@@ -81,6 +81,24 @@ public interface IFileStorageService
         string? encodeAsContentType = null,
         CancellationToken ct = default
     );
+
+    /// <summary>
+    /// One-decode processing pass for a confirmed chat image (A6). Reads dimensions, computes a
+    /// compact BlurHash (rendered as a blurred placeholder client-side), writes a WebP responsive
+    /// variant for each width in <paramref name="variantWidths"/> that is strictly smaller than the
+    /// source width — to "{sourceKey}_w{width}", aspect preserved, never upscaled, metadata
+    /// stripped — and re-saves the original at <paramref name="sourceKey"/> with its EXIF/metadata
+    /// stripped for privacy (pixels preserved; JPEG re-encoded at high quality, lossless formats
+    /// unchanged; animated images are skipped entirely). Returns null if the bytes are not a
+    /// decodable image (doubling as the image magic-byte check). The BlurHash, variant, and
+    /// EXIF-strip steps are fail-open: a failure in any of them still returns the dimensions so the
+    /// confirm it serves never fails on a cosmetic derivative.
+    /// </summary>
+    Task<ProcessedImage?> ProcessChatImageAsync(
+        string sourceKey,
+        IReadOnlyList<int> variantWidths,
+        CancellationToken ct = default
+    );
 }
 
 /// <summary>The authoritative size and content-type read back from the object store.</summary>
@@ -89,3 +107,13 @@ public record StoredObjectInfo(long Size, string ContentType);
 /// <summary>The dimensions, size, and content-type of an image written by
 /// <see cref="IFileStorageService.DownscaleImageAsync"/>.</summary>
 public record StoredImageResult(int Width, int Height, long SizeBytes, string ContentType);
+
+/// <summary>The result of <see cref="IFileStorageService.ProcessChatImageAsync"/>: source
+/// dimensions, the BlurHash (null if it could not be computed), and the subset of requested widths
+/// for which a WebP variant was actually written (empty for a small/animated image).</summary>
+public record ProcessedImage(
+    int Width,
+    int Height,
+    string? BlurHash,
+    IReadOnlyList<int> GeneratedVariantWidths
+);

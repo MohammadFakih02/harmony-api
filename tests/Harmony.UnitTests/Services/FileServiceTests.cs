@@ -141,8 +141,8 @@ public class FileServiceTests
         // Store reports a different (authoritative) size + type than the client declared.
         storage.Setup(s => s.StatObjectAsync(file.MinioKey, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new StoredObjectInfo(2048, "image/png"));
-        storage.Setup(s => s.TryReadImageDimensionsAsync(file.MinioKey, It.IsAny<CancellationToken>()))
-            .ReturnsAsync((64, 48));
+        storage.Setup(s => s.ProcessChatImageAsync(file.MinioKey, It.IsAny<IReadOnlyList<int>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ProcessedImage(64, 48, "LKO2:N%2Tw=w]~RBVZRi", new List<int>()));
 
         var result = await sut.ConfirmAsync(UserId, FileId);
 
@@ -150,6 +150,9 @@ public class FileServiceTests
         result.SizeBytes.Should().Be(2048);
         result.Width.Should().Be(64);
         result.Height.Should().Be(48);
+        // Confirm returns metadata only; the BlurHash is persisted on the row and surfaces on the
+        // download DTO (asserted in GetDownloadUrl_BuildsASrcsetFromTheStoredVariantWidths).
+        file.BlurHash.Should().Be("LKO2:N%2Tw=w]~RBVZRi");
         file.IsConfirmed.Should().BeTrue();
         files.Verify(f => f.SaveChangesAsync(), Times.Once);
     }
@@ -211,9 +214,9 @@ public class FileServiceTests
         files.Setup(f => f.GetByIdAsync(FileId)).ReturnsAsync(file);
         storage.Setup(s => s.StatObjectAsync(file.MinioKey, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new StoredObjectInfo(1024, "image/png"));
-        // Not a real image → magic-byte mismatch.
-        storage.Setup(s => s.TryReadImageDimensionsAsync(file.MinioKey, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(((int, int)?)null);
+        // Not a real image → magic-byte mismatch (ProcessChatImageAsync returns null on decode failure).
+        storage.Setup(s => s.ProcessChatImageAsync(file.MinioKey, It.IsAny<IReadOnlyList<int>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((ProcessedImage?)null);
 
         await sut.Invoking(s => s.ConfirmAsync(UserId, FileId))
             .Should().ThrowAsync<ArgumentException>();
@@ -239,9 +242,9 @@ public class FileServiceTests
         result.ContentType.Should().Be("application/pdf");
         result.Width.Should().BeNull();
         result.Height.Should().BeNull();
-        // Non-image path must not run the image decode.
+        // Non-image path must not run the image processing pass.
         storage.Verify(
-            s => s.TryReadImageDimensionsAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            s => s.ProcessChatImageAsync(It.IsAny<string>(), It.IsAny<IReadOnlyList<int>>(), It.IsAny<CancellationToken>()),
             Times.Never);
     }
 
@@ -278,86 +281,121 @@ public class FileServiceTests
         file.IsConfirmed.Should().BeFalse();
     }
 
-    // ---- Chat thumbnails --------------------------------------------------
+    // ---- Chat image variants (A6) -----------------------------------------
+
+    // Sets up a confirmable PNG whose ProcessChatImageAsync returns the given generated widths.
+    private static void SetupImageConfirm(
+        Mock<IFileAttachmentRepository> files,
+        Mock<IFileStorageService> storage,
+        FileAttachment file,
+        int width,
+        int height,
+        IReadOnlyList<int> generatedWidths,
+        string? blurHash = "LKO2:N%2Tw=w]~RBVZRi")
+    {
+        files.Setup(f => f.GetByIdAsync(FileId)).ReturnsAsync(file);
+        storage.Setup(s => s.StatObjectAsync(file.MinioKey, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new StoredObjectInfo(2048, file.ContentType));
+        storage.Setup(s => s.ProcessChatImageAsync(file.MinioKey, It.IsAny<IReadOnlyList<int>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ProcessedImage(width, height, blurHash, generatedWidths));
+    }
 
     [Fact]
-    public async Task Confirm_LargeImage_GeneratesAWebpThumbnail_LeavingTheOriginalUntouched()
+    public async Task Confirm_LargeImage_RecordsVariantsAndTheSmallestAsTheFallbackThumbnail()
     {
         var (sut, files, _, storage) = BuildSut();
         var file = PendingFile();
-        files.Setup(f => f.GetByIdAsync(FileId)).ReturnsAsync(file);
-        storage.Setup(s => s.StatObjectAsync(file.MinioKey, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new StoredObjectInfo(2048, "image/png"));
-        storage.Setup(s => s.TryReadImageDimensionsAsync(file.MinioKey, It.IsAny<CancellationToken>()))
-            .ReturnsAsync((1600, 1200));
-        storage.Setup(s => s.DownscaleImageAsync(
-                file.MinioKey, $"{file.MinioKey}_thumb",
-                FileService.ThumbnailMaxWidth, FileService.ThumbnailMaxHeight,
-                "image/webp", It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new StoredImageResult(800, 600, 40_000, "image/webp"));
+        SetupImageConfirm(files, storage, file, 1600, 1200, new List<int> { 400, 800, 1200 });
 
         await sut.ConfirmAsync(UserId, FileId);
 
-        file.ThumbnailKey.Should().Be($"{file.MinioKey}_thumb");
-        // The original row keeps the store-authoritative values — never the thumb's.
+        file.VariantWidths.Should().Be("400,800,1200");
+        // The smallest generated variant doubles as the lightweight non-srcset fallback thumbnail.
+        file.ThumbnailKey.Should().Be($"{file.MinioKey}_w400");
+        // The row keeps the store-authoritative size and the decoded dimensions.
         file.Width.Should().Be(1600);
         file.SizeBytes.Should().Be(2048);
     }
 
     [Fact]
-    public async Task Confirm_SmallImage_SkipsTheThumbnail()
+    public async Task Confirm_SmallImage_RecordsNoVariantsAndNoThumbnail()
     {
         var (sut, files, _, storage) = BuildSut();
         var file = PendingFile();
-        files.Setup(f => f.GetByIdAsync(FileId)).ReturnsAsync(file);
-        storage.Setup(s => s.StatObjectAsync(file.MinioKey, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new StoredObjectInfo(2048, "image/png"));
-        storage.Setup(s => s.TryReadImageDimensionsAsync(file.MinioKey, It.IsAny<CancellationToken>()))
-            .ReturnsAsync((1024, 768)); // both axes at/under the threshold
+        // A 300px-wide image is below every variant width → the storage layer generates none.
+        SetupImageConfirm(files, storage, file, 300, 200, new List<int>());
 
         await sut.ConfirmAsync(UserId, FileId);
 
+        file.VariantWidths.Should().BeNull();
         file.ThumbnailKey.Should().BeNull();
-        storage.Verify(s => s.DownscaleImageAsync(
-            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<int>(),
-            It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
-    public async Task Confirm_Gif_IsNeverThumbnailed()
+    public async Task Confirm_Gif_RecordsNoVariants_ButStillGetsABlurHash()
     {
         var (sut, files, _, storage) = BuildSut();
         var file = PendingFile();
-        files.Setup(f => f.GetByIdAsync(FileId)).ReturnsAsync(file);
-        storage.Setup(s => s.StatObjectAsync(file.MinioKey, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new StoredObjectInfo(2048, "image/gif"));
-        storage.Setup(s => s.TryReadImageDimensionsAsync(file.MinioKey, It.IsAny<CancellationToken>()))
-            .ReturnsAsync((1920, 1080));
+        file.ContentType = "image/gif";
+        // Animated → the storage layer returns dims + a first-frame blurhash but no variants.
+        SetupImageConfirm(files, storage, file, 1920, 1080, new List<int>());
 
         await sut.ConfirmAsync(UserId, FileId);
 
+        file.VariantWidths.Should().BeNull();
         file.ThumbnailKey.Should().BeNull();
-        storage.Verify(s => s.DownscaleImageAsync(
-            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<int>(),
-            It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+        file.BlurHash.Should().NotBeNull();
     }
 
     [Fact]
-    public async Task Confirm_ThumbnailFailure_StillConfirmsTheFile()
+    public async Task Confirm_VariantGenerationFailure_StillConfirms_WithNoVariants()
     {
         var (sut, files, _, storage) = BuildSut();
         var file = PendingFile();
-        files.Setup(f => f.GetByIdAsync(FileId)).ReturnsAsync(file);
-        storage.Setup(s => s.StatObjectAsync(file.MinioKey, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new StoredObjectInfo(2048, "image/png"));
-        storage.Setup(s => s.TryReadImageDimensionsAsync(file.MinioKey, It.IsAny<CancellationToken>()))
-            .ReturnsAsync((1600, 1200));
-        // Loose-mock default: DownscaleImageAsync returns null = fail-open no-op.
+        // ProcessChatImageAsync is fail-open internally: a valid image still returns dims, just
+        // with an empty variant list and possibly a null hash.
+        SetupImageConfirm(files, storage, file, 1600, 1200, new List<int>(), blurHash: null);
 
         var result = await sut.ConfirmAsync(UserId, FileId);
 
         result.IsConfirmed.Should().BeTrue();
         file.ThumbnailKey.Should().BeNull();
+        file.VariantWidths.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task GetDownloadUrl_BuildsASrcsetFromTheStoredVariantWidths()
+    {
+        var (sut, files, _, storage) = BuildSut();
+        var file = ConfirmedFile();
+        file.VariantWidths = "400,800";
+        file.BlurHash = "LKO2:N%2Tw=w]~RBVZRi";
+        files.Setup(f => f.GetByIdAsync(FileId)).ReturnsAsync(file);
+        // Distinct URLs per key so we can assert the srcset maps width → the right variant key.
+        storage.Setup(s => s.GetPresignedGetUrlAsync($"{file.MinioKey}_w400", It.IsAny<TimeSpan>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync("http://minio/w400");
+        storage.Setup(s => s.GetPresignedGetUrlAsync($"{file.MinioKey}_w800", It.IsAny<TimeSpan>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync("http://minio/w800");
+
+        var result = await sut.GetDownloadUrlAsync(GuildId, ChannelId, FileId);
+
+        result.BlurHash.Should().Be("LKO2:N%2Tw=w]~RBVZRi");
+        result.Srcset.Should().NotBeNull();
+        result.Srcset!.Select(v => v.Width).Should().Equal(400, 800);
+        result.Srcset.Should().Contain(v => v.Width == 400 && v.Url == "http://minio/w400");
+        result.Srcset.Should().Contain(v => v.Width == 800 && v.Url == "http://minio/w800");
+    }
+
+    [Fact]
+    public async Task GetDownloadUrl_NoVariants_LeavesSrcsetNull()
+    {
+        var (sut, files, _, _) = BuildSut();
+        files.Setup(f => f.GetByIdAsync(FileId)).ReturnsAsync(ConfirmedFile());
+
+        var result = await sut.GetDownloadUrlAsync(GuildId, ChannelId, FileId);
+
+        result.Srcset.Should().BeNull();
+        result.BlurHash.Should().BeNull();
     }
 
     // ---- Download ---------------------------------------------------------

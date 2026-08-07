@@ -26,6 +26,8 @@ public class FileAttachmentConfiguration : IEntityTypeConfiguration<FileAttachme
         builder.Property(f => f.Height).HasColumnName("height");
         builder.Property(f => f.IsConfirmed).HasColumnName("is_confirmed");
         builder.Property(f => f.ThumbnailKey).HasColumnName("thumbnail_key");
+        builder.Property(f => f.BlurHash).HasColumnName("blur_hash").HasMaxLength(64);
+        builder.Property(f => f.VariantWidths).HasColumnName("variant_widths").HasMaxLength(64);
         builder.Property(f => f.CreatedAt).HasColumnName("created_at");
 
         builder

@@ -70,6 +70,10 @@ public sealed partial class FileService : IFileService
     public const int ThumbnailMaxWidth = 800;
     public const int ThumbnailMaxHeight = 600;
     public const int ThumbnailThresholdPx = 1024; // images at/under this on both axes skip the thumb
+    // A6: WebP responsive-variant widths generated per chat image — only those strictly below the
+    // original width (a small image gets fewer, or none). Spans a ~400px display box across 1×–3× DPR;
+    // the smallest generated one also serves as the lightweight non-srcset fallback thumbnail.
+    public static readonly int[] ResponsiveVariantWidths = [400, 800, 1200];
 
     private static readonly HashSet<string> UserAssetContentTypes = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -215,30 +219,22 @@ public sealed partial class FileService : IFileService
         // (which also yields dimensions); every other type is sniffed by its magic bytes.
         if (FileSignatures.IsImage(file.ContentType))
         {
-            var dims = await _storage.TryReadImageDimensionsAsync(file.MinioKey, ct);
-            if (dims is not { } d)
+            // One decode does it all (A6): dimensions (also the image magic-byte check), the BlurHash
+            // placeholder, the WebP responsive srcset variants, and an in-place EXIF strip on the
+            // original. The variant/blurhash/strip steps are fail-open inside the storage layer — a
+            // valid image always returns dimensions, so the confirm never fails on a cosmetic derivative.
+            var processed = await _storage.ProcessChatImageAsync(file.MinioKey, ResponsiveVariantWidths, ct);
+            if (processed is not { } p)
                 throw new ArgumentException("Uploaded object is not a valid image.");
 
-            file.Width = d.Width;
-            file.Height = d.Height;
-
-            // Display-only thumbnail for large stills — the ORIGINAL is never touched (users
-            // download/lightbox it at full quality). WebP: ships with ImageSharp, ~30% smaller
-            // than JPEG, alpha, universal browser support. Fail-open: null just means no thumb.
-            if (!file.ContentType.Equals("image/gif", StringComparison.OrdinalIgnoreCase)
-                && (d.Width > ThumbnailThresholdPx || d.Height > ThumbnailThresholdPx))
+            file.Width = p.Width;
+            file.Height = p.Height;
+            file.BlurHash = p.BlurHash;
+            if (p.GeneratedVariantWidths.Count > 0)
             {
-                var thumbKey = $"{file.MinioKey}_thumb";
-                var thumb = await _storage.DownscaleImageAsync(
-                    file.MinioKey,
-                    thumbKey,
-                    ThumbnailMaxWidth,
-                    ThumbnailMaxHeight,
-                    "image/webp",
-                    ct
-                );
-                if (thumb is not null)
-                    file.ThumbnailKey = thumbKey;
+                file.VariantWidths = string.Join(',', p.GeneratedVariantWidths);
+                // The smallest generated variant doubles as the lightweight non-srcset fallback thumb.
+                file.ThumbnailKey = $"{file.MinioKey}_w{p.GeneratedVariantWidths[0]}";
             }
         }
         else
@@ -305,6 +301,26 @@ public sealed partial class FileService : IFileService
         var thumbnailUrl = file.ThumbnailKey is { } thumbKey
             ? await _storage.GetPresignedGetUrlAsync(thumbKey, DownloadUrlExpiry, ct)
             : null;
+
+        // A6: presign each stored WebP variant for the inline <img srcset>. Deterministic key
+        // convention "{MinioKey}_w{width}" — presigning is a local HMAC, so a loop is cheap.
+        List<ImageVariant>? srcset = null;
+        if (file.VariantWidths is { Length: > 0 } widths)
+        {
+            srcset = [];
+            foreach (var part in widths.Split(',', StringSplitOptions.RemoveEmptyEntries))
+            {
+                if (!int.TryParse(part, out var w))
+                    continue;
+                var variantUrl = await _storage.GetPresignedGetUrlAsync(
+                    $"{file.MinioKey}_w{w}",
+                    DownloadUrlExpiry,
+                    ct
+                );
+                srcset.Add(new ImageVariant(variantUrl, w));
+            }
+        }
+
         var expiresAt = DateTimeOffset.UtcNow.Add(DownloadUrlExpiry).ToUnixTimeMilliseconds();
         return new FileDownloadResponse(
             file.Id,
@@ -315,7 +331,9 @@ public sealed partial class FileService : IFileService
             file.Height,
             url,
             expiresAt,
-            thumbnailUrl
+            thumbnailUrl,
+            file.BlurHash,
+            srcset
         );
     }
 

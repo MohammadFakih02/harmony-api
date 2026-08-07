@@ -31,8 +31,16 @@ public record FileDownloadResponse(
     long ExpiresAt,
     // Presigned URL of the display-only downscaled derivative; null when the original is small
     // enough (or animated) — the client falls back to Url for inline rendering.
-    string? ThumbnailUrl = null
+    string? ThumbnailUrl = null,
+    // A6: compact BlurHash rendered as a blurred placeholder until the bytes paint. Null = none.
+    string? BlurHash = null,
+    // A6: presigned WebP responsive variants (ascending width) for the inline <img srcset>; the
+    // browser picks by display size × DPR. Null/empty when the image had no generated variants.
+    IReadOnlyList<ImageVariant>? Srcset = null
 );
+
+/// <summary>One entry of a responsive <c>srcset</c>: a presigned variant URL and its pixel width.</summary>
+public record ImageVariant(string Url, int Width);
 
 public record FileAttachmentResponse(
     [property: JsonNumberHandling(JsonNumberHandling.WriteAsString)] long Id,

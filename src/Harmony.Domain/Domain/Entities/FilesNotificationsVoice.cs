@@ -14,8 +14,15 @@ public class FileAttachment
     public int? Height { get; set; }
     public bool IsConfirmed { get; set; }
     // Object key of the display-only downscaled derivative (chat images over the size threshold).
-    // The original at MinioKey is never touched — lightbox/download always serve it.
+    // The original at MinioKey is re-saved once at confirm with its metadata stripped (EXIF/GPS
+    // privacy — A6); its pixels are otherwise preserved (lossless formats byte-for-pixel, JPEG at
+    // high quality). Lightbox/download serve MinioKey; inline preview serves ThumbnailKey/variants.
     public string? ThumbnailKey { get; set; }
+    // A6: compact BlurHash of the image, rendered as a blurred placeholder before the bytes load.
+    public string? BlurHash { get; set; }
+    // A6: comma-separated widths of the WebP responsive variants that were actually written
+    // ("{MinioKey}_w{width}"), e.g. "400,800" — drives the inline <img srcset>. Null = none.
+    public string? VariantWidths { get; set; }
     public long CreatedAt { get; set; }
 
     // Navigation

@@ -204,13 +204,13 @@ public class FileUploadTests : ApiTestBase, IClassFixture<HarmonyWebApplicationF
     }
 
     [Fact]
-    public async Task LargeImageUpload_GetsAWebpThumbnail_AndTheOriginalStaysUntouched()
+    public async Task LargeImageUpload_GetsWebpVariantsAndABlurHash_AndTheOriginalStaysUntouchedWhenNoMetadata()
     {
         var ownerToken = await RegisterAsync("filethumb1", "filethumb1@test.com");
         var (guildId, _) = await CreateGuildAsync(ownerToken);
         var channelId = await CreateChannelAsync(ownerToken, guildId);
 
-        // A real 1600×1200 PNG — over the 1024px thumbnail threshold on both axes.
+        // A real 1600×1200 PNG — wider than every responsive variant width (400/800/1200).
         byte[] bigPng;
         using (var img = new SixLabors.ImageSharp.Image<SixLabors.ImageSharp.PixelFormats.Rgba32>(1600, 1200))
         using (var ms = new MemoryStream())
@@ -245,16 +245,82 @@ public class FileUploadTests : ApiTestBase, IClassFixture<HarmonyWebApplicationF
         var body = await resp.Content.ReadFromJsonAsync<ThumbUrlResponse>();
         body!.ThumbnailUrl.Should().NotBeNullOrEmpty();
 
-        // The thumbnail is a real WebP fitting 800×600.
+        // A6: a BlurHash placeholder was computed.
+        body.BlurHash.Should().NotBeNullOrEmpty();
+
+        // A6: a full responsive srcset was generated (all three widths are below 1600).
+        body.Srcset.Should().NotBeNull();
+        body.Srcset!.Select(v => v.Width).Should().Equal(400, 800, 1200);
+
+        // The smallest variant doubles as the fallback thumbnail — a real WebP at its target width.
         var thumbBytes = await http.GetByteArrayAsync(body.ThumbnailUrl);
         var thumbInfo = SixLabors.ImageSharp.Image.Identify(thumbBytes);
-        thumbInfo.Width.Should().BeLessThanOrEqualTo(800);
-        thumbInfo.Height.Should().BeLessThanOrEqualTo(600);
+        thumbInfo.Width.Should().Be(400);
         SixLabors.ImageSharp.Image.DetectFormat(thumbBytes).Name.Should().Be("Webp");
 
-        // The original is byte-for-byte untouched — downloads keep full quality.
+        // Each srcset entry is a WebP at its declared width.
+        foreach (var variant in body.Srcset!)
+        {
+            var bytes = await http.GetByteArrayAsync(variant.Url);
+            SixLabors.ImageSharp.Image.DetectFormat(bytes).Name.Should().Be("Webp");
+            SixLabors.ImageSharp.Image.Identify(bytes).Width.Should().Be(variant.Width);
+        }
+
+        // The original carries no metadata to strip, so it stays byte-for-byte untouched.
         var originalBytes = await http.GetByteArrayAsync(body.Url);
         originalBytes.Should().BeEquivalentTo(bigPng);
+    }
+
+    [Fact]
+    public async Task ImageWithExif_HasItsMetadataStrippedFromTheServedOriginal()
+    {
+        var ownerToken = await RegisterAsync("fileexif1", "fileexif1@test.com");
+        var (guildId, _) = await CreateGuildAsync(ownerToken);
+        var channelId = await CreateChannelAsync(ownerToken, guildId);
+
+        // A JPEG tagged with EXIF (incl. a GPS latitude) — exactly the privacy leak A6 closes.
+        byte[] jpegWithExif;
+        using (var img = new SixLabors.ImageSharp.Image<SixLabors.ImageSharp.PixelFormats.Rgba32>(1200, 900))
+        using (var ms = new MemoryStream())
+        {
+            var exif = new SixLabors.ImageSharp.Metadata.Profiles.Exif.ExifProfile();
+            exif.SetValue(SixLabors.ImageSharp.Metadata.Profiles.Exif.ExifTag.Copyright, "hidden");
+            exif.SetValue(SixLabors.ImageSharp.Metadata.Profiles.Exif.ExifTag.GPSLatitudeRef, "N");
+            img.Metadata.ExifProfile = exif;
+            await img.SaveAsJpegAsync(ms);
+            jpegWithExif = ms.ToArray();
+        }
+        // Sanity: the bytes we upload really do contain EXIF.
+        SixLabors.ImageSharp.Image.Identify(jpegWithExif).Metadata.ExifProfile.Should().NotBeNull();
+
+        Auth(ownerToken);
+        var presignResp = await Client.PostAsJsonAsync(
+            $"/api/guilds/{guildId}/channels/{channelId}/files/presign",
+            new { filename = "geo.jpg", contentType = "image/jpeg", sizeBytes = jpegWithExif.Length }
+        );
+        presignResp.EnsureSuccessStatusCode();
+        var presign = await presignResp.Content.ReadFromJsonAsync<PresignResponse>();
+
+        using var http = new HttpClient();
+        var content = new ByteArrayContent(jpegWithExif);
+        content.Headers.ContentType = new MediaTypeHeaderValue("image/jpeg");
+        (await http.PutAsync(presign!.UploadUrl, content)).EnsureSuccessStatusCode();
+
+        Auth(ownerToken);
+        (await Client.PostAsync(
+            $"/api/guilds/{guildId}/channels/{channelId}/files/{presign.FileId}/confirm",
+            null
+        )).EnsureSuccessStatusCode();
+
+        var resp = await Client.GetAsync(
+            $"/api/guilds/{guildId}/channels/{channelId}/files/{presign.FileId}"
+        );
+        resp.EnsureSuccessStatusCode();
+        var body = await resp.Content.ReadFromJsonAsync<ThumbUrlResponse>();
+
+        // The served original no longer carries the EXIF profile.
+        var servedBytes = await http.GetByteArrayAsync(body!.Url);
+        SixLabors.ImageSharp.Image.Identify(servedBytes).Metadata.ExifProfile.Should().BeNull();
     }
 
     [Fact]
@@ -572,7 +638,15 @@ public class FileUploadTests : ApiTestBase, IClassFixture<HarmonyWebApplicationF
 
     private record FileUrlResponse(string Url, long ExpiresAt);
 
-    private record ThumbUrlResponse(string Url, long ExpiresAt, string? ThumbnailUrl);
+    private record ThumbUrlResponse(
+        string Url,
+        long ExpiresAt,
+        string? ThumbnailUrl,
+        string? BlurHash,
+        List<VariantDto>? Srcset
+    );
+
+    private record VariantDto(string Url, int Width);
 
     private record MessageSendResponse(long MessageId, long[] AttachmentIds);
 
