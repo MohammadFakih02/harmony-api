@@ -5,6 +5,7 @@ using System.Text.Json;
 using FluentValidation;
 using Harmony.API.Extensions;
 using Harmony.API.Filters;
+using Harmony.API.Grains;
 using Harmony.API.Handlers;
 using Harmony.API.Hubs;
 using Harmony.Application.Interfaces.Services;
@@ -22,6 +23,7 @@ using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.ResponseCompression;
 using Microsoft.Extensions.Hosting;
 using Microsoft.IdentityModel.Tokens;
+using Orleans.Hosting;
 using Serilog;
 using Serilog.Formatting.Compact;
 
@@ -275,6 +277,32 @@ builder.Services.AddControllers(options =>
 builder.Services.AddOpenApi(options =>
     options.AddDocumentTransformer<BearerSecuritySchemeTransformer>()
 );
+
+// -----------------------------------------------------------------------
+// Orleans silo (Track D0) — co-hosted in this same process. Localhost
+// clustering + in-memory grain storage: a single silo needs no external
+// membership/storage provider, and the grains arriving in D1+ rebuild
+// their state from Postgres/Scylla/Redis on activation (durability for the
+// D2 message path comes from a Redis WAL, not grain storage), so
+// AdoNet-on-Postgres clustering is deferred until it is actually
+// load-bearing.
+//
+// Gated OUT of the Test environment: UseLocalhostClustering binds the fixed
+// ports 11111/30000, and the integration suite spins up many
+// WebApplicationFactory hosts in parallel that would collide on them. No
+// app code depends on a grain yet — D0 only stands the silo up and
+// health-checks it — so the integration hosts run with zero Orleans
+// involvement. Grain unit tests use Orleans' auto-porting
+// InProcessTestCluster instead (introduced with D1's first real grain).
+// -----------------------------------------------------------------------
+if (!builder.Environment.IsEnvironment("Test"))
+{
+    builder.Host.UseOrleans(silo =>
+        silo.UseLocalhostClustering().AddMemoryGrainStorage("Default")
+    );
+
+    builder.Services.AddHealthChecks().AddCheck<OrleansSiloHealthCheck>("orleans");
+}
 
 // =======================================================================
 var app = builder.Build();

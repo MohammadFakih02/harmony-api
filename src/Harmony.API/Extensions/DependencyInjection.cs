@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Cassandra;
 using Harmony.API.Filters;
+using Harmony.API.Grains;
 using Harmony.Application.Interfaces.Services;
 using Harmony.Application.Services;
 using Harmony.Domain.Interfaces;
@@ -212,7 +213,16 @@ public static class DependencyInjection
         services.AddScoped<IAuthService, AuthService>();
         services.AddScoped<IMessageService, MessageService>();
         services.AddScoped<IUnreadCountService, RedisUnreadCountService>();
-        services.AddScoped<IPresenceService, RedisPresenceService>();
+        // Presence is grain-backed outside Test (Track D1): GrainPresenceService forwards to the
+        // per-user UserGrain, whose in-memory connection set replaces the Redis presence keys + the
+        // global sweep. The Test environment keeps RedisPresenceService because no Orleans silo is
+        // co-hosted there (D0 gated it out to avoid the parallel-host port collision) — so the ~450
+        // hub integration tests exercise the unchanged Redis path; the grain path has its own
+        // InProcessTestCluster grain tests.
+        if (isTest)
+            services.AddScoped<IPresenceService, RedisPresenceService>();
+        else
+            services.AddScoped<IPresenceService, GrainPresenceService>();
         services.AddScoped<IVoiceStateService, RedisVoiceStateService>();
         services.AddScoped<IPermissionService, PermissionService>();
         services.AddScoped<IFileService, FileService>();
@@ -266,7 +276,8 @@ public static class DependencyInjection
             services.AddHostedService<MuteExpiryService>();
             services.AddHostedService<OrphanFileSweepService>();
             services.AddHostedService<StatusExpiryService>();
-            services.AddHostedService<PresenceSweepService>();
+            // PresenceSweepService retired under D1 — each UserGrain prunes its own stale
+            // connections on a grain timer, so there is no global presence:online ZSET to sweep.
             services.AddHostedService<VoiceStateSweepService>();
             services.AddHostedService<InviteCleanupService>();
             services.AddHostedService<PushNotificationService>();

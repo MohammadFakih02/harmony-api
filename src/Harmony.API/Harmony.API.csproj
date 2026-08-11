@@ -25,6 +25,10 @@
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
     <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
+    <!-- Track D0: co-hosted Orleans silo. Server metapackage bundles clustering + the in-memory
+         grain-storage provider used by D0 (localhost clustering, AddMemoryGrainStorage). 10.2.2
+         targets net10.0. -->
+    <PackageReference Include="Microsoft.Orleans.Server" Version="10.2.2" />
     <PackageReference Include="Serilog.AspNetCore" Version="10.0.0" />
     <PackageReference Include="Serilog.Sinks.Console" Version="6.1.1" />
     <PackageReference Include="Swashbuckle.AspNetCore" Version="10.1.7" />
