@@ -28,7 +28,14 @@ public record LoginResponse(
     string? AccessToken,
     UserResponse? User,
     bool TwoFactorRequired,
-    string? ChallengeToken
+    string? ChallengeToken,
+    // Google sign-in only: set when the ID token is valid but no account exists yet, so the caller
+    // must come back with a chosen username before anything is created. The new members are
+    // defaulted so the two factories below — and every existing positional construction — still
+    // compile unchanged.
+    bool NeedsUsername = false,
+    string? SuggestedUsername = null,
+    string? Email = null
 )
 {
     public static LoginResponse FromAuth(AuthResponse auth) =>
@@ -36,6 +43,24 @@ public record LoginResponse(
 
     public static LoginResponse Challenge(string challengeToken) =>
         new(AccessToken: null, User: null, TwoFactorRequired: true, ChallengeToken: challengeToken);
+
+    /// <summary>
+    /// A verified Google identity with no matching account. NOTHING has been created — no user row,
+    /// no tokens — so abandoning here leaves no trace. The caller re-posts the same ID token together
+    /// with a username to complete registration. <paramref name="suggestedUsername"/> is a
+    /// known-free name derived from the email, offered as a prefill only; the server re-validates
+    /// whatever comes back.
+    /// </summary>
+    public static LoginResponse UsernameRequired(string suggestedUsername, string email) =>
+        new(
+            AccessToken: null,
+            User: null,
+            TwoFactorRequired: false,
+            ChallengeToken: null,
+            NeedsUsername: true,
+            SuggestedUsername: suggestedUsername,
+            Email: email
+        );
 }
 
 /// <summary>

@@ -198,7 +198,23 @@ public class AuthService : IAuthService
     public async Task<bool> Enable2faRequestAsync(long userId, string password, CancellationToken ct = default)
     {
         var user = await _identityService.FindByIdAsync(userId);
-        if (user is null || !await _identityService.CheckPasswordAsync(user, password))
+        if (user is null)
+            throw new AuthenticationException("Invalid credentials.");
+
+        // A passwordless (Google-only) account has no password to check, so CheckPasswordAsync would
+        // return false for ANY input and report "Invalid credentials" — true but useless, since there
+        // are no credentials to get right. Same guard as ChangeUsernameAsync.
+        //
+        // Requiring a password first is also correct rather than merely convenient: local email-code
+        // 2FA guards the PASSWORD login path, and GoogleLoginAsync deliberately bypasses it (Google
+        // is the trust anchor there). On an account with no password there is no path on which the
+        // code would ever be demanded, so enabling it would toggle a setting that does nothing.
+        if (user.PasswordHash is null)
+            throw new InvalidOperationException(
+                "Set a password first — two-factor authentication protects password sign-in."
+            );
+
+        if (!await _identityService.CheckPasswordAsync(user, password))
             throw new AuthenticationException("Invalid credentials.");
 
         if (!user.EmailConfirmed)
@@ -241,7 +257,16 @@ public class AuthService : IAuthService
     public async Task Disable2faAsync(long userId, string password, CancellationToken ct = default)
     {
         var user = await _identityService.FindByIdAsync(userId);
-        if (user is null || !await _identityService.CheckPasswordAsync(user, password))
+        if (user is null)
+            throw new AuthenticationException("Invalid credentials.");
+
+        // Unreachable by construction — enabling 2FA requires a password and a password can only be
+        // added, never removed — but kept so the failure mode is an honest message rather than
+        // "Invalid credentials" if that invariant ever changes.
+        if (user.PasswordHash is null)
+            throw new InvalidOperationException("Set a password first.");
+
+        if (!await _identityService.CheckPasswordAsync(user, password))
             throw new AuthenticationException("Invalid credentials.");
 
         await _identityService.SetTwoFactorEnabledAsync(user, false);
@@ -407,8 +432,9 @@ public class AuthService : IAuthService
         return true;
     }
 
-    public async Task<(LoginResponse response, string rawRefreshToken)> GoogleLoginAsync(
+    public async Task<(LoginResponse response, string? rawRefreshToken)> GoogleLoginAsync(
         string idToken,
+        string? username = null,
         CancellationToken ct = default
     )
     {
@@ -426,6 +452,9 @@ public class AuthService : IAuthService
                 if (!info.EmailVerified)
                     throw new AuthenticationException("Your Google account's email is not verified.");
 
+                // Linking an EXISTING account: any username the caller sent is ignored on purpose.
+                // Renaming is a credential change with its own password-gated flow; a sign-in must
+                // never be able to rename an account that already exists.
                 await _identityService.LinkGoogleLoginAsync(user, info.Subject);
             }
             else
@@ -433,10 +462,29 @@ public class AuthService : IAuthService
                 if (!info.EmailVerified)
                     throw new AuthenticationException("Your Google account's email is not verified.");
 
+                // No account yet. Without a chosen name, stop here and create NOTHING — the caller
+                // gets a suggestion to prefill and comes back. Deriving a name silently (the old
+                // behaviour) produced accounts whose owner never picked their username and, because
+                // renaming is password-gated, could not change it without first setting a password.
+                if (string.IsNullOrWhiteSpace(username))
+                {
+                    var suggestion = await GenerateUniqueUsernameAsync(info.Email);
+                    return (LoginResponse.UsernameRequired(suggestion, info.Email), null);
+                }
+
+                var desiredUsername = username.Trim();
+                if (desiredUsername.Length is < 2 or > 32)
+                    throw new ArgumentException("Username must be between 2 and 32 characters.");
+
+                // Re-checked server-side even though the client saw a free suggestion: the name may
+                // have been taken in between, and the caller could have sent anything at all.
+                if (await _identityService.FindByNameAsync(desiredUsername) is not null)
+                    throw new ConflictException("Username already taken.");
+
                 user = new User
                 {
                     Id = _snowflake.NextId(),
-                    UserName = await GenerateUniqueUsernameAsync(info.Email),
+                    UserName = desiredUsername,
                     Email = info.Email,
                     EmailConfirmed = true,
                     AccountStatus = UserAccountStatus.Active,
