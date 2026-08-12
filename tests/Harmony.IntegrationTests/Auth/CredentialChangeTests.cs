@@ -530,16 +530,26 @@ public class CredentialChangeTests : ApiTestBase, IClassFixture<HarmonyWebApplic
     }
 
     /// <summary>Signs in via the fake Google verifier for a brand-new verified identity, leaving
-    /// Client authenticated with that (passwordless) account's access token.</summary>
+    /// Client authenticated with that (passwordless) account's access token.
+    /// <para>
+    /// A username is REQUIRED here: for an identity that matches no existing account, /auth/google
+    /// creates nothing and returns NeedsUsername instead — registration completes only on a second
+    /// call carrying the chosen name. Omitting it yields a 200 with a null access token, which
+    /// EnsureSuccessStatusCode happily accepts and which then surfaces as a 401 two calls later.
+    /// </para></summary>
     private async Task LoginWithGoogleAsync(string email)
     {
         var idToken = Factory
             .Services.GetRequiredService<HarmonyWebApplicationFactory.FakeGoogleTokenVerifier>()
             .Register(new GoogleUserInfo(Guid.NewGuid().ToString("N"), email, true, null));
 
-        var response = await Client.PostAsJsonAsync("/api/auth/google", new { idToken });
+        var username = $"g{Guid.NewGuid():N}"[..16];
+        var response = await Client.PostAsJsonAsync("/api/auth/google", new { idToken, username });
         response.EnsureSuccessStatusCode();
         var body = (await response.Content.ReadFromJsonAsync<AuthResponse>())!;
+        // Asserted so a future regression fails HERE, naming the real cause, instead of as an
+        // unexplained 401 in whichever test happened to call this helper.
+        body.AccessToken.Should().NotBeNullOrEmpty("the Google sign-up must complete in one call");
         Client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
             "Bearer",
             body.AccessToken
