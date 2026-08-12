@@ -19,10 +19,6 @@ on:
     branches: [main]
   workflow_dispatch: # rebuild/repush on demand without a new commit
 
-env:
-  # GHCR requires an all-lowercase path. `mohammadfakih02` already is.
-  IMAGE: ghcr.io/${{ github.repository_owner }}/harmony-api
-
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
@@ -33,9 +29,15 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Compute short SHA
+      # GHCR rejects any tag whose repository path contains an uppercase letter, and
+      # `github.repository_owner` preserves the account's original casing
+      # (`MohammadFakih02`), so it must be lowercased here rather than used directly.
+      - name: Compute image name and short SHA
         id: vars
-        run: echo "sha_short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+        run: |
+          owner_lc=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          echo "image=ghcr.io/$owner_lc/harmony-api" >> "$GITHUB_OUTPUT"
+          echo "sha_short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
@@ -59,8 +61,8 @@ jobs:
           context: .
           push: true
           tags: |
-            ${{ env.IMAGE }}:latest
-            ${{ env.IMAGE }}:sha-${{ steps.vars.outputs.sha_short }}
+            ${{ steps.vars.outputs.image }}:latest
+            ${{ steps.vars.outputs.image }}:sha-${{ steps.vars.outputs.sha_short }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -70,8 +72,8 @@ jobs:
             echo "### Pushed"
             echo ""
             echo '```'
-            echo "${{ env.IMAGE }}:latest"
-            echo "${{ env.IMAGE }}:sha-${{ steps.vars.outputs.sha_short }}"
+            echo "${{ steps.vars.outputs.image }}:latest"
+            echo "${{ steps.vars.outputs.image }}:sha-${{ steps.vars.outputs.sha_short }}"
             echo '```'
             echo ""
             echo "Deploy on the server:"
