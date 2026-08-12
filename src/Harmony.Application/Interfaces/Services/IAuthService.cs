@@ -80,12 +80,21 @@ public interface IAuthService
         CancellationToken ct = default
     );
 
-    /// <summary>Signs in (or auto-registers / auto-links) a user from a verified Google ID token.
+    /// <summary>Signs in (or auto-links / registers) a user from a verified Google ID token.
     /// Never returns a 2FA challenge — a federated Google sign-in bypasses local email-code 2FA.
+    /// <para>
+    /// When the token resolves to no existing account and <paramref name="username"/> is null,
+    /// NOTHING is created: the returned <see cref="LoginResponse.NeedsUsername"/> is true, the
+    /// refresh token is null, and the caller is expected to re-invoke with the same token plus a
+    /// chosen name. This is why the refresh token is nullable — the sign-in is incomplete, exactly
+    /// as it is for an unanswered 2FA challenge.
+    /// </para>
     /// Throws AuthenticationException for an invalid token, an unverified Google email, or an
-    /// inactive account.</summary>
-    Task<(LoginResponse response, string rawRefreshToken)> GoogleLoginAsync(
+    /// inactive account; ConflictException when the chosen username is taken; ArgumentException
+    /// when it fails validation.</summary>
+    Task<(LoginResponse response, string? rawRefreshToken)> GoogleLoginAsync(
         string idToken,
+        string? username = null,
         CancellationToken ct = default
     );
 

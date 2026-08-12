@@ -324,8 +324,14 @@ public class AuthController : HarmonyControllerBase
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
     public async Task<IActionResult> GoogleLogin([FromBody] GoogleLoginRequest request)
     {
-        var (response, rawRefreshToken) = await _authService.GoogleLoginAsync(request.IdToken);
-        SetRefreshCookie(rawRefreshToken);
+        var (response, rawRefreshToken) = await _authService.GoogleLoginAsync(
+            request.IdToken,
+            request.Username
+        );
+        // Null on a first call that needs a username — no account exists yet, so there is nothing to
+        // hold a session for. Same shape as the 2FA-challenge branch of Login.
+        if (rawRefreshToken is not null)
+            SetRefreshCookie(rawRefreshToken);
         return Ok(response);
     }
 

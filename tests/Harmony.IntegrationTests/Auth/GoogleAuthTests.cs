@@ -16,7 +16,7 @@ public class GoogleAuthTests : ApiTestBase, IClassFixture<HarmonyWebApplicationF
         : base(factory) { }
 
     [Fact]
-    public async Task GoogleLogin_ShouldCreateANewAccount_ForABrandNewVerifiedIdentity()
+    public async Task GoogleLogin_ShouldAskForAUsername_AndCreateNothing_ForABrandNewVerifiedIdentity()
     {
         var email = $"googlenew{Guid.NewGuid():N}@example.com";
         var idToken = RegisterGoogleIdentity(email, emailVerified: true);
@@ -25,10 +25,92 @@ public class GoogleAuthTests : ApiTestBase, IClassFixture<HarmonyWebApplicationF
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
         var body = (await response.Content.ReadFromJsonAsync<LoginResponse>())!;
+        body.NeedsUsername.Should().BeTrue();
+        body.SuggestedUsername.Should().NotBeNullOrEmpty();
+        body.Email.Should().Be(email);
+        // No session — the account does not exist yet.
+        body.AccessToken.Should().BeNull();
+        body.User.Should().BeNull();
+
+        // Nothing was created, so a normal registration on that email must still succeed.
+        var register = await Client.PostAsJsonAsync(
+            "/api/auth/register",
+            new { username = $"gnu{Guid.NewGuid():N}"[..20], email, password = "Password123!" }
+        );
+        register.StatusCode.Should().Be(HttpStatusCode.OK);
+    }
+
+    [Fact]
+    public async Task GoogleLogin_ShouldCreateTheAccount_WithTheChosenUsername_OnTheSecondCall()
+    {
+        var email = $"googlepick{Guid.NewGuid():N}@example.com";
+        var idToken = RegisterGoogleIdentity(email, emailVerified: true);
+        var chosen = $"picked{Guid.NewGuid():N}"[..16];
+
+        var response = await Client.PostAsJsonAsync(
+            "/api/auth/google",
+            new { idToken, username = chosen }
+        );
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = (await response.Content.ReadFromJsonAsync<LoginResponse>())!;
+        body.NeedsUsername.Should().BeFalse();
         body.TwoFactorRequired.Should().BeFalse();
         body.AccessToken.Should().NotBeNullOrEmpty();
         body.User!.Email.Should().Be(email);
         body.User.EmailVerified.Should().BeTrue();
+        // The whole point: the name the user picked, not one derived from the email.
+        body.User.Username.Should().Be(chosen);
+    }
+
+    [Fact]
+    public async Task GoogleLogin_ShouldReject_WhenTheChosenUsernameIsTaken()
+    {
+        var taken = $"taken{Guid.NewGuid():N}"[..16];
+        await RegisterAsync(taken, $"googletaken{Guid.NewGuid():N}@example.com");
+
+        var email = $"googleclash{Guid.NewGuid():N}@example.com";
+        var idToken = RegisterGoogleIdentity(email, emailVerified: true);
+
+        var response = await Client.PostAsJsonAsync(
+            "/api/auth/google",
+            new { idToken, username = taken }
+        );
+
+        response.StatusCode.Should().Be(HttpStatusCode.Conflict);
+    }
+
+    [Fact]
+    public async Task GoogleLogin_ShouldReject_WhenTheChosenUsernameIsTooShort()
+    {
+        var email = $"googleshort{Guid.NewGuid():N}@example.com";
+        var idToken = RegisterGoogleIdentity(email, emailVerified: true);
+
+        var response = await Client.PostAsJsonAsync(
+            "/api/auth/google",
+            new { idToken, username = "a" }
+        );
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    [Fact]
+    public async Task GoogleLogin_ShouldIgnoreASuppliedUsername_WhenLinkingAnExistingAccount()
+    {
+        var original = $"orig{Guid.NewGuid():N}"[..16];
+        var (email, _) = await RegisterAsync(original, $"googlekeep{Guid.NewGuid():N}@example.com");
+        var idToken = RegisterGoogleIdentity(email, emailVerified: true);
+
+        var response = await Client.PostAsJsonAsync(
+            "/api/auth/google",
+            new { idToken, username = "somethingelse" }
+        );
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = (await response.Content.ReadFromJsonAsync<LoginResponse>())!;
+        // A sign-in must never rename an account that already exists — renaming is a separate,
+        // password-gated credential change.
+        body.User!.Username.Should().Be(original);
     }
 
     [Fact]
@@ -94,7 +176,11 @@ public class GoogleAuthTests : ApiTestBase, IClassFixture<HarmonyWebApplicationF
         var subject = Guid.NewGuid().ToString("N");
         var firstToken = RegisterGoogleIdentity(email, emailVerified: true, subject: subject);
 
-        var first = await Client.PostAsJsonAsync("/api/auth/google", new { idToken = firstToken });
+        // First sign-in creates the account, so it must carry the chosen username.
+        var first = await Client.PostAsJsonAsync(
+            "/api/auth/google",
+            new { idToken = firstToken, username = $"repeat{Guid.NewGuid():N}"[..16] }
+        );
         var firstBody = (await first.Content.ReadFromJsonAsync<LoginResponse>())!;
 
         var secondToken = RegisterGoogleIdentity(email, emailVerified: true, subject: subject);
@@ -213,7 +299,12 @@ public class GoogleAuthTests : ApiTestBase, IClassFixture<HarmonyWebApplicationF
         string? AccessToken,
         AuthUser? User,
         bool TwoFactorRequired,
-        string? ChallengeToken
+        string? ChallengeToken,
+        // Set when a verified Google identity matches no account: the caller must come back with a
+        // chosen username, and nothing has been created yet.
+        bool NeedsUsername = false,
+        string? SuggestedUsername = null,
+        string? Email = null
     );
 
     private record AuthUser(long Id, string Username, string Email, bool EmailVerified, bool TwoFactorEnabled);

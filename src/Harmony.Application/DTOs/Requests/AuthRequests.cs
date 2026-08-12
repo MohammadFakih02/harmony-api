@@ -32,7 +32,11 @@ public record ResetPasswordRequest(string UserId, string Token, string NewPasswo
 
 // --- Google sign-in (Stage D) ---
 
-public record GoogleLoginRequest(string IdToken);
+// Username is null on the FIRST call. If the ID token resolves to no existing account, the response
+// comes back with NeedsUsername and the caller re-posts the SAME token plus a chosen username, which
+// is when the account is actually created. Sign-ins and auto-links ignore Username entirely — an
+// existing account's name is never overwritten by this path.
+public record GoogleLoginRequest(string IdToken, string? Username = null);
 
 // --- Credential changes (Stage E) ---
 
