@@ -28,12 +28,6 @@ RUN dotnet publish src/Harmony.API/Harmony.API.csproj -c Release -o /app --no-re
 FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
 WORKDIR /app
 
-# Links the published GHCR package back to this repository. Without it, a package
-# pushed from CI is an orphan that the repo's GITHUB_TOKEN has no write access to —
-# which fails as `denied: permission_denied: write_package` on the push step.
-LABEL org.opencontainers.image.source="https://github.com/MohammadFakih02/harmony-api"
-LABEL org.opencontainers.image.description="Harmony API — ASP.NET Core backend (REST + SignalR hubs)"
-
 # curl is used by the compose healthcheck (the aspnet base image doesn't ship it).
 RUN apt-get update \
  && apt-get install -y --no-install-recommends curl \
