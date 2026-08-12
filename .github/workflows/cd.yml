@@ -1,34 +1,85 @@
 name: CD
 
+# Continuous DELIVERY, not deployment: every commit that reaches `main` produces an
+# immutable, deployable image in GHCR. Promoting one to the running environment is a
+# deliberate `docker compose pull && up -d` on the server — see Harmony/AWS-HOSTING.md.
+#
+# The deploy target is a single EC2 instance that is kept STOPPED between rehearsals,
+# so an automatic deploy step would fail on most runs and would require either an SSH
+# key in Actions secrets or inbound access from GitHub's IP ranges. Neither is worth it
+# to reach a box that is usually powered off.
+#
+# `main` is protected (PR-only), and ci.yml runs the full suite on every pull request,
+# so this workflow deliberately does NOT re-run the tests — it only packages the merge
+# commit. A compile error still fails here, because `dotnet publish` runs inside the
+# Docker build.
+
 on:
   push:
-    branches: [develop]
+    branches: [main]
+  workflow_dispatch: # rebuild/repush on demand without a new commit
 
 jobs:
-  deploy:
+  build-and-push:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write # lets the built-in GITHUB_TOKEN push to GHCR — no PAT needed
 
     steps:
       - uses: actions/checkout@v5
 
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v5
+      # GHCR rejects any tag whose repository path contains an uppercase letter, and
+      # `github.repository_owner` preserves the account's original casing
+      # (`MohammadFakih02`), so it must be lowercased here rather than used directly.
+      - name: Compute image name and short SHA
+        id: vars
+        run: |
+          owner_lc=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          echo "image=ghcr.io/$owner_lc/harmony-api" >> "$GITHUB_OUTPUT"
+          echo "sha_short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
         with:
-          dotnet-version: '10.0.x'
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Restore dependencies
-        run: dotnet restore
+      # Two tags on purpose:
+      #   latest        — what the server pulls by default
+      #   sha-<commit>  — an immutable handle for rollback and for pinning the demo.
+      #                   The prod overlay reads ${IMAGE_TAG}, so putting
+      #                   IMAGE_TAG=sha-abc1234 in the server's .env freezes the box to
+      #                   an exact commit that no later push to main can change.
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ steps.vars.outputs.image }}:latest
+            ${{ steps.vars.outputs.image }}:sha-${{ steps.vars.outputs.sha_short }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
-      - name: Build
-        run: dotnet build --no-restore --configuration Release
-
-      - name: Publish
-        run: dotnet publish src/Harmony.API --configuration Release --output ./publish
-
-      # - name: Deploy to Railway
-      #   env:
-      #     RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
-      #     RAILWAY_SERVICE_ID: ${{ secrets.RAILWAY_SERVICE_ID }}
-      #   run: |
-      #     npm install -g @railway/cli
-      #     railway up --service $RAILWAY_SERVICE_ID
+      - name: Summary
+        run: |
+          {
+            echo "### Pushed"
+            echo ""
+            echo '```'
+            echo "${{ steps.vars.outputs.image }}:latest"
+            echo "${{ steps.vars.outputs.image }}:sha-${{ steps.vars.outputs.sha_short }}"
+            echo '```'
+            echo ""
+            echo "Deploy on the server:"
+            echo '```bash'
+            echo "cd ~/harmony"
+            echo "docker compose -f docker-compose.yml -f docker-compose.prod.yml pull"
+            echo "docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
