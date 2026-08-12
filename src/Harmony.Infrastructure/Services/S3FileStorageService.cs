@@ -1,4 +1,3 @@
-using Amazon;
 using Amazon.S3;
 using Amazon.S3.Model;
 using Amazon.S3.Util;
@@ -20,15 +19,9 @@ namespace Harmony.Infrastructure.Services;
 /// <c>ObjectStorage</c> section so the SDK types stay confined to Infrastructure. Registered as a
 /// singleton (the client is thread-safe and holds the connection).
 ///
-/// Two modes, chosen by whether <c>ObjectStorage:Region</c> is set. <b>Real S3</b> (region set):
-/// region-routed, virtual-hosted addressing, presigns always https. <b>S3-compatible</b> (region
-/// absent — MinIO in dev/test): explicit <c>ServiceURL</c> + <c>ForcePathStyle = true</c>, and the
-/// presign <c>Protocol</c> is pinned to match <c>UseSSL</c>, since the SDK otherwise always mints
-/// https URLs, which a plain-http MinIO rejects.
-///
-/// Credentials follow the same split: explicit keys when configured, otherwise the SDK's default
-/// credential chain — which on EC2 resolves the instance role, so production needs no long-lived
-/// secrets on the host.
+/// MinIO specifics: <c>ForcePathStyle = true</c> (path-style bucket addressing) and the presign
+/// <c>Protocol</c> is pinned to match <c>UseSSL</c> — the SDK otherwise always mints https URLs,
+/// which a plain-http MinIO rejects.
 /// </summary>
 public sealed class S3FileStorageService : IFileStorageService
 {
@@ -46,45 +39,24 @@ public sealed class S3FileStorageService : IFileStorageService
         var section = configuration.GetSection("ObjectStorage");
         _bucket = section["BucketName"] ?? "harmony";
 
-        var region = section["Region"];
+        var endpoint = section["Endpoint"] ?? "localhost:9000";
         var accessKey = section["AccessKey"] ?? "";
         var secretKey = section["SecretKey"] ?? "";
         var useSsl = section.GetValue("UseSSL", false);
+        _presignProtocol = useSsl ? Protocol.HTTPS : Protocol.HTTP;
 
-        AmazonS3Config config;
-        if (!string.IsNullOrWhiteSpace(region))
+        var config = new AmazonS3Config
         {
-            // Real AWS S3 — the SDK routes by region and mints virtual-hosted https URLs.
-            config = new AmazonS3Config { RegionEndpoint = RegionEndpoint.GetBySystemName(region) };
-            _presignProtocol = Protocol.HTTPS;
-        }
-        else
-        {
-            // S3-compatible (MinIO): address it explicitly, path-style, and match its scheme.
-            var endpoint = section["Endpoint"] ?? "localhost:9000";
-            config = new AmazonS3Config
-            {
-                ServiceURL = $"{(useSsl ? "https" : "http")}://{endpoint}",
-                ForcePathStyle = true,
-            };
-            _presignProtocol = useSsl ? Protocol.HTTPS : Protocol.HTTP;
-        }
-
-        // No configured key => default credential chain (the EC2 instance role in production).
-        _client = string.IsNullOrWhiteSpace(accessKey)
-            ? new AmazonS3Client(config)
-            : new AmazonS3Client(accessKey, secretKey, config);
+            ServiceURL = $"{(useSsl ? "https" : "http")}://{endpoint}",
+            ForcePathStyle = true,
+        };
+        _client = new AmazonS3Client(accessKey, secretKey, config);
     }
 
     public async Task EnsureBucketAsync(CancellationToken ct = default)
     {
         if (!await AmazonS3Util.DoesS3BucketExistV2Async(_client, _bucket))
-            // UseClientRegion sends the LocationConstraint that every region except us-east-1
-            // requires; MinIO ignores it.
-            await _client.PutBucketAsync(
-                new PutBucketRequest { BucketName = _bucket, UseClientRegion = true },
-                ct
-            );
+            await _client.PutBucketAsync(new PutBucketRequest { BucketName = _bucket }, ct);
     }
 
     public Task<string> GetPresignedPutUrlAsync(
