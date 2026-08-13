@@ -13,8 +13,7 @@ public class UnreadCountServiceTests
     private static (
         RedisUnreadCountService sut,
         Mock<IReadStateRepository> readState,
-        Mock<IHubBroadcaster> broadcaster,
-        Mock<IGuildRepository> guilds
+        Mock<IHubBroadcaster> broadcaster
     ) BuildSut(bool redisConnected)
     {
         var provider = new Mock<IRedisConnectionProvider>();
@@ -23,11 +22,10 @@ public class UnreadCountServiceTests
             .Setup(p => p.Connection)
             .Returns((StackExchange.Redis.IConnectionMultiplexer?)null);
 
-        var guilds = new Mock<IGuildRepository>();
         var readState = new Mock<IReadStateRepository>();
         var broadcaster = new Mock<IHubBroadcaster>();
 
-        // By default every member can view the channel (preserves pre-filter fan-out behavior).
+        // Default: every channel is viewable (the read path gates on HasAsync now).
         var permissions = new Mock<IPermissionService>();
         permissions
             .Setup(p => p.HasAsync(
@@ -37,23 +35,11 @@ public class UnreadCountServiceTests
                 It.IsAny<long?>(),
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(true);
-        // The fan-out gates on the batched filter, not HasAsync. Mirror the "everyone can view"
-        // default by echoing the candidates back — without this the mock returns null and the
-        // fan-out NREs rather than failing on an assertion.
-        permissions
-            .Setup(p => p.FilterByPermissionAsync(
-                It.IsAny<IReadOnlyList<long>>(),
-                It.IsAny<long>(),
-                It.IsAny<Harmony.Domain.Domain.Enums.Permission>(),
-                It.IsAny<long?>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync((IReadOnlyList<long> ids, long _, Harmony.Domain.Domain.Enums.Permission _, long? _, CancellationToken _) => ids.ToList());
 
         var dms = new Mock<IDirectMessageRepository>();
 
         var sut = new RedisUnreadCountService(
             provider.Object,
-            guilds.Object,
             readState.Object,
             broadcaster.Object,
             permissions.Object,
@@ -61,18 +47,20 @@ public class UnreadCountServiceTests
             NullLogger<RedisUnreadCountService>.Instance
         );
 
-        return (sut, readState, broadcaster, guilds);
+        return (sut, readState, broadcaster);
     }
 
     [Fact]
-    public async Task IncrementForChannelAsync_WhenRedisDown_DoesNotBroadcastOrThrow()
+    public async Task IncrementForChannelAsync_GuildChannel_WhenRedisDown_SendsNoPerUserUpdateAndDoesNotThrow()
     {
-        var (sut, _, broadcaster, guilds) = BuildSut(redisConnected: false);
+        var (sut, _, broadcaster) = BuildSut(redisConnected: false);
 
         var act = () => sut.IncrementForChannelAsync(guildId: 1, channelId: 2, senderUserId: 99);
 
+        // The durable INCR is skipped (Redis down), but the guild path never uses the per-user
+        // UnreadCountUpdated fan-out — that's the whole D3 point. The live ChannelActivity ping is
+        // independent of Redis and may still fire; it must not throw.
         await act.Should().NotThrowAsync();
-        guilds.Verify(g => g.GetMemberIdsAsync(It.IsAny<long>()), Times.Never);
         broadcaster.Verify(
             b =>
                 b.BroadcastUnreadCountAsync(
@@ -87,9 +75,12 @@ public class UnreadCountServiceTests
     [Fact]
     public async Task GetUnreadForUserAsync_WhenRedisDown_ReturnsEmpty()
     {
-        var (sut, _, _, _) = BuildSut(redisConnected: false);
+        var (sut, _, _) = BuildSut(redisConnected: false);
 
-        var result = await sut.GetUnreadForUserAsync(userId: 5, channelIds: [10, 11, 12]);
+        var result = await sut.GetUnreadForUserAsync(
+            userId: 5,
+            channelGuildMap: new Dictionary<long, long> { [10] = 1, [11] = 1, [12] = 1 }
+        );
 
         result.Should().BeEmpty();
     }
@@ -97,7 +88,7 @@ public class UnreadCountServiceTests
     [Fact]
     public async Task MarkReadAsync_WritesReadStateFirst_ThenBroadcastsZero_EvenWhenRedisDown()
     {
-        var (sut, readState, broadcaster, _) = BuildSut(redisConnected: false);
+        var (sut, readState, broadcaster) = BuildSut(redisConnected: false);
 
         await sut.MarkReadAsync(userId: 5, guildId: 1, channelId: 10, lastReadMessageId: 9000);
 

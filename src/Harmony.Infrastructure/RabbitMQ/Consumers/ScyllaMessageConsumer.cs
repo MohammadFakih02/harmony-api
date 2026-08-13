@@ -5,6 +5,7 @@ using Harmony.Application.DTOs.Responses;
 using Harmony.Application.Exceptions;
 using Harmony.Application.Hubs;
 using Harmony.Application.Interfaces.Services;
+using Harmony.Application.Messaging;
 using Harmony.Domain.Interfaces;
 using Harmony.Domain.Interfaces.Repositories;
 using Harmony.Infrastructure.Scylla;
@@ -639,70 +640,22 @@ public class ScyllaMessageConsumer : BackgroundService
         // 2. Persist to ScyllaDB + create mention notifications
         await handler.HandleMessageSentAsync(evt);
 
-        // 3. Broadcast authoritative message to channel subscribers
-        // Fetch sender's display info for the client (best-effort; falls back to "Unknown").
-        // Read-through the shared Redis cache first — this runs on every message, so avoiding the
-        // per-message Postgres round-trip (and rented DbContext) is the point. A miss (or Redis
-        // down) falls back to the repository and repopulates. The cache is invalidated on username
-        // /avatar change, and a short TTL backstops any missed invalidation.
-        string senderUsername = "Unknown";
-        string? senderAvatarKey = null;
-        try
+        // 3. Broadcast authoritative message to channel subscribers — UNLESS the D2a ChannelGrain
+        //    already fanned it out (broadcast-first prod path sets BroadcastAlready). Persistence
+        //    (step 2 above) and unread fan-out (step 4 below) run on BOTH paths; only this broadcast
+        //    is the grain's job when it ran. The sender-display resolve (Redis read-through cache +
+        //    repo fallback, best-effort → "Unknown") and the response build are the shared
+        //    MessageSendFanout helpers, so this path and the grain can't drift.
+        if (!evt.BroadcastAlready)
         {
             var cache = services.GetRequiredService<IUserDisplayCache>();
-            var display = await cache.GetAsync(evt.UserId);
-            if (display is null)
-            {
-                var userRepo = services.GetRequiredService<IUserRepository>();
-                var sender = await userRepo.GetByIdAsync(evt.UserId);
-                display = new UserDisplay(sender?.UserName ?? "Unknown", sender?.AvatarKey);
-                // Don't cache a not-yet-existing user's "Unknown" placeholder — only a real row.
-                if (sender is not null)
-                    await cache.SetAsync(evt.UserId, display.Value);
-            }
-            senderUsername = display.Value.Username;
-            senderAvatarKey = display.Value.AvatarKey;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(
-                ex,
-                "ScyllaConsumer: could not fetch sender info for {UserId}",
-                evt.UserId
-            );
-        }
+            var users = services.GetRequiredService<IUserRepository>();
+            var display = await MessageSendFanout.ResolveSenderDisplayAsync(
+                cache, users, evt.UserId, _logger);
 
-        await _hubBroadcaster.BroadcastMessageReceivedAsync(
-            new MessageResponse(
-                MessageId: evt.MessageId,
-                ChannelId: evt.ChannelId,
-                GuildId: evt.GuildId,
-                UserId: evt.UserId,
-                Username: senderUsername,
-                AvatarKey: senderAvatarKey,
-                Content: evt.Content,
-                MessageType: evt.MessageType,
-                IsDeleted: false,
-                IsEdited: false,
-                ReplyToId: evt.ReplyToId,
-                MentionIds: evt.MentionIds,
-                AttachmentIds: evt.AttachmentIds,
-                SentAt: evt.SentAt.ToUnixTimeMilliseconds(),
-                EditedAt: null,
-                // A brand-new message has no reactions yet — they arrive via ReactionAdded events.
-                Reactions: [],
-                Forward: evt.Forward is null
-                    ? null
-                    : new ForwardSnapshotResponse(
-                        evt.Forward.AuthorId,
-                        evt.Forward.AuthorName,
-                        evt.Forward.Content,
-                        evt.Forward.SentAt
-                    ),
-                // Echo the sender's optimistic-send token so their client can reconcile in place.
-                Nonce: evt.Nonce
-            )
-        );
+            await _hubBroadcaster.BroadcastMessageReceivedAsync(
+                MessageSendFanout.BuildReceived(evt, display));
+        }
 
         // 4. Unread fan-out — best-effort. MUST be swallowed: the message is already
         //    persisted and broadcast, so an unread failure must not bubble into the
@@ -737,16 +690,19 @@ public class ScyllaMessageConsumer : BackgroundService
         // 2. Soft-delete in ScyllaDB
         await handler.HandleMessageDeletedAsync(evt);
 
-        // 3. Notify channel subscribers
-        await _hubBroadcaster.BroadcastMessageDeletedAsync(
-            new MessageDeletedPayload(
-                MessageId: evt.MessageId,
-                ChannelId: evt.ChannelId,
-                GuildId: evt.GuildId,
-                DeletedByUserId: evt.DeletedByUserId,
-                DeletedAt: evt.DeletedAt.ToUnixTimeMilliseconds()
-            )
-        );
+        // 3. Notify channel subscribers — UNLESS the D2b ChannelGrain already broadcast it.
+        if (!evt.BroadcastAlready)
+        {
+            await _hubBroadcaster.BroadcastMessageDeletedAsync(
+                new MessageDeletedPayload(
+                    MessageId: evt.MessageId,
+                    ChannelId: evt.ChannelId,
+                    GuildId: evt.GuildId,
+                    DeletedByUserId: evt.DeletedByUserId,
+                    DeletedAt: evt.DeletedAt.ToUnixTimeMilliseconds()
+                )
+            );
+        }
 
         _logger.LogInformation(
             "ScyllaConsumer: MessageDeleted persisted and broadcast — MessageId: {MessageId}",
@@ -772,17 +728,20 @@ public class ScyllaMessageConsumer : BackgroundService
         // 2. Update content in ScyllaDB
         await handler.HandleMessageEditedAsync(evt);
 
-        // 3. Notify channel subscribers
-        await _hubBroadcaster.BroadcastMessageEditedAsync(
-            new MessageEditedPayload(
-                MessageId: evt.MessageId,
-                ChannelId: evt.ChannelId,
-                GuildId: evt.GuildId,
-                EditedByUserId: evt.EditedByUserId,
-                NewContent: evt.NewContent,
-                EditedAt: evt.EditedAt.ToUnixTimeMilliseconds()
-            )
-        );
+        // 3. Notify channel subscribers — UNLESS the D2b ChannelGrain already broadcast it.
+        if (!evt.BroadcastAlready)
+        {
+            await _hubBroadcaster.BroadcastMessageEditedAsync(
+                new MessageEditedPayload(
+                    MessageId: evt.MessageId,
+                    ChannelId: evt.ChannelId,
+                    GuildId: evt.GuildId,
+                    EditedByUserId: evt.EditedByUserId,
+                    NewContent: evt.NewContent,
+                    EditedAt: evt.EditedAt.ToUnixTimeMilliseconds()
+                )
+            );
+        }
 
         _logger.LogInformation(
             "ScyllaConsumer: MessageEdited persisted and broadcast — MessageId: {MessageId}",

@@ -78,6 +78,16 @@ public interface IChatClient
     Task UnreadCountUpdated(UnreadCountPayload payload);
 
     /// <summary>
+    /// (D3) A lightweight "new message in this guild channel" signal, sent once to the whole
+    /// guild group per message — the O(1) replacement for the per-recipient unread fan-out. The
+    /// client bumps its own unread for the channel by 1 (skipping the active channel and its own
+    /// messages); the authoritative count is computed read-time as channel-count − mark. Carries
+    /// no content/channel-name; hidden-channel confidentiality on load is enforced by the
+    /// ViewChannel filter in the unread read path.
+    /// </summary>
+    Task ChannelActivity(ChannelActivityPayload payload);
+
+    /// <summary>
     /// Fired when the consumer's Scylla persist fails after all retries are exhausted.
     /// Sent only to the original sender via Clients.User — other users never saw an
     /// optimistic copy and must not receive this event.
@@ -306,6 +316,9 @@ public record ChannelDeletedPayload(long ChannelId, long GuildId, long DeletedAt
 
 /// <summary>Absolute unread count for one user in one channel. GuildId is null for DMs.</summary>
 public record UnreadCountPayload(long ChannelId, long? GuildId, int UnreadCount);
+
+/// <summary>(D3) Guild-channel new-message signal for the live unread bump. Ids only — no content.</summary>
+public record ChannelActivityPayload(long ChannelId, long GuildId, long AuthorId);
 
 /// <summary>Failure notification sent to the original sender of an undeliverable message. GuildId is null for DMs.</summary>
 public record MessageFailedPayload(long MessageId, long ChannelId, long? GuildId);

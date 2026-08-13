@@ -98,6 +98,12 @@ public class HubBroadcaster : IHubBroadcaster
         CancellationToken ct = default
     ) => _hubContext.Clients.User(userId.ToString()).UnreadCountUpdated(payload);
 
+    public Task BroadcastChannelActivityAsync(
+        ChannelActivityPayload payload,
+        CancellationToken ct = default
+    ) =>
+        _hubContext.Clients.Group(ChatHub.GuildGroup(payload.GuildId)).ChannelActivity(payload);
+
     public Task BroadcastMessageFailedAsync(
         long senderId,
         MessageFailedPayload payload,

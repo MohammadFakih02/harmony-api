@@ -75,6 +75,16 @@ public interface IHubBroadcaster
     );
 
     /// <summary>
+    /// (D3) Broadcasts the guild-channel new-message signal to the whole guild group — one send
+    /// per message, replacing the per-recipient unread fan-out. Clients bump their own unread
+    /// locally; the authoritative count is read-time (channel-count − mark).
+    /// </summary>
+    Task BroadcastChannelActivityAsync(
+        ChannelActivityPayload payload,
+        CancellationToken ct = default
+    );
+
+    /// <summary>
     /// Notifies the original sender that their message failed to persist after all retries.
     /// Per-sender only (Clients.User) — other users never saw an optimistic copy.
     /// </summary>

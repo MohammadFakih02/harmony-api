@@ -2,6 +2,7 @@ using Harmony.Application.DTOs.Requests;
 using Harmony.Application.DTOs.Responses;
 using Harmony.Application.Hubs;
 using Harmony.Application.Interfaces.Services;
+using Harmony.Application.Messaging;
 using Harmony.Application.Services;
 using Harmony.Domain.Domain.Entities;
 using Harmony.Domain.Domain.Enums;
@@ -17,6 +18,7 @@ public class MessageService : IMessageService
     private readonly IChannelRepository _channelRepository;
     private readonly IGuildRepository _guildRepository;
     private readonly IMessagePublisher _publisher;
+    private readonly IChannelDispatcher _dispatcher;
     private readonly ISnowflakeIdGenerator _snowflake;
     private readonly IMessageRepository _messageRepository;
     private readonly IUserRepository _userRepository;
@@ -57,12 +59,18 @@ public class MessageService : IMessageService
         IRoleRepository roles,
         ISlowmodeGate slowmode,
         IMessageReactionRepository reactions,
-        IFileStorageService storage
+        IFileStorageService storage,
+        // D2a send-fan-out seam. DI always injects the registered impl (grain path in prod/dev,
+        // LegacyChannelDispatcher in Test). Optional + defaulted so the MessageService unit tests
+        // that pre-date D2a construct without it and still exercise the byte-identical publish path
+        // (the fallback wraps the same publisher they assert on).
+        IChannelDispatcher? dispatcher = null
     )
     {
         _channelRepository = channelRepository;
         _guildRepository = guildRepository;
         _publisher = publisher;
+        _dispatcher = dispatcher ?? new LegacyChannelDispatcher(publisher);
         _snowflake = snowflake;
         _messageRepository = messageRepository;
         _userRepository = userRepository;
@@ -313,7 +321,10 @@ public class MessageService : IMessageService
         // Cap the length so a hostile client can't bloat the event/broadcast payload.
         var nonce = request.Nonce is { Length: > 0 and <= 64 } n ? n : null;
 
-        await _publisher.PublishMessageSentAsync(
+        // D2a: hand off to the send-fan-out seam instead of publishing directly. The grain path
+        // (prod/dev) broadcasts first then republishes as the persist log; the legacy path (Test)
+        // publishes to RabbitMQ so the consumer broadcasts — identical to the pre-D2a behaviour.
+        await _dispatcher.DispatchSentAsync(
             new MessageSentEvent(
                 MessageId: messageId,
                 ChannelId: channelId,
@@ -542,8 +553,10 @@ public class MessageService : IMessageService
             }
         }
 
-        // 2. Publish event to background queues (search index update)
-        await _publisher.PublishMessageDeletedAsync(
+        // 2. Dispatch for broadcast + background work (D2b). Scylla is already soft-deleted above, so
+        //    the grain path broadcasts the deletion immediately; the legacy path publishes so the
+        //    consumer broadcasts. Both feed the search-index consumer.
+        await _dispatcher.DispatchDeletedAsync(
             new MessageDeletedEvent(
                 MessageId: messageId,
                 ChannelId: channelId,
@@ -637,8 +650,10 @@ public class MessageService : IMessageService
         // matches the consumer's newly-mentioned diff, so an already-pinged user isn't reconsidered.
         var newEveryone = resolved.EveryoneOnly.Except(oldMentionIds).ToList();
 
-        // 2. Publish event to background queues (search index update)
-        await _publisher.PublishMessageEditedAsync(
+        // 2. Dispatch for broadcast + background work (D2b). Scylla content is already updated above,
+        //    so the grain path broadcasts the edit immediately; the legacy path publishes so the
+        //    consumer broadcasts. Both feed the search-index consumer + newly-added-mention notifications.
+        await _dispatcher.DispatchEditedAsync(
             new MessageEditedEvent(
                 MessageId: messageId,
                 ChannelId: channelId,

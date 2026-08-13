@@ -24,6 +24,7 @@ using Microsoft.AspNetCore.ResponseCompression;
 using Microsoft.Extensions.Hosting;
 using Microsoft.IdentityModel.Tokens;
 using Orleans.Hosting;
+using Orleans.Serialization;
 using Serilog;
 using Serilog.Formatting.Compact;
 
@@ -298,8 +299,15 @@ builder.Services.AddOpenApi(options =>
 if (!builder.Environment.IsEnvironment("Test"))
 {
     builder.Host.UseOrleans(silo =>
-        silo.UseLocalhostClustering().AddMemoryGrainStorage("Default")
-    );
+    {
+        silo.UseLocalhostClustering().AddMemoryGrainStorage("Default");
+        // D2a: ChannelGrain.SendMessage takes a Domain MessageSentEvent as a grain-call argument.
+        // Domain is Orleans-attribute-free by design, so delegate serialization + copy of the
+        // Harmony.Domain.Interfaces event records to System.Text.Json (their RabbitMQ wire form).
+        // Scoped to that namespace so nothing else is affected. Must match the test cluster.
+        silo.Services.AddSerializer(s => s.AddJsonSerializer(
+            type => type.Namespace?.StartsWith("Harmony.Domain.Interfaces") == true));
+    });
 
     builder.Services.AddHealthChecks().AddCheck<OrleansSiloHealthCheck>("orleans");
 }

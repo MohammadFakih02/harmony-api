@@ -29,6 +29,11 @@
          grain-storage provider used by D0 (localhost clustering, AddMemoryGrainStorage). 10.2.2
          targets net10.0. -->
     <PackageReference Include="Microsoft.Orleans.Server" Version="10.2.2" />
+    <!-- Track D2a: the ChannelGrain method takes a Domain MessageSentEvent as a grain-call argument.
+         Domain is dependency-free (Clean Architecture), so it carries no [GenerateSerializer] Orleans
+         attributes; instead the silo delegates serialization/copy of the Harmony.Domain.Interfaces
+         event records to System.Text.Json (their existing RabbitMQ wire form). -->
+    <PackageReference Include="Microsoft.Orleans.Serialization.SystemTextJson" Version="10.2.2" />
     <PackageReference Include="Serilog.AspNetCore" Version="10.0.0" />
     <PackageReference Include="Serilog.Sinks.Console" Version="6.1.1" />
     <PackageReference Include="Swashbuckle.AspNetCore" Version="10.1.7" />

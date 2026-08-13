@@ -69,7 +69,7 @@ public class ReadStatesController : HarmonyControllerBase
 
         var guilds = await _guilds.GetByUserIdAsync(userId);
         var channelGuildMap = await _channels.GetTextChannelGuildMapAsync(guilds.Select(g => g.Id));
-        var counts = await _unread.GetUnreadForUserAsync(userId, channelGuildMap.Keys);
+        var counts = await _unread.GetUnreadForUserAsync(userId, channelGuildMap);
 
         // Attach each channel's guildId so the client can roll counts up to guild badges.
         return Ok(

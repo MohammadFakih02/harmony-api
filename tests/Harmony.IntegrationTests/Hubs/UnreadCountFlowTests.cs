@@ -10,13 +10,15 @@ using Xunit;
 namespace Harmony.IntegrationTests.Hubs;
 
 /// <summary>
-/// End-to-end unread-count flow against real Redis:
-///   REST send by A → RabbitMQ → ScyllaMessageConsumer → INCR unread:{B}:{channel}
-///   → Clients.User(B).UnreadCountUpdated.
+/// End-to-end unread-count flow against real Redis (the D3 read-time model):
+///   REST send by A → RabbitMQ → ScyllaMessageConsumer → INCR channel:{ch}:count
+///   → ONE Clients.Group(guild).ChannelActivity ping (no per-recipient fan-out).
+///   Unread is read-time: GET /me/unread = channel-count − the caller's mark.
 ///
-/// Proves: recipients get the push with the correct absolute count, the SENDER
-/// does not, mark-as-read resets to zero, and GET /me/unread reflects Redis state.
-/// Requires real Redis (factory now supplies it).
+/// Proves: guild members in the guild group get the live ChannelActivity ping; the read path
+/// surfaces count − mark; and mark-as-read anchors the mark (→ 0, cleared from GET /me/unread)
+/// and still pushes the zero UnreadCountUpdated for multi-device sync. Requires real Redis.
+/// (The sender also receives the guild-group ping; skipping own messages is a client concern.)
 /// </summary>
 public class UnreadCountFlowTests : ApiTestBase, IClassFixture<HarmonyWebApplicationFactory>
 {
@@ -113,117 +115,119 @@ public class UnreadCountFlowTests : ApiTestBase, IClassFixture<HarmonyWebApplica
         resp.EnsureSuccessStatusCode();
     }
 
-    [Fact]
-    public async Task SendMessage_ShouldPushUnreadCountToRecipient_NotToSender()
+    private async Task<List<UnreadCountResponseDto>> GetUnreadAsync(string token)
     {
-        var (ownerToken, _) = await RegisterAsync("unreadowner", "u-owner@test.com");
+        Client.DefaultRequestHeaders.Authorization =
+            new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+        var resp = await Client.GetAsync("/api/users/me/unread");
+        resp.EnsureSuccessStatusCode();
+        return (await resp.Content.ReadFromJsonAsync<List<UnreadCountResponseDto>>()) ?? [];
+    }
+
+    [Fact]
+    public async Task SendMessage_ShouldPushChannelActivityToGuildGroup_WithAuthor()
+    {
+        var (ownerToken, ownerId) = await RegisterAsync("unreadowner", "u-owner@test.com");
         var (guildId, channelId, invite) = await SetupGuildAsync(ownerToken);
 
         var (memberToken, _) = await RegisterAsync("unreadmember", "u-member@test.com");
         await JoinGuildAsync(memberToken, invite);
 
-        var ownerConn = BuildConnection(ownerToken);
         var memberConn = BuildConnection(memberToken);
-
-        var ownerUnread = new List<UnreadCountPayload>();
-        var memberUnread = new List<UnreadCountPayload>();
-        ownerConn.On<UnreadCountPayload>("UnreadCountUpdated", p => ownerUnread.Add(p));
-        memberConn.On<UnreadCountPayload>("UnreadCountUpdated", p => memberUnread.Add(p));
-
-        await ownerConn.StartAsync();
+        var activity = new List<ChannelActivityPayload>();
+        memberConn.On<ChannelActivityPayload>("ChannelActivity", p => activity.Add(p));
         await memberConn.StartAsync();
+        // Members receive guild-scoped broadcasts only while joined to the guild group — the real
+        // client does this for every guild on connect (shell.joinAllGuilds).
+        await memberConn.InvokeAsync("JoinGuild", guildId);
 
         try
         {
-            // Owner sends — member is the recipient, owner is the sender.
             await SendMessageAsync(ownerToken, guildId, channelId, "first");
 
-            // Member should receive an absolute count of 1.
+            // One guild-group ping identifying the channel + author (the client self-skips its own).
             await Eventually.GetAsync(
-                action: () => Task.FromResult(memberUnread),
-                predicate: u => u.Any(p => p.ChannelId == channelId && p.UnreadCount == 1),
+                action: () => Task.FromResult(activity),
+                predicate: a => a.Any(p => p.ChannelId == channelId && p.AuthorId == ownerId),
                 retries: 100,
                 intervalMs: 100
             );
 
-            memberUnread
+            activity
                 .Should()
                 .ContainSingle(p =>
-                    p.ChannelId == channelId && p.GuildId == guildId && p.UnreadCount == 1
+                    p.ChannelId == channelId && p.GuildId == guildId && p.AuthorId == ownerId
                 );
-
-            // Sender must NOT get an unread push for their own message.
-            await Task.Delay(500);
-            ownerUnread.Should().BeEmpty("the sender is excluded from their own unread fan-out");
         }
         finally
         {
-            await ownerConn.StopAsync();
             await memberConn.StopAsync();
-            await ownerConn.DisposeAsync();
             await memberConn.DisposeAsync();
         }
     }
 
     [Fact]
-    public async Task SecondMessage_ShouldIncrementRecipientCount_ToTwo()
+    public async Task ReadPath_ShouldReportCountMinusMark_AfterAnchoring()
     {
         var (ownerToken, _) = await RegisterAsync("unreadowner2", "u-owner2@test.com");
         var (guildId, channelId, invite) = await SetupGuildAsync(ownerToken);
         var (memberToken, _) = await RegisterAsync("unreadmember2", "u-member2@test.com");
         await JoinGuildAsync(memberToken, invite);
 
-        var memberConn = BuildConnection(memberToken);
-        var memberUnread = new List<UnreadCountPayload>();
-        memberConn.On<UnreadCountPayload>("UnreadCountUpdated", p => memberUnread.Add(p));
-        await memberConn.StartAsync();
+        // Anchor the member's mark at the current (empty) count, so subsequent messages are unread.
+        Client.DefaultRequestHeaders.Authorization =
+            new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", memberToken);
+        var mark = await Client.PostAsJsonAsync(
+            $"/api/guilds/{guildId}/channels/{channelId}/read",
+            new { lastReadMessageId = 1L }
+        );
+        mark.EnsureSuccessStatusCode();
 
-        try
-        {
-            await SendMessageAsync(ownerToken, guildId, channelId, "one");
-            await SendMessageAsync(ownerToken, guildId, channelId, "two");
+        await SendMessageAsync(ownerToken, guildId, channelId, "one");
+        await SendMessageAsync(ownerToken, guildId, channelId, "two");
 
-            await Eventually.GetAsync(
-                action: () => Task.FromResult(memberUnread),
-                predicate: u => u.Any(p => p.ChannelId == channelId && p.UnreadCount == 2),
-                retries: 100,
-                intervalMs: 100
-            );
+        // The read path (count − mark) converges on 2 as the async consumer INCRs the channel counter.
+        await Eventually.GetAsync(
+            action: () => GetUnreadAsync(memberToken),
+            predicate: list => list.Any(u => u.ChannelId == channelId && u.UnreadCount == 2),
+            retries: 100,
+            intervalMs: 100
+        );
 
-            memberUnread.Should().Contain(p => p.UnreadCount == 2);
-        }
-        finally
-        {
-            await memberConn.StopAsync();
-            await memberConn.DisposeAsync();
-        }
+        (await GetUnreadAsync(memberToken))
+            .Should()
+            .ContainSingle(u => u.ChannelId == channelId && u.GuildId == guildId && u.UnreadCount == 2);
     }
 
     [Fact]
-    public async Task MarkRead_ShouldResetCountToZero_AndClearFromGetUnread()
+    public async Task MarkRead_ShouldAnchorToZero_ClearFromGetUnread_AndPushZero()
     {
-        var (ownerToken, _) = await RegisterAsync("unreadowner3", "u-owner3@test.com");
+        var (ownerToken, ownerId) = await RegisterAsync("unreadowner3", "u-owner3@test.com");
         var (guildId, channelId, invite) = await SetupGuildAsync(ownerToken);
         var (memberToken, _) = await RegisterAsync("unreadmember3", "u-member3@test.com");
         await JoinGuildAsync(memberToken, invite);
 
         var memberConn = BuildConnection(memberToken);
         var memberUnread = new List<UnreadCountPayload>();
+        var activity = new List<ChannelActivityPayload>();
         memberConn.On<UnreadCountPayload>("UnreadCountUpdated", p => memberUnread.Add(p));
+        memberConn.On<ChannelActivityPayload>("ChannelActivity", p => activity.Add(p));
         await memberConn.StartAsync();
+        await memberConn.InvokeAsync("JoinGuild", guildId);
 
         try
         {
             await SendMessageAsync(ownerToken, guildId, channelId, "unread me");
 
+            // The ping fires AFTER the counter INCR, so receiving it proves the count is ≥ 1 —
+            // marking read now anchors the mark to that count (→ 0), not to an empty channel.
             await Eventually.GetAsync(
-                action: () => Task.FromResult(memberUnread),
-                predicate: u => u.Any(p => p.UnreadCount == 1),
+                action: () => Task.FromResult(activity),
+                predicate: a => a.Any(p => p.ChannelId == channelId && p.AuthorId == ownerId),
                 retries: 100,
                 intervalMs: 100
             );
 
-            // Member marks the channel read.
             Client.DefaultRequestHeaders.Authorization =
                 new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", memberToken);
             var markResp = await Client.PostAsJsonAsync(
@@ -232,7 +236,7 @@ public class UnreadCountFlowTests : ApiTestBase, IClassFixture<HarmonyWebApplica
             );
             markResp.EnsureSuccessStatusCode();
 
-            // A zero push should arrive (multi-device sync).
+            // A zero push still arrives (multi-device sync).
             await Eventually.GetAsync(
                 action: () => Task.FromResult(memberUnread),
                 predicate: u => u.Any(p => p.ChannelId == channelId && p.UnreadCount == 0),
@@ -240,11 +244,8 @@ public class UnreadCountFlowTests : ApiTestBase, IClassFixture<HarmonyWebApplica
                 intervalMs: 100
             );
 
-            // GET /me/unread should no longer list this channel (key deleted).
-            var unreadResp = await Client.GetAsync("/api/users/me/unread");
-            unreadResp.EnsureSuccessStatusCode();
-            var list = await unreadResp.Content.ReadFromJsonAsync<List<UnreadCountResponseDto>>();
-            list.Should().NotContain(u => u.ChannelId == channelId);
+            // And the read path (count − mark) no longer lists the channel.
+            (await GetUnreadAsync(memberToken)).Should().NotContain(u => u.ChannelId == channelId);
         }
         finally
         {

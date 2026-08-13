@@ -16,7 +16,6 @@ namespace Harmony.Infrastructure.Redis;
 public sealed class RedisUnreadCountService : IUnreadCountService
 {
     private readonly IRedisConnectionProvider _redisProvider;
-    private readonly IGuildRepository _guildRepository;
     private readonly IReadStateRepository _readStateRepository;
     private readonly IHubBroadcaster _broadcaster;
     private readonly IPermissionService _permissions;
@@ -25,7 +24,6 @@ public sealed class RedisUnreadCountService : IUnreadCountService
 
     public RedisUnreadCountService(
         IRedisConnectionProvider redisProvider,
-        IGuildRepository guildRepository,
         IReadStateRepository readStateRepository,
         IHubBroadcaster broadcaster,
         IPermissionService permissions,
@@ -34,7 +32,6 @@ public sealed class RedisUnreadCountService : IUnreadCountService
     )
     {
         _redisProvider = redisProvider;
-        _guildRepository = guildRepository;
         _readStateRepository = readStateRepository;
         _broadcaster = broadcaster;
         _permissions = permissions;
@@ -49,17 +46,75 @@ public sealed class RedisUnreadCountService : IUnreadCountService
         CancellationToken ct = default
     )
     {
+        // DM (no guild): bounded fan-out (≤10 participants) — keep the exact per-participant
+        // absolute-count path. The O(recipients) problem D3 removes is a large-guild-channel
+        // problem; a DM fan-out is cheap and DMs have no guild group to broadcast to.
+        if (guildId is null)
+        {
+            await IncrementDmAsync(channelId, senderUserId, ct);
+            return;
+        }
+
+        // Guild channel (D3): O(1) write. One channel-level counter INCR (the durable total the
+        // read path diffs against) plus ONE guild-group activity ping — no per-recipient resolve,
+        // INCR, or broadcast. Unread is computed read-time as channel-count − the user's mark.
+        var gid = guildId.Value;
+
+        if (_redisProvider.IsConnected)
+        {
+            try
+            {
+                var db = _redisProvider.Connection!.GetDatabase();
+                await db.StringIncrementAsync(ChannelCountKey(channelId));
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "Unread: channel-count INCR failed for channel {ChannelId} — badge may lag until next message",
+                    channelId
+                );
+            }
+        }
+
+        // Live bump for everyone in the guild. The client +1's the channel unless it's the active
+        // one or its own message. Ids only — no content/name; hidden-channel confidentiality on the
+        // read path is enforced by the ViewChannel filter in GetUnreadForUserAsync. Best-effort.
+        try
+        {
+            await _broadcaster.BroadcastChannelActivityAsync(
+                new ChannelActivityPayload(channelId, gid, senderUserId),
+                ct
+            );
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Unread: channel-activity broadcast failed for channel {ChannelId} — continuing",
+                channelId
+            );
+        }
+    }
+
+    /// <summary>
+    /// The unchanged DM path: resolve the ≤10 participants (minus the sender), pipeline one INCR of
+    /// <c>unread:{userId}:{channelId}</c> each, then push the absolute count to each. Bounded, so
+    /// the per-recipient shape is fine — only guild channels moved to the D3 read-time model.
+    /// </summary>
+    private async Task IncrementDmAsync(long channelId, long senderUserId, CancellationToken ct)
+    {
         if (!_redisProvider.IsConnected)
         {
             _logger.LogDebug(
-                "Unread: Redis unavailable — skipping increment for channel {ChannelId}",
+                "Unread: Redis unavailable — skipping DM increment for channel {ChannelId}",
                 channelId
             );
             return;
         }
 
-        // Recipient resolution branches on guild: visible guild members, or DM participants.
-        var recipientIds = await ResolveRecipientIdsAsync(guildId, channelId, senderUserId);
+        var participantIds = await _dms.GetParticipantIdsAsync(channelId);
+        var recipientIds = participantIds.Where(id => id != senderUserId).ToList();
         if (recipientIds.Count == 0)
             return;
 
@@ -80,17 +135,14 @@ public sealed class RedisUnreadCountService : IUnreadCountService
         {
             _logger.LogWarning(
                 ex,
-                "Unread: pipelined INCR failed for channel {ChannelId} — skipping fan-out",
+                "Unread: pipelined DM INCR failed for channel {ChannelId} — skipping fan-out",
                 channelId
             );
             return;
         }
 
-        // Dispatched together, not one-await-at-a-time. Each send is an independent trip through the
-        // Redis backplane, so awaiting them in sequence stacked ~54 round-trips onto every message
-        // (~17ms measured — the same order as the resolve loop above). IHubContext is built for
-        // concurrent use and the broadcaster holds nothing per-call, so this is safe; the per-user
-        // try/catch stays INSIDE the task so one failed recipient still can't take out the rest.
+        // Dispatched together, per-user try/catch inside each task so one dead recipient can't abort
+        // the rest. IHubContext is built for concurrent use and the broadcaster holds no per-call state.
         await Task.WhenAll(
             pending.Select(async p =>
             {
@@ -98,7 +150,7 @@ public sealed class RedisUnreadCountService : IUnreadCountService
                 {
                     await _broadcaster.BroadcastUnreadCountAsync(
                         p.userId,
-                        new UnreadCountPayload(channelId, guildId, (int)p.incr.Result),
+                        new UnreadCountPayload(channelId, null, (int)p.incr.Result),
                         ct
                     );
                 }
@@ -106,7 +158,7 @@ public sealed class RedisUnreadCountService : IUnreadCountService
                 {
                     _logger.LogWarning(
                         ex,
-                        "Unread: broadcast failed for user {UserId} on channel {ChannelId} — continuing",
+                        "Unread: DM broadcast failed for user {UserId} on channel {ChannelId} — continuing",
                         p.userId,
                         channelId
                     );
@@ -126,20 +178,32 @@ public sealed class RedisUnreadCountService : IUnreadCountService
         // 1. Truth first — NOT swallowed. If this throws, mark-as-read genuinely failed.
         await _readStateRepository.MarkAsReadAsync(userId, channelId, lastReadMessageId, ct);
 
-        // 2. Drop the cache key — best-effort. A stale non-zero badge is the safe
-        //    failure direction; the next read or re-mark corrects it.
+        // 2. Clear the cache — best-effort. A stale non-zero badge is the safe failure direction;
+        //    the next read or re-mark corrects it.
         if (_redisProvider.IsConnected)
         {
             try
             {
                 var db = _redisProvider.Connection!.GetDatabase();
-                await db.KeyDeleteAsync(UnreadKey(userId, channelId));
+                if (guildId is null)
+                {
+                    // DM: the count lives per-user at unread:{user}:{channel} — drop it.
+                    await db.KeyDeleteAsync(UnreadKey(userId, channelId));
+                }
+                else
+                {
+                    // Guild channel (D3): anchor the mark to the channel's current count, so
+                    // read-time unread (count − mark) is zero right now. (long)Null == 0 for a
+                    // brand-new channel with no counter yet.
+                    var count = (long)await db.StringGetAsync(ChannelCountKey(channelId));
+                    await db.StringSetAsync(MarkKey(userId, channelId), count);
+                }
             }
             catch (Exception ex)
             {
                 _logger.LogWarning(
                     ex,
-                    "Unread: failed clearing cache key for {UserId}:{ChannelId} — read_states already updated",
+                    "Unread: failed clearing cache for {UserId}:{ChannelId} — read_states already updated",
                     userId,
                     channelId
                 );
@@ -168,7 +232,7 @@ public sealed class RedisUnreadCountService : IUnreadCountService
 
     public async Task<IReadOnlyDictionary<long, int>> GetUnreadForUserAsync(
         long userId,
-        IEnumerable<long> channelIds,
+        IReadOnlyDictionary<long, long> channelGuildMap,
         CancellationToken ct = default
     )
     {
@@ -183,23 +247,63 @@ public sealed class RedisUnreadCountService : IUnreadCountService
             return result;
         }
 
-        var ids = channelIds as IReadOnlyList<long> ?? channelIds.ToList();
-        if (ids.Count == 0)
+        if (channelGuildMap.Count == 0)
+            return result;
+
+        // 1. ViewChannel filter (moved OFF the write path to here — per session, not per message).
+        //    The channel counter now exists for every channel regardless of who can see it, so the
+        //    read path must drop override-hidden channels (e.g. #staff): otherwise a member would
+        //    get a count for them AND they'd inflate the guild-badge rollup. Cached, so cheap; one
+        //    channel failing resolution is treated as not-viewable (fail-closed for that channel).
+        var viewable = new List<(long channelId, long guildId)>();
+        foreach (var kv in channelGuildMap)
+        {
+            try
+            {
+                if (await _permissions.HasAsync(userId, kv.Value, Permission.ViewChannel, kv.Key))
+                    viewable.Add((kv.Key, kv.Value));
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "Unread: ViewChannel resolve failed for {UserId} on channel {ChannelId} — treating as hidden",
+                    userId,
+                    kv.Key
+                );
+            }
+        }
+        if (viewable.Count == 0)
             return result;
 
         try
         {
             var db = _redisProvider.Connection!.GetDatabase();
-            var keys = ids.Select(cid => (RedisKey)UnreadKey(userId, cid)).ToArray();
-            var values = await db.StringGetAsync(keys); // single MGET
+            var countKeys = viewable.Select(c => (RedisKey)ChannelCountKey(c.channelId)).ToArray();
+            var markKeys = viewable.Select(c => (RedisKey)MarkKey(userId, c.channelId)).ToArray();
+            var counts = await db.StringGetAsync(countKeys); // one MGET
+            var marks = await db.StringGetAsync(markKeys); // one MGET
 
-            for (var i = 0; i < ids.Count; i++)
+            // A channel with no mark is "caught up" (0) — this covers new members, post-deploy
+            // existing members, and never-opened channels. Lazily anchor the mark to the current
+            // count so the channel is correct from now on (this replaces an explicit guild-join
+            // hook). Anchors are MSET together at the end.
+            var anchors = new List<KeyValuePair<RedisKey, RedisValue>>();
+            for (var i = 0; i < viewable.Count; i++)
             {
-                if (values[i].IsNullOrEmpty)
+                var count = (long)counts[i]; // 0 when the counter key is absent
+                if (marks[i].IsNullOrEmpty)
+                {
+                    anchors.Add(new((RedisKey)MarkKey(userId, viewable[i].channelId), count));
                     continue;
-                if (values[i].TryParse(out long count) && count > 0)
-                    result[ids[i]] = (int)count;
+                }
+                var unread = count - (long)marks[i];
+                if (unread > 0)
+                    result[viewable[i].channelId] = (int)unread;
             }
+
+            if (anchors.Count > 0)
+                await db.StringSetAsync(anchors.ToArray());
         }
         catch (Exception ex)
         {
@@ -213,38 +317,12 @@ public sealed class RedisUnreadCountService : IUnreadCountService
         return result;
     }
 
-    private async Task<List<long>> ResolveRecipientIdsAsync(
-        long? guildId,
-        long channelId,
-        long senderUserId
-    )
-    {
-        // DM (no guild): the recipients are the channel's participants minus the sender.
-        // DMs have no overrides, so no per-channel visibility check is needed.
-        if (guildId is not { } gid)
-        {
-            var participantIds = await _dms.GetParticipantIdsAsync(channelId);
-            return participantIds.Where(id => id != senderUserId).ToList();
-        }
-
-        var memberIds = await _guildRepository.GetMemberIdsAsync(gid);
-
-        // Only members who can actually view the channel accrue unread for it — otherwise a
-        // member would get a badge (and a non-zero /me/unread) for an override-hidden channel
-        // like #staff.
-        //
-        // Resolved as ONE batched call rather than an await-per-member loop. The per-user cache
-        // made each check cheap, but not free, and this runs for every message: at 54 members the
-        // loop's stacked round-trips measured ~17ms, ~37% of the consumer's whole per-message
-        // budget — and since dispatch is serial, that was a direct cap on messages/second.
-        var candidates = memberIds.Where(id => id != senderUserId).ToList();
-        return await _permissions.FilterByPermissionAsync(
-            candidates,
-            gid,
-            Permission.ViewChannel,
-            channelId
-        );
-    }
-
+    // DM per-user count (unchanged path).
     public static string UnreadKey(long userId, long channelId) => $"unread:{userId}:{channelId}";
+
+    // (D3) Monotonic total messages ever in a guild channel — the durable value the read path diffs.
+    private static string ChannelCountKey(long channelId) => $"channel:{channelId}:count";
+
+    // (D3) The channel-count snapshot at a user's last read — unread = channel-count − mark.
+    private static string MarkKey(long userId, long channelId) => $"unread:mark:{userId}:{channelId}";
 }

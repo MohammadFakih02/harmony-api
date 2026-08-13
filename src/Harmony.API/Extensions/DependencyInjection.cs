@@ -4,6 +4,7 @@ using Cassandra;
 using Harmony.API.Filters;
 using Harmony.API.Grains;
 using Harmony.Application.Interfaces.Services;
+using Harmony.Application.Messaging;
 using Harmony.Application.Services;
 using Harmony.Domain.Interfaces;
 using Harmony.Domain.Interfaces.Repositories;
@@ -113,9 +114,9 @@ public static class DependencyInjection
         services.AddSingleton<RateLimitHubFilter>();
 
         // -----------------------------------------------------------------------
-        // SignalR + Redis backplane
+        // SignalR (no Redis backplane — see D2c below)
         // -----------------------------------------------------------------------
-        var signalRBuilder = services
+        services
             .AddSignalR(options =>
             {
                 options.EnableDetailedErrors =
@@ -141,29 +142,14 @@ public static class DependencyInjection
                     JsonNumberHandling.AllowReadingFromString;
             });
 
-        var redisConnectionString = configuration.GetConnectionString("Redis");
-
-        if (!string.IsNullOrWhiteSpace(redisConnectionString) && !isTest)
-        {
-            signalRBuilder.AddStackExchangeRedis(
-                redisConnectionString,
-                options =>
-                {
-                    options.Configuration.ChannelPrefix = StackExchange.Redis.RedisChannel.Literal(
-                        "harmony"
-                    );
-                    // Same fast-fail posture as the shared multiplexer (RedisConnectionFactory):
-                    // don't let a downed backplane block hub broadcasts on the 5s defaults.
-                    options.Configuration.AbortOnConnectFail = false;
-                    if (options.Configuration.ConnectTimeout >= 5000)
-                        options.Configuration.ConnectTimeout = 2000;
-                    if (options.Configuration.SyncTimeout >= 5000)
-                        options.Configuration.SyncTimeout = 1000;
-                    if (options.Configuration.ConnectRetry > 1)
-                        options.Configuration.ConnectRetry = 1;
-                }
-            );
-        }
+        // D2c: no SignalR Redis backplane. Track D co-hosts a single Orleans silo, so there is
+        // exactly one SignalR server per deployment — IHubContext fans every broadcast out
+        // in-process, removing the Redis pub/sub round-trip that used to sit on every broadcast
+        // (the hot path). Redis itself stays: dedup, unread counts, the sender-display cache,
+        // slowmode and rate limiting all still use the shared IRedisConnectionProvider above.
+        // Re-introducing multiple instances would need real Orleans clustering, not just re-binding
+        // this backplane, so it's removed outright rather than flag-gated. The StackExchangeRedis
+        // package (+ its MessagePack security pin) is deliberately kept for an easy revert.
 
         // -----------------------------------------------------------------------
         // Message deduplication — shares the IRedisConnectionProvider connection
@@ -223,6 +209,16 @@ public static class DependencyInjection
             services.AddScoped<IPresenceService, RedisPresenceService>();
         else
             services.AddScoped<IPresenceService, GrainPresenceService>();
+        // Message send fan-out is grain-backed outside Test (Track D2a): GrainChannelDispatcher
+        // routes each send to the per-channel ChannelGrain, which broadcasts first and then
+        // republishes the event as the durable RabbitMQ persist log. The Test environment keeps
+        // LegacyChannelDispatcher (publish → consumer broadcasts) since no Orleans silo is co-hosted
+        // there — so the hub integration tests exercise the unchanged pipeline; the grain path has
+        // its own InProcessTestCluster ChannelGrainTests. Both impls are stateless singletons.
+        if (isTest)
+            services.AddSingleton<IChannelDispatcher, LegacyChannelDispatcher>();
+        else
+            services.AddSingleton<IChannelDispatcher, GrainChannelDispatcher>();
         services.AddScoped<IVoiceStateService, RedisVoiceStateService>();
         services.AddScoped<IPermissionService, PermissionService>();
         services.AddScoped<IFileService, FileService>();

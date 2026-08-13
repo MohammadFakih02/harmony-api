@@ -68,7 +68,7 @@ public class BootstrapController : HarmonyControllerBase
             user.GuildOrder
         );
         var channelGuildMap = await _channels.GetTextChannelGuildMapAsync(guilds.Select(g => g.Id));
-        var counts = await _unread.GetUnreadForUserAsync(me, channelGuildMap.Keys);
+        var counts = await _unread.GetUnreadForUserAsync(me, channelGuildMap);
 
         // Friend rows (mirrors FriendsController.GetFriends / GetPending).
         var friendRows = await _friends.GetAcceptedAsync(me);

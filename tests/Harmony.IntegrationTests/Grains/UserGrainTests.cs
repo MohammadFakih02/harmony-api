@@ -7,6 +7,7 @@ using Harmony.Domain.Interfaces.Repositories;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
+using Orleans.Serialization;
 using Orleans.TestingHost;
 
 namespace Harmony.IntegrationTests.Grains;
@@ -43,6 +44,12 @@ public class UserGrainTests : IAsyncLifetime
             hostBuilder.Services.AddSingleton(_users.Object);
             hostBuilder.Services.AddSingleton(_friends.Object);
             hostBuilder.Services.AddSingleton(_guilds.Object);
+            // The silo loads all Harmony.API grains, incl. ChannelGrain whose method takes a Domain
+            // MessageSentEvent — so this cluster needs the same JSON serializer as Program.cs even
+            // though the UserGrain methods use only primitives. On the shared host so the client sees
+            // it too (its grain-interface serializer validation runs on cluster start).
+            hostBuilder.Services.AddSerializer(s => s.AddJsonSerializer(
+                type => type.Namespace?.StartsWith("Harmony.Domain.Interfaces") == true));
         });
 
         _cluster = builder.Build();

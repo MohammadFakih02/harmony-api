@@ -12,11 +12,15 @@ namespace Harmony.Application.Interfaces.Services;
 public interface IUnreadCountService
 {
     /// <summary>
-    /// After a message is persisted, increments the unread count for every
-    /// channel recipient except the sender, then pushes UnreadCountUpdated to each.
-    /// Recipient resolution branches on guild: a guild channel fans out to its
-    /// visible members; a guild-less channel (guildId null) fans out to its DM
-    /// participants. Best-effort: never throws into the caller (the consumer's ack).
+    /// Called after a message is persisted. Branches on guild:
+    /// <list type="bullet">
+    /// <item>Guild channel (D3): O(1) — increments the per-channel message counter and sends ONE
+    /// guild-group <c>ChannelActivity</c> ping; unread is computed read-time as counter − mark, so
+    /// there is no per-recipient work.</item>
+    /// <item>DM (guildId null): the bounded per-participant path — one INCR of
+    /// <c>unread:{userId}:{channelId}</c> each plus an absolute <c>UnreadCountUpdated</c>.</item>
+    /// </list>
+    /// Best-effort: never throws into the caller (the consumer's ack).
     /// </summary>
     Task IncrementForChannelAsync(
         long? guildId,
@@ -40,12 +44,15 @@ public interface IUnreadCountService
     );
 
     /// <summary>
-    /// Reads current unread counts for the given channels (sidebar load).
-    /// Returns only channels with a count &gt; 0. Absent keys / Redis down =&gt; empty.
+    /// Reads current unread counts for the given guild channels (sidebar / bootstrap load), keyed
+    /// channelId → guildId. Computed read-time as channel-counter − the user's mark, after a
+    /// ViewChannel filter drops override-hidden channels. A channel with no mark is treated as
+    /// caught-up (0) and lazily anchored to the current count. Returns only channels with count
+    /// &gt; 0; Redis down / empty input =&gt; empty.
     /// </summary>
     Task<IReadOnlyDictionary<long, int>> GetUnreadForUserAsync(
         long userId,
-        IEnumerable<long> channelIds,
+        IReadOnlyDictionary<long, long> channelGuildMap,
         CancellationToken ct = default
     );
 }

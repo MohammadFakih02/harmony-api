@@ -36,7 +36,12 @@ public record MessageSentEvent(
     MessageForwardSnapshot? Forward = null,
     // Opaque client idempotency token, carried through to the broadcast MessageResponse so the
     // sender can dedupe its optimistic bubble. Not persisted. Defaulted for pre-upgrade events.
-    string? Nonce = null
+    string? Nonce = null,
+    // D2a broadcast-first marker. When the per-channel ChannelGrain has ALREADY fanned this message
+    // out to SignalR (the grain/prod path), it republishes the event with this set so the persist
+    // consumer skips its own broadcast (persist + unread still run). False on the legacy/Test path
+    // (the consumer broadcasts) and on any in-flight/pre-upgrade event. Never persisted.
+    bool BroadcastAlready = false
 );
 
 public record MessageDeletedEvent(
@@ -44,7 +49,11 @@ public record MessageDeletedEvent(
     long ChannelId,
     long? GuildId,
     long DeletedByUserId,
-    DateTimeOffset DeletedAt
+    DateTimeOffset DeletedAt,
+    // D2b broadcast-first marker (see MessageSentEvent.BroadcastAlready): set when the ChannelGrain
+    // has already broadcast the deletion, so the persist consumer skips its own broadcast (the async
+    // work — search-index removal, etc. — still runs). Never persisted; false on the legacy path.
+    bool BroadcastAlready = false
 );
 
 public record MessageEditedEvent(
@@ -61,7 +70,12 @@ public record MessageEditedEvent(
     DateTimeOffset EditedAt,
     // Same role as on MessageSentEvent: the @everyone/@here-only subset of MentionIds, so a
     // newly-added @everyone ping honours the suppress-@everyone opt-out on the edit path too.
-    List<long>? EveryoneMentionIds = null
+    List<long>? EveryoneMentionIds = null,
+    // D2b broadcast-first marker (see MessageSentEvent.BroadcastAlready): set when the ChannelGrain
+    // has already broadcast the edit, so the persist consumer skips its own broadcast (the async work
+    // — newly-added-mention notifications, search reindex — still runs). Never persisted; false on
+    // the legacy path.
+    bool BroadcastAlready = false
 );
 
 /// <summary>Asynchronous envelope representing a deleted channel [12].</summary>
