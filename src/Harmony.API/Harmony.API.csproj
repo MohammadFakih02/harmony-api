@@ -25,6 +25,16 @@
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
     <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
+    <!-- Track D5: MessagePack hub protocol (binary SignalR framing) alongside the existing JSON
+         protocol — both are negotiated, so JSON-only clients (incl. the .NET integration-test client)
+         are unaffected. A custom resolver serializes long/long? as MessagePack strings to preserve the
+         snowflake-as-string wire contract the JS client relies on (see MessagePackLongAsStringResolver);
+         MessagePack's native int64 would otherwise be decoded to a lossy float64 by the JS msgpack
+         client, which exposes no config to change it. -->
+    <!-- 10.0.9 is the first .NET 10 build patched for CVE-2026-45591 / GHSA-f8h2-vmm9-qhj6 (a
+         deeply-nested-MessagePack DoS); the untrusted-data security profile in the resolver options
+         is the belt-and-suspenders for the same class. -->
+    <PackageReference Include="Microsoft.AspNetCore.SignalR.Protocols.MessagePack" Version="10.0.9" />
     <!-- Track D0: co-hosted Orleans silo. Server metapackage bundles clustering + the in-memory
          grain-storage provider used by D0 (localhost clustering, AddMemoryGrainStorage). 10.2.2
          targets net10.0. -->

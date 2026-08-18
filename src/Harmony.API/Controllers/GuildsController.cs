@@ -265,6 +265,11 @@ public class GuildsController : HarmonyControllerBase
         // roles) just to decrement one column.
         await _guilds.AdjustMemberCountAsync(id, -1);
 
+        // Leaving changes the membership set — invalidate so the permission layer (the D4 GuildGrain
+        // snapshot) stops resolving the ex-member as a member. Without this the grain would keep
+        // granting them access until it next reloads.
+        await _permissions.InvalidateUserAsync(userId, id);
+
         return NoContent();
     }
 

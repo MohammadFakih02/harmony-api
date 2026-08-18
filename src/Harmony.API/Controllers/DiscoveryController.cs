@@ -28,6 +28,7 @@ public class DiscoveryController : HarmonyControllerBase
     private readonly IMessageService _messages;
     private readonly IUserRepository _users;
     private readonly IHubBroadcaster _broadcaster;
+    private readonly IPermissionService _permissions;
     private readonly ILogger<DiscoveryController> _logger;
 
     public DiscoveryController(
@@ -37,6 +38,7 @@ public class DiscoveryController : HarmonyControllerBase
         IMessageService messages,
         IUserRepository users,
         IHubBroadcaster broadcaster,
+        IPermissionService permissions,
         ILogger<DiscoveryController> logger
     )
     {
@@ -46,6 +48,7 @@ public class DiscoveryController : HarmonyControllerBase
         _messages = messages;
         _users = users;
         _broadcaster = broadcaster;
+        _permissions = permissions;
         _logger = logger;
     }
 
@@ -113,6 +116,11 @@ public class DiscoveryController : HarmonyControllerBase
         // See InvitesController.Join — atomic bump after the membership lands, so concurrent joins
         // can't lose each other's increment.
         await _guilds.AdjustMemberCountAsync(guild.Id, 1);
+
+        // A join changes the guild's membership set — invalidate so the permission layer (the D4
+        // GuildGrain snapshot) reflects it immediately. Without this the grain keeps resolving the
+        // joiner as a non-member until it next reloads, and every ViewChannel check 403s.
+        await _permissions.InvalidateUserAsync(userId, guild.Id);
 
         await InvitesController.PostWelcomeMessageAsync(guild, userId, _channels, _messages, _logger);
         await InvitesController.BroadcastMemberJoinedAsync(

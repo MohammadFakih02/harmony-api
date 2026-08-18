@@ -1,3 +1,4 @@
+using Harmony.Application.Authorization;
 using Harmony.Application.Interfaces.Services;
 using Harmony.Domain.Domain.Enums;
 using Harmony.Domain.Interfaces.Repositories;
@@ -31,9 +32,11 @@ public sealed class PermissionService : IPermissionService
 {
     private static readonly TimeSpan CacheTtl = TimeSpan.FromSeconds(30);
 
-    /// <summary>Every defined permission bit OR'd together — the result for owners/administrators.</summary>
-    private static readonly long AllPermissions =
-        Enum.GetValues<Permission>().Aggregate(0L, (acc, p) => acc | (long)p);
+    /// <summary>
+    /// Every defined permission bit OR'd together — the result for owners/administrators. Sourced from
+    /// the shared <see cref="PermissionResolver"/> so the constant can never diverge from the grain's.
+    /// </summary>
+    private static readonly long AllPermissions = PermissionResolver.AllPermissions;
 
     private readonly IGuildRepository _guilds;
     private readonly IRoleRepository _roles;
@@ -229,58 +232,17 @@ public sealed class PermissionService : IPermissionService
         if (channelId is not { } cid)
             return perms;
 
-        return ApplyChannelOverrides(
+        // The gnarly override precedence lives in the shared PermissionResolver (D4) so this path and
+        // the GuildGrain can't drift. The OR-and-Administrator logic above is kept inline here on
+        // purpose: it gates the reads (owner/admin short-circuit before overrides are fetched), which
+        // preserves this service's exact Postgres read profile.
+        return PermissionResolver.ApplyChannelOverrides(
             perms,
             await _overrides.GetByChannelAsync(cid),
             everyoneRoleId: everyone?.Id,
             memberRoleIds: memberRoles.Select(r => r.Id).ToHashSet(),
             userId
         );
-    }
-
-    /// <summary>
-    /// Applies channel overrides as <c>(perms &amp; ~deny) | allow</c> in Discord's precedence order:
-    /// @everyone, then aggregated assigned-role overrides, then the member-specific override.
-    /// </summary>
-    private static long ApplyChannelOverrides(
-        long perms,
-        IReadOnlyList<Domain.Domain.Entities.ChannelPermissionOverride> overrides,
-        long? everyoneRoleId,
-        HashSet<long> memberRoleIds,
-        long userId
-    )
-    {
-        // 1. @everyone role override
-        if (everyoneRoleId is { } everyoneId)
-        {
-            var everyoneOverride = overrides.FirstOrDefault(o =>
-                o.TargetType == "role" && o.TargetId == everyoneId
-            );
-            if (everyoneOverride is not null)
-                perms = (perms & ~everyoneOverride.DenyBits) | everyoneOverride.AllowBits;
-        }
-
-        // 2. Aggregated overrides for the member's assigned roles (deny then allow, combined)
-        long rolesAllow = 0;
-        long rolesDeny = 0;
-        foreach (var o in overrides)
-        {
-            if (o.TargetType == "role" && o.TargetId != everyoneRoleId && memberRoleIds.Contains(o.TargetId))
-            {
-                rolesAllow |= o.AllowBits;
-                rolesDeny |= o.DenyBits;
-            }
-        }
-        perms = (perms & ~rolesDeny) | rolesAllow;
-
-        // 3. Member-specific override (highest precedence)
-        var memberOverride = overrides.FirstOrDefault(o =>
-            o.TargetType == "user" && o.TargetId == userId
-        );
-        if (memberOverride is not null)
-            perms = (perms & ~memberOverride.DenyBits) | memberOverride.AllowBits;
-
-        return perms;
     }
 
     // -------------------------------------------------------------------------

@@ -3,6 +3,7 @@ using System.Text.Json.Serialization;
 using Cassandra;
 using Harmony.API.Filters;
 using Harmony.API.Grains;
+using Harmony.API.SignalR;
 using Harmony.Application.Interfaces.Services;
 using Harmony.Application.Messaging;
 using Harmony.Application.Services;
@@ -19,6 +20,8 @@ using Harmony.Infrastructure.Redis;
 using Harmony.Infrastructure.Scylla;
 using Harmony.Infrastructure.Scylla.Repositories;
 using Harmony.Infrastructure.Services;
+using MessagePack;
+using MessagePack.Resolvers;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -140,6 +143,28 @@ public static class DependencyInjection
                 options.PayloadSerializerOptions.Converters.Add(new LongStringConverter());
                 options.PayloadSerializerOptions.NumberHandling =
                     JsonNumberHandling.AllowReadingFromString;
+            })
+            // D5: also offer the binary MessagePack protocol. Both are negotiated per-connection, so a
+            // JSON-only client (incl. the .NET SignalR integration-test client, which defaults to JSON)
+            // is unaffected. The custom resolver keeps the snowflake-as-string wire contract (see
+            // MessagePackLongAsStringResolver — the binary mirror of LongStringConverter above), and it
+            // is composed ahead of ContractlessStandardResolver because the hub DTOs carry no
+            // MessagePack attributes. UntrustedData enforces the depth limit that hardens the
+            // deeply-nested-array DoS class (CVE-2026-45591) at the deserializer, matching the package bump.
+            .AddMessagePackProtocol(options =>
+            {
+                options.SerializerOptions = MessagePackSerializerOptions
+                    .Standard.WithResolver(
+                        CompositeResolver.Create(
+                            // Order matters: long/long? → string first, then Harmony DTOs as
+                            // camelCase-keyed maps (matching the JSON protocol), then the standard
+                            // contractless resolver for everything else (strings, collections, enums).
+                            MessagePackLongAsStringResolver.Instance,
+                            MessagePackCamelCaseResolver.Instance,
+                            ContractlessStandardResolver.Instance
+                        )
+                    )
+                    .WithSecurity(MessagePackSecurity.UntrustedData);
             });
 
         // D2c: no SignalR Redis backplane. Track D co-hosts a single Orleans silo, so there is
@@ -220,7 +245,17 @@ public static class DependencyInjection
         else
             services.AddSingleton<IChannelDispatcher, GrainChannelDispatcher>();
         services.AddScoped<IVoiceStateService, RedisVoiceStateService>();
-        services.AddScoped<IPermissionService, PermissionService>();
+        // Permissions are grain-backed outside Test (Track D4): GrainPermissionService forwards to the
+        // per-guild GuildGrain, whose in-memory snapshot (roles + membership + overrides) replaces the
+        // Redis perms:{u}:{g} cache and resolves in-process — the unread fan-out's FilterByPermission
+        // becomes a pure in-memory pass. The Test environment keeps the Redis-cached PermissionService
+        // because no Orleans silo is co-hosted there (D0 gated it out) — so the hub integration tests
+        // exercise the unchanged Redis path; the grain path has its own InProcessTestCluster tests. Both
+        // call sites and the IPermissionService seam are unchanged.
+        if (isTest)
+            services.AddScoped<IPermissionService, PermissionService>();
+        else
+            services.AddScoped<IPermissionService, GrainPermissionService>();
         services.AddScoped<IFileService, FileService>();
         services.AddScoped<INotificationService, NotificationService>();
         services.AddScoped<IAuditLogService, AuditLogService>();

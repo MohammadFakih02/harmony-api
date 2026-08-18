@@ -32,6 +32,7 @@ public class InvitesController : HarmonyControllerBase
     private readonly IPresenceService _presence;
     private readonly IHubBroadcaster _broadcaster;
     private readonly INotificationService _notifications;
+    private readonly IPermissionService _permissions;
     private readonly ILogger<InvitesController> _logger;
 
     public InvitesController(
@@ -44,6 +45,7 @@ public class InvitesController : HarmonyControllerBase
         IPresenceService presence,
         IHubBroadcaster broadcaster,
         INotificationService notifications,
+        IPermissionService permissions,
         ILogger<InvitesController> logger
     )
     {
@@ -56,6 +58,7 @@ public class InvitesController : HarmonyControllerBase
         _presence = presence;
         _broadcaster = broadcaster;
         _notifications = notifications;
+        _permissions = permissions;
         _logger = logger;
     }
 
@@ -218,6 +221,11 @@ public class InvitesController : HarmonyControllerBase
         // it atomically after the join lands rather than read-modify-writing the tracked entity
         // (two simultaneous joins would otherwise each write count+1 and lose one).
         await _guilds.AdjustMemberCountAsync(guild.Id, 1);
+
+        // A join changes the guild's membership set — invalidate so the permission layer (the D4
+        // GuildGrain snapshot) reflects it immediately. Without this the grain keeps resolving the
+        // joiner as a non-member until it next reloads, and every ViewChannel check 403s.
+        await _permissions.InvalidateUserAsync(userId, guild.Id);
 
         await PostWelcomeMessageAsync(guild, userId, _channels, _messages, _logger);
         await BroadcastMemberJoinedAsync(guild.Id, userId, member.JoinedAt, _users, _broadcaster, _logger);
