@@ -5,8 +5,6 @@ public record RegisterRequest(string Username, string Email, string Password);
 // Identifier is the user's email OR username — login resolves either.
 public record LoginRequest(string Identifier, string Password);
 
-public record RefreshRequest; // body is empty — refresh token comes from httpOnly cookie
-
 // UserId travels as a string (Snowflake precision over JSON/JS) even though it's parsed as a long
 // server-side — same wire rule as every other emailed-link/auth DTO.
 public record ConfirmEmailRequest(string UserId, string Token);

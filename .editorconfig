@@ -1,0 +1,22 @@
+# EditorConfig for the Harmony backend — editor-level consistency only.
+# Intentionally scoped to whitespace/charset conventions; it does NOT set analyzer diagnostic
+# severities, so it can never fail the build. Formatting is not CI-enforced (see the T1 audit
+# decision); CSharpier is available as a local dotnet tool for formatting new files on demand.
+root = true
+
+[*]
+charset = utf-8
+insert_final_newline = true
+trim_trailing_whitespace = true
+end_of_line = crlf
+indent_style = space
+
+[*.{cs,csx}]
+indent_size = 4
+
+[*.{json,yml,yaml,csproj,props,targets}]
+indent_size = 2
+
+[*.md]
+# Trailing whitespace is significant in Markdown (two spaces = hard line break).
+trim_trailing_whitespace = false

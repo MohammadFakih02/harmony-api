@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using Harmony.Application.Observability;
 using Harmony.Domain.Interfaces;
 using Microsoft.Extensions.Logging;
 using RabbitMQ.Client;
@@ -115,6 +116,11 @@ public class RabbitMQPublisher : IMessagePublisher, IAsyncDisposable
             ContentEncoding = "utf-8",
             MessageId = Guid.NewGuid().ToString(),
             Timestamp = new AmqpTimestamp(DateTimeOffset.UtcNow.ToUnixTimeSeconds()),
+            // Carry the originating request's correlation id across the broker so the consumer's logs
+            // tie back to it (audit A15). Falls back to a fresh id when published outside a request
+            // (a background service) so every message always has one. Tracing only — never read for
+            // routing or dedup.
+            CorrelationId = CorrelationContext.Current ?? Guid.NewGuid().ToString(),
         };
 
         await channel.BasicPublishAsync(

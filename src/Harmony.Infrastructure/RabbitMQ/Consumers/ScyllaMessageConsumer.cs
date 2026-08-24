@@ -6,6 +6,7 @@ using Harmony.Application.Exceptions;
 using Harmony.Application.Hubs;
 using Harmony.Application.Interfaces.Services;
 using Harmony.Application.Messaging;
+using Harmony.Application.Observability;
 using Harmony.Domain.Interfaces;
 using Harmony.Domain.Interfaces.Repositories;
 using Harmony.Infrastructure.Scylla;
@@ -319,6 +320,16 @@ public class ScyllaMessageConsumer : BackgroundService
 
     private async Task OnMessageReceivedAsync(object sender, BasicDeliverEventArgs ea)
     {
+        // Correlate every log line from processing this delivery back to the originating request
+        // (via the AMQP correlation-id stamped by RabbitMQPublisher). Logging only — the
+        // ack/nack/DLQ/requeue control flow below is untouched.
+        using var _correlationScope = _logger.BeginScope(
+            new Dictionary<string, object>
+            {
+                [CorrelationContext.LogProperty] = ea.BasicProperties.CorrelationId ?? "-",
+            }
+        );
+
         var routingKey = ea.RoutingKey;
         var body = Encoding.UTF8.GetString(ea.Body.Span);
 

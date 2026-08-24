@@ -20,6 +20,7 @@ question a reviewer asks first.
 | [0008](0008-presigned-urls.md) | Presigned URLs; never expose the object store | The API stays a control plane and never proxies file bytes |
 | [0009](0009-signal-stores-unified-gateway.md) | Self-subscribing signal stores over one gateway stream | Kills the central wiring file that grew a dependency on every feature |
 | [0010](0010-email-code-2fa.md) | Email-code 2FA, no TOTP | Reuses the email pipeline we already had; no authenticator-app UX or recovery-code burden |
+| [0011](0011-single-ec2-demo-deployment.md) | Single-EC2 demo deployment (realizes 0007) | The same containers on one box, stood up/torn down — a $90/mo managed stack burns the whole credit budget for a few-week demo |
 
 ## Format
 

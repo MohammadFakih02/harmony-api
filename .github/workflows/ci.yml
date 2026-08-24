@@ -90,6 +90,18 @@ jobs:
       - name: Restore dependencies
         run: dotnet restore
 
+      # Dependency-vulnerability gate (audit T1). `dotnet list package --vulnerable` exits 0 even when
+      # it finds advisories, so we scan its output and fail the job explicitly on a hit. Includes
+      # transitive packages — the class of advisory that slips in unnoticed.
+      - name: Check for vulnerable NuGet packages
+        run: |
+          report=$(dotnet list package --vulnerable --include-transitive 2>&1)
+          echo "$report"
+          if echo "$report" | grep -q "has the following vulnerable packages"; then
+            echo "::error::Vulnerable NuGet packages detected — see the report above."
+            exit 1
+          fi
+
       - name: Build
         run: dotnet build --no-restore --configuration Release
 

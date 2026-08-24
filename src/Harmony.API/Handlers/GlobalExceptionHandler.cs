@@ -54,7 +54,7 @@ public class GlobalExceptionHandler : IExceptionHandler
             || exception is ArgumentException
             || exception is ValidationException
             || exception is ConflictException
-            || exception is InvalidOperationException
+            || exception is DomainRuleException
         )
         {
             _logger.LogWarning("User validation exception occurred: {Message}", exception.Message);
@@ -100,7 +100,10 @@ public class GlobalExceptionHandler : IExceptionHandler
             ),
 
             ConflictException => (StatusCodes.Status409Conflict, "Conflict"),
-            InvalidOperationException => (StatusCodes.Status400BadRequest, "Bad Request"),
+            // Business-rule rejections the caller could hit (Identity failures, "@everyone can't be
+            // deleted", etc.). A bare InvalidOperationException is deliberately NOT mapped here — it's an
+            // unexpected fault and must fall through to 500 (audit A3), not be disguised as a 400.
+            DomainRuleException => (StatusCodes.Status400BadRequest, "Bad Request"),
             _ => (StatusCodes.Status500InternalServerError, "Server Error"),
         };
 

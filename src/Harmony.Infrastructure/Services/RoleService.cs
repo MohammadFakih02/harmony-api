@@ -1,5 +1,6 @@
 using Harmony.Application.DTOs.Requests;
 using Harmony.Application.DTOs.Responses;
+using Harmony.Application.Exceptions;
 using Harmony.Application.Hubs;
 using Harmony.Application.Interfaces.Services;
 using Harmony.Application.Services;
@@ -150,7 +151,7 @@ public class RoleService : IRoleService
         var role = await GetGuildRoleOrThrowAsync(guildId, roleId);
 
         if (role.IsDefault)
-            throw new InvalidOperationException("The @everyone role cannot be deleted.");
+            throw new DomainRuleException("The @everyone role cannot be deleted.");
         EnsureCanManage(ctx, role);
 
         _roles.Remove(role); // RoleAssignments cascade-delete via the FK
@@ -183,7 +184,7 @@ public class RoleService : IRoleService
             if (!byId.TryGetValue(entry.RoleId, out var role))
                 throw new KeyNotFoundException("Role not found in this guild.");
             if (role.IsDefault)
-                throw new InvalidOperationException("The @everyone role cannot be moved.");
+                throw new DomainRuleException("The @everyone role cannot be moved.");
             EnsureCanManage(ctx, role); // can't move a role at/above your own rank
             if (entry.Position < 1)
                 throw new ArgumentException("Role position must be 1 or greater.");
@@ -214,7 +215,7 @@ public class RoleService : IRoleService
         var role = await GetGuildRoleOrThrowAsync(guildId, roleId);
 
         if (role.IsDefault)
-            throw new InvalidOperationException("The @everyone role is assigned to all members implicitly.");
+            throw new DomainRuleException("The @everyone role is assigned to all members implicitly.");
         EnsureCanManage(ctx, role); // can't hand out a role at/above your own rank
 
         if (await _guilds.GetMemberAsync(guildId, userId) is null)
@@ -247,7 +248,7 @@ public class RoleService : IRoleService
         var role = await GetGuildRoleOrThrowAsync(guildId, roleId);
 
         if (role.IsDefault)
-            throw new InvalidOperationException("The @everyone role cannot be removed from a member.");
+            throw new DomainRuleException("The @everyone role cannot be removed from a member.");
         EnsureCanManage(ctx, role);
 
         if (await _roles.GetAssignmentAsync(roleId, userId) is { } assignment)

@@ -133,7 +133,7 @@ public class RoleServiceTests
 
         await FluentActions
             .Invoking(() => sut.DeleteRoleAsync(GuildId, ActorId, RoleId))
-            .Should().ThrowAsync<InvalidOperationException>();
+            .Should().ThrowAsync<Harmony.Application.Exceptions.DomainRuleException>();
     }
 
     [Fact]

@@ -544,3 +544,104 @@ public sealed class UpdateChannelRequestValidator : AbstractValidator<UpdateChan
             .When(x => x.SlowmodeSeconds.HasValue);
     }
 }
+
+/// <summary>
+/// Forwards an existing message. Shape only — that the source is readable and the attachments are
+/// owned/confirmed is semantic (MessageService reads the original and re-authorizes, NON-NEGOTIABLE
+/// #8). Mirrors <see cref="SendMessageRequestValidator"/>: the optional note is capped at the same
+/// content limit and the re-uploaded attachment list at the same MaxAttachments ceiling, so a forward
+/// can't smuggle in an oversized note or an unbounded attachment list the plain send path rejects.
+/// </summary>
+public sealed class ForwardMessageRequestValidator : AbstractValidator<ForwardMessageRequest>
+{
+    public ForwardMessageRequestValidator()
+    {
+        RuleFor(x => x.SourceChannelId)
+            .GreaterThan(0).WithMessage("SourceChannelId must be a valid id.");
+
+        RuleFor(x => x.SourceMessageId)
+            .GreaterThan(0).WithMessage("SourceMessageId must be a valid id.");
+
+        RuleFor(x => x.Note!)
+            .MaximumLength(2000).WithMessage("Note must be 2000 characters or fewer.")
+            .When(x => x.Note is not null);
+
+        RuleFor(x => x.AttachmentIds!)
+            .Must(a => a.Count <= Services.MessageService.MaxAttachments)
+            .When(x => x.AttachmentIds is not null)
+            .WithMessage($"A message may have at most {Services.MessageService.MaxAttachments} attachments.");
+    }
+}
+
+/// <summary>
+/// Invite-a-friend. Exact mirror of <see cref="CreateInviteRequestValidator"/>'s bounds (they share
+/// the same MaxUses/ExpiresInSeconds semantics) plus the friend id — this endpoint previously had no
+/// validator while its sibling did, so an out-of-range expiry/use-count slipped straight through.
+/// </summary>
+public sealed class InviteFriendRequestValidator : AbstractValidator<InviteFriendRequest>
+{
+    public InviteFriendRequestValidator()
+    {
+        RuleFor(x => x.FriendId)
+            .GreaterThan(0).WithMessage("FriendId must be a valid id.");
+
+        RuleFor(x => x.MaxUses!.Value)
+            .InclusiveBetween(1, 1000).WithMessage("Max uses must be between 1 and 1000.")
+            .When(x => x.MaxUses.HasValue);
+
+        RuleFor(x => x.ExpiresInSeconds!.Value)
+            .InclusiveBetween(1, 2592000).WithMessage("Expiry must be between 1 second and 30 days.")
+            .When(x => x.ExpiresInSeconds.HasValue);
+    }
+}
+
+/// <summary>
+/// Creates a group DM. Shape only — that each id is a real, contactable user is semantic and lives in
+/// DirectMessagesController. The optional name shares the channel-name column cap (a group DM is a
+/// channel); the participant list must be non-empty (a group needs at least one other member).
+/// </summary>
+public sealed class CreateGroupDmRequestValidator : AbstractValidator<CreateGroupDmRequest>
+{
+    public CreateGroupDmRequestValidator()
+    {
+        RuleFor(x => x.Name!)
+            .MaximumLength(CreateChannelRequestValidator.MaxNameLength)
+            .WithMessage($"Group name must be {CreateChannelRequestValidator.MaxNameLength} characters or fewer.")
+            .When(x => x.Name is not null);
+
+        RuleFor(x => x.UserIds)
+            .NotEmpty().WithMessage("A group DM needs at least one other user.");
+    }
+}
+
+/// <summary>Renames a group DM. Null/blank clears back to the joined participant names; a provided
+/// name shares the channel-name column cap.</summary>
+public sealed class RenameGroupDmRequestValidator : AbstractValidator<RenameGroupDmRequest>
+{
+    public RenameGroupDmRequestValidator()
+    {
+        RuleFor(x => x.Name!)
+            .MaximumLength(CreateChannelRequestValidator.MaxNameLength)
+            .WithMessage($"Group name must be {CreateChannelRequestValidator.MaxNameLength} characters or fewer.")
+            .When(x => x.Name is not null);
+    }
+}
+
+/// <summary>
+/// Bans a guild member. The reason is optional free text; this cap matches the GuildBans.reason column
+/// (<c>HasMaxLength(512)</c>) — without it an over-length reason reached the database and surfaced as a
+/// 500 instead of a clean 400.
+/// </summary>
+public sealed class BanMemberRequestValidator : AbstractValidator<BanMemberRequest>
+{
+    // Matches the GuildBans.reason column length.
+    public const int MaxReasonLength = 512;
+
+    public BanMemberRequestValidator()
+    {
+        RuleFor(x => x.Reason!)
+            .MaximumLength(MaxReasonLength)
+            .WithMessage($"Ban reason must be {MaxReasonLength} characters or fewer.")
+            .When(x => x.Reason is not null);
+    }
+}

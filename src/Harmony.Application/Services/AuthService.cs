@@ -95,7 +95,7 @@ public class AuthService : IAuthService
 
         var (succeeded, errors) = await _identityService.CreateUserAsync(user, request.Password);
         if (!succeeded)
-            throw new InvalidOperationException(string.Join(", ", errors));
+            throw new DomainRuleException(string.Join(", ", errors));
 
         await _notificationPreferences.AddAsync(new NotificationPreference { UserId = user.Id });
         await _notificationPreferences.SaveChangesAsync();
@@ -202,7 +202,7 @@ public class AuthService : IAuthService
             throw new AuthenticationException("Invalid credentials.");
 
         if (!user.EmailConfirmed)
-            throw new InvalidOperationException(
+            throw new DomainRuleException(
                 "Verify your email before enabling two-factor authentication."
             );
 
@@ -228,7 +228,7 @@ public class AuthService : IAuthService
                 TwoFactorValidationResult.ExpiredOrUnknown => "Code expired. Please request a new one.",
                 _ => "Invalid code.",
             };
-            throw new InvalidOperationException(message);
+            throw new DomainRuleException(message);
         }
 
         var user = await _identityService.FindByIdAsync(userId);
@@ -445,7 +445,7 @@ public class AuthService : IAuthService
 
                 var (succeeded, errors) = await _identityService.CreateUserWithoutPasswordAsync(user);
                 if (!succeeded)
-                    throw new InvalidOperationException(string.Join(", ", errors));
+                    throw new DomainRuleException(string.Join(", ", errors));
 
                 await _notificationPreferences.AddAsync(new NotificationPreference { UserId = user.Id });
                 await _notificationPreferences.SaveChangesAsync();
@@ -478,7 +478,7 @@ public class AuthService : IAuthService
             throw new AuthenticationException("Invalid credentials.");
 
         if (user.PasswordHash is null)
-            throw new InvalidOperationException("Set a password first.");
+            throw new DomainRuleException("Set a password first.");
 
         if (!await _identityService.CheckPasswordAsync(user, currentPassword))
             throw new AuthenticationException("Invalid credentials.");
@@ -500,7 +500,7 @@ public class AuthService : IAuthService
             newPassword
         );
         if (!succeeded)
-            throw new InvalidOperationException(string.Join(", ", errors));
+            throw new DomainRuleException(string.Join(", ", errors));
 
         // Every other session must die immediately — the reset-password sequence — but the
         // caller stays signed in via a freshly issued token pair.
@@ -518,11 +518,11 @@ public class AuthService : IAuthService
             throw new AuthenticationException("Invalid credentials.");
 
         if (user.PasswordHash is not null)
-            throw new InvalidOperationException("A password has been set for this account.");
+            throw new DomainRuleException("A password has been set for this account.");
 
         var (succeeded, errors) = await _identityService.AddPasswordAsync(user, newPassword);
         if (!succeeded)
-            throw new InvalidOperationException(string.Join(", ", errors));
+            throw new DomainRuleException(string.Join(", ", errors));
     }
 
     public async Task<bool> ChangeEmailRequestAsync(
@@ -538,7 +538,7 @@ public class AuthService : IAuthService
             throw new AuthenticationException("Invalid credentials.");
 
         if (user.PasswordHash is null)
-            throw new InvalidOperationException("Set a password first.");
+            throw new DomainRuleException("Set a password first.");
 
         if (!await _identityService.CheckPasswordAsync(user, password))
             throw new AuthenticationException("Invalid credentials.");
@@ -598,7 +598,7 @@ public class AuthService : IAuthService
             throw new AuthenticationException("Invalid credentials.");
 
         if (user.PasswordHash is null)
-            throw new InvalidOperationException("Set a password first.");
+            throw new DomainRuleException("Set a password first.");
 
         if (!await _identityService.CheckPasswordAsync(user, password))
             throw new AuthenticationException("Invalid credentials.");
@@ -609,7 +609,7 @@ public class AuthService : IAuthService
 
         var (succeeded, errors) = await _identityService.SetUserNameAsync(user, newUsername);
         if (!succeeded)
-            throw new InvalidOperationException(string.Join(", ", errors));
+            throw new DomainRuleException(string.Join(", ", errors));
 
         // Best-effort — the rename already succeeded; a broadcast failure just means other tabs
         // catch up on their next natural refetch (same philosophy as FileService's avatar fan-out).
@@ -693,7 +693,7 @@ public class AuthService : IAuthService
             await _emailCooldown.ReleaseAsync(cooldownPurpose, user.Id, ct);
     }
 
-    /// <summary>Validates a step-up code for the given purpose, throwing InvalidOperationException
+    /// <summary>Validates a step-up code for the given purpose, throwing DomainRuleException
     /// with the same three-way message split as <see cref="Enable2faConfirmAsync"/> on failure.</summary>
     private async Task ValidateStepUpCodeAsync(long userId, string purpose, string code, CancellationToken ct)
     {
@@ -707,7 +707,7 @@ public class AuthService : IAuthService
             TwoFactorValidationResult.ExpiredOrUnknown => "Code expired. Please request a new one.",
             _ => "Invalid code.",
         };
-        throw new InvalidOperationException(message);
+        throw new DomainRuleException(message);
     }
 
     private async Task<bool> SendStepUpCodeAsync(User user, string purpose, string code, CancellationToken ct)
