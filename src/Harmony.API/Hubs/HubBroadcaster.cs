@@ -258,6 +258,7 @@ public class HubBroadcaster : IHubBroadcaster
 
     public async Task BroadcastVoiceParticipantJoinedAsync(
         VoiceParticipantPayload payload,
+        IReadOnlyList<long>? alsoUserIds = null,
         CancellationToken ct = default
     )
     {
@@ -268,10 +269,13 @@ public class HubBroadcaster : IHubBroadcaster
             await _hubContext
                 .Clients.Group(ChatHub.GuildGroup(guildId))
                 .VoiceParticipantJoined(payload);
+        if (UserList(alsoUserIds) is { } users)
+            await _hubContext.Clients.Users(users).VoiceParticipantJoined(payload);
     }
 
     public async Task BroadcastVoiceParticipantLeftAsync(
         VoiceParticipantLeftPayload payload,
+        IReadOnlyList<long>? alsoUserIds = null,
         CancellationToken ct = default
     )
     {
@@ -282,10 +286,13 @@ public class HubBroadcaster : IHubBroadcaster
             await _hubContext
                 .Clients.Group(ChatHub.GuildGroup(guildId))
                 .VoiceParticipantLeft(payload);
+        if (UserList(alsoUserIds) is { } users)
+            await _hubContext.Clients.Users(users).VoiceParticipantLeft(payload);
     }
 
     public async Task BroadcastVoiceStateUpdatedAsync(
         VoiceParticipantPayload payload,
+        IReadOnlyList<long>? alsoUserIds = null,
         CancellationToken ct = default
     )
     {
@@ -296,7 +303,16 @@ public class HubBroadcaster : IHubBroadcaster
             await _hubContext
                 .Clients.Group(ChatHub.GuildGroup(guildId))
                 .VoiceStateUpdated(payload);
+        if (UserList(alsoUserIds) is { } users)
+            await _hubContext.Clients.Users(users).VoiceStateUpdated(payload);
     }
+
+    /// <summary>
+    /// Normalizes an explicit voice recipient set into the string ids Clients.Users takes, or null
+    /// when there is nobody extra to reach (the common guild-voice case, which rides the groups).
+    /// </summary>
+    private static IReadOnlyList<string>? UserList(IReadOnlyList<long>? userIds) =>
+        userIds is { Count: > 0 } ids ? ids.Select(id => id.ToString()).ToList() : null;
 
     public Task BroadcastIncomingCallAsync(
         IReadOnlyList<long> userIds,

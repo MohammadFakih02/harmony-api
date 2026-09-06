@@ -97,8 +97,13 @@ public sealed class RedisVoiceStateService : IVoiceStateService
             await db.StringSetAsync(UserKey(userId), channelId.ToString());
             await db.SetAddAsync(UsersSetKey, userId.ToString());
 
+            var dmRecipients = await DmRoomRecipientsAsync(db, channelId, guildId);
             await SafeBroadcastAsync(() =>
-                _broadcaster.BroadcastVoiceParticipantJoinedAsync(ToPayload(channelId, userId, state), ct)
+                _broadcaster.BroadcastVoiceParticipantJoinedAsync(
+                    ToPayload(channelId, userId, state),
+                    dmRecipients,
+                    ct
+                )
             );
         }
         catch (Exception ex)
@@ -173,8 +178,13 @@ public sealed class RedisVoiceStateService : IVoiceStateService
                 JsonSerializer.Serialize(updated)
             );
 
+            var dmRecipients = await DmRoomRecipientsAsync(db, channelId, updated.GuildId);
             await SafeBroadcastAsync(() =>
-                _broadcaster.BroadcastVoiceStateUpdatedAsync(ToPayload(channelId, userId, updated), ct)
+                _broadcaster.BroadcastVoiceStateUpdatedAsync(
+                    ToPayload(channelId, userId, updated),
+                    dmRecipients,
+                    ct
+                )
             );
         }
         catch (Exception ex)
@@ -233,7 +243,7 @@ public sealed class RedisVoiceStateService : IVoiceStateService
                 );
 
             await SafeBroadcastAsync(() =>
-                _broadcaster.BroadcastVoiceStateUpdatedAsync(ToPayload(channelId, targetUserId, updated), ct)
+                _broadcaster.BroadcastVoiceStateUpdatedAsync(ToPayload(channelId, targetUserId, updated), ct: ct)
             );
             return true;
         }
@@ -283,13 +293,13 @@ public sealed class RedisVoiceStateService : IVoiceStateService
             await SafeBroadcastAsync(() =>
                 _broadcaster.BroadcastVoiceParticipantLeftAsync(
                     new VoiceParticipantLeftPayload(fromChannelId, existing.GuildId, targetUserId),
-                    ct
+                    ct: ct
                 )
             );
             await SafeBroadcastAsync(() =>
                 _broadcaster.BroadcastVoiceParticipantJoinedAsync(
                     ToPayload(toChannelId, targetUserId, moved),
-                    ct
+                    ct: ct
                 )
             );
             return true;
@@ -487,6 +497,9 @@ public sealed class RedisVoiceStateService : IVoiceStateService
         var raw = await db.HashGetAsync(ChannelKey(channelId), userId.ToString());
         var guildId = raw.IsNullOrEmpty ? null : Deserialize(raw!)?.GuildId;
 
+        // Captured BEFORE the delete so the leaver's own other tabs are in the DM recipient set too.
+        var dmRecipients = await DmRoomRecipientsAsync(db, channelId, guildId);
+
         var removed = await db.HashDeleteAsync(ChannelKey(channelId), userId.ToString());
         await db.SetRemoveAsync(UsersSetKey, userId.ToString());
 
@@ -501,9 +514,40 @@ public sealed class RedisVoiceStateService : IVoiceStateService
         await SafeBroadcastAsync(() =>
             _broadcaster.BroadcastVoiceParticipantLeftAsync(
                 new VoiceParticipantLeftPayload(channelId, guildId, userId),
+                dmRecipients,
                 ct
             )
         );
+    }
+
+    /// <summary>
+    /// The explicit recipient set for a GUILD-LESS (DM/group-DM) voice room: everyone currently in
+    /// it. Guild rooms return null — their broadcasts already reach every member through the guild
+    /// group, which nobody leaves while the app is open.
+    /// <para>
+    /// A client is only ever in ONE channel group (the channel it is viewing), so a DM caller who
+    /// navigates elsewhere mid-call would otherwise miss every event for that call — including the
+    /// "screenshare stopped" state update, leaving a phantom stream tile stuck on "Loading stream".
+    /// </para>
+    /// </summary>
+    private static async Task<IReadOnlyList<long>?> DmRoomRecipientsAsync(
+        IDatabase db,
+        long channelId,
+        long? guildId
+    )
+    {
+        if (guildId is not null)
+            return null;
+
+        var fields = await db.HashKeysAsync(ChannelKey(channelId));
+        var ids = new List<long>(fields.Length);
+        foreach (var field in fields)
+        {
+            if (long.TryParse(field.ToString(), out var id))
+                ids.Add(id);
+        }
+
+        return ids.Count > 0 ? ids : null;
     }
 
     private async Task SafeBroadcastAsync(Func<Task> broadcast)
