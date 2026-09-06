@@ -297,21 +297,34 @@ public interface IHubBroadcaster
     /// Broadcasts a voice-participant join to the channel group and (when the payload carries a
     /// guildId) the guild group, so both the in-call roster and the sidebar voice-channel roster
     /// update live. Invoked by the voice-state service after Redis state is written.
+    /// <para>
+    /// <paramref name="alsoUserIds"/> additionally targets an explicit recipient set via
+    /// Clients.Users. A guild-less (DM) voice room has no guild group to fall back on, and a client
+    /// holds exactly ONE channel group — the channel it is currently *viewing* — so a caller who
+    /// navigates away from the DM silently stops receiving that call's events. Passing the room's
+    /// members reaches them wherever they are. Delivery may duplicate for a recipient who is also in
+    /// the channel group; every voice apply* on the client is an idempotent upsert/remove.
+    /// </para>
     /// </summary>
     Task BroadcastVoiceParticipantJoinedAsync(
         VoiceParticipantPayload payload,
+        IReadOnlyList<long>? alsoUserIds = null,
         CancellationToken ct = default
     );
 
-    /// <summary>Broadcasts a voice-participant leave to the channel group and (if guild) the guild group.</summary>
+    /// <summary>Broadcasts a voice-participant leave to the channel group and (if guild) the guild group.
+    /// See <see cref="BroadcastVoiceParticipantJoinedAsync"/> for <paramref name="alsoUserIds"/>.</summary>
     Task BroadcastVoiceParticipantLeftAsync(
         VoiceParticipantLeftPayload payload,
+        IReadOnlyList<long>? alsoUserIds = null,
         CancellationToken ct = default
     );
 
-    /// <summary>Broadcasts a voice-participant state change (mute/deafen/video/screenshare) to the channel + guild groups.</summary>
+    /// <summary>Broadcasts a voice-participant state change (mute/deafen/video/screenshare) to the channel + guild groups.
+    /// See <see cref="BroadcastVoiceParticipantJoinedAsync"/> for <paramref name="alsoUserIds"/>.</summary>
     Task BroadcastVoiceStateUpdatedAsync(
         VoiceParticipantPayload payload,
+        IReadOnlyList<long>? alsoUserIds = null,
         CancellationToken ct = default
     );
 

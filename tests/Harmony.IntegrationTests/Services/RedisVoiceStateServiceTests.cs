@@ -117,6 +117,7 @@ public class RedisVoiceStateServiceTests : IAsyncLifetime
                     It.Is<VoiceParticipantPayload>(p =>
                         p.ChannelId == channelId && p.GuildId == guildId && p.UserId == userId
                     ),
+                    It.IsAny<IReadOnlyList<long>?>(),
                     It.IsAny<CancellationToken>()
                 ),
             Times.Once
@@ -143,6 +144,7 @@ public class RedisVoiceStateServiceTests : IAsyncLifetime
             b =>
                 b.BroadcastVoiceParticipantLeftAsync(
                     It.Is<VoiceParticipantLeftPayload>(p => p.ChannelId == roomA && p.UserId == userId),
+                    It.IsAny<IReadOnlyList<long>?>(),
                     It.IsAny<CancellationToken>()
                 ),
             Times.Once
@@ -170,6 +172,7 @@ public class RedisVoiceStateServiceTests : IAsyncLifetime
                     It.Is<VoiceParticipantLeftPayload>(p =>
                         p.ChannelId == channelId && p.UserId == userId
                     ),
+                    It.IsAny<IReadOnlyList<long>?>(),
                     It.IsAny<CancellationToken>()
                 ),
             Times.Once
@@ -197,6 +200,7 @@ public class RedisVoiceStateServiceTests : IAsyncLifetime
                     It.Is<VoiceParticipantPayload>(p =>
                         p.UserId == userId && p.IsMuted && p.IsVideoOn
                     ),
+                    It.IsAny<IReadOnlyList<long>?>(),
                     It.IsAny<CancellationToken>()
                 ),
             Times.Once
@@ -303,6 +307,7 @@ public class RedisVoiceStateServiceTests : IAsyncLifetime
             b =>
                 b.BroadcastVoiceStateUpdatedAsync(
                     It.Is<VoiceParticipantPayload>(p => p.UserId == target && p.IsServerMuted),
+                    It.IsAny<IReadOnlyList<long>?>(),
                     It.IsAny<CancellationToken>()
                 ),
             Times.Once
@@ -347,6 +352,7 @@ public class RedisVoiceStateServiceTests : IAsyncLifetime
             b =>
                 b.BroadcastVoiceParticipantLeftAsync(
                     It.IsAny<VoiceParticipantLeftPayload>(),
+                    It.IsAny<IReadOnlyList<long>?>(),
                     It.IsAny<CancellationToken>()
                 ),
             Times.Never
@@ -415,6 +421,7 @@ public class RedisVoiceStateServiceTests : IAsyncLifetime
             b =>
                 b.BroadcastVoiceParticipantLeftAsync(
                     It.Is<VoiceParticipantLeftPayload>(p => p.ChannelId == roomA && p.UserId == target),
+                    It.IsAny<IReadOnlyList<long>?>(),
                     It.IsAny<CancellationToken>()
                 ),
             Times.Once
@@ -425,6 +432,7 @@ public class RedisVoiceStateServiceTests : IAsyncLifetime
                     It.Is<VoiceParticipantPayload>(p =>
                         p.ChannelId == roomB && p.UserId == target && p.IsServerMuted
                     ),
+                    It.IsAny<IReadOnlyList<long>?>(),
                     It.IsAny<CancellationToken>()
                 ),
             Times.Once
